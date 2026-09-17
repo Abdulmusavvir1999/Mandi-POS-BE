@@ -8,6 +8,7 @@ const router = Router();
 
 router.get('/', authenticate, requirePermission('user.manage'), UsersController.getAll);
 router.get('/:id', authenticate, requirePermission('user.manage'), UsersController.getById);
+router.post('/image', authenticate, requirePermission('user.manage'), UsersController.uploadImage);
 router.post('/', authenticate, requirePermission('user.manage'), validateBody(createUserSchema), UsersController.create);
 router.put('/:id', authenticate, requirePermission('user.manage'), UsersController.update);
 router.delete('/:id', authenticate, requirePermission('user.manage'), UsersController.delete);

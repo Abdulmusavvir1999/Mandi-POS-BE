@@ -62,6 +62,8 @@ export class CheckoutService {
         totalAmount: number;
         notes?: string;
         currentStock: number;
+        /** Ledger item this line deducts from, already resolved. */
+        stockItemId: number | null;
       }> = [];
 
       for (const item of payload.items) {
@@ -93,7 +95,7 @@ export class CheckoutService {
         let variant: { id: number; name: string; selling_price: number; stock_consumption: number } | null = null;
         if (item.variantId) {
           variant = await dbService.queryOne<{ id: number; name: string; selling_price: number; stock_consumption: number }>(
-            'SELECT id, name, selling_price, stock_consumption FROM product_variants WHERE id = ? AND product_id = ? AND status = ?',
+            'SELECT id, name, selling_price, stock_consumption, stock_item_id FROM product_variants WHERE id = ? AND product_id = ? AND status = ?',
             [item.variantId, product.id, 'ACTIVE']
           );
           if (!variant) {
@@ -114,12 +116,29 @@ export class CheckoutService {
         const stockConsumption = variant ? Number(variant.stock_consumption) || 0 : 1;
         const requiredStock = stockConsumption * item.quantity;
 
-        // Stock lives on the linked ledger item when the dish has one; dishes
-        // with no ledger row fall back to the legacy per-product counter.
-        const stockItem = await dbService.queryOne<{ current_quantity: number; unit_type: string }>(
-          'SELECT current_quantity, unit_type FROM stock_items WHERE product_id = ?',
-          [product.id]
-        );
+        // Which ledger item this line draws from, most specific first:
+        //   1. the variant's own source  (EACH mode)
+        //   2. the dish's common source  (COMMON mode)
+        //   3. the item auto-linked to the product (pre-variant behaviour)
+        let stockItem: { id: number; current_quantity: number; unit_type: string } | null = null;
+
+        const variantSource = variant ? (variant as any).stock_item_id : null;
+        const sourceId = variantSource || (product as any).stock_item_id || null;
+
+        if (sourceId) {
+          stockItem = await dbService.queryOne<{ id: number; current_quantity: number; unit_type: string }>(
+            'SELECT id, current_quantity, unit_type FROM stock_items WHERE id = ?',
+            [sourceId]
+          );
+          if (!stockItem) {
+            throw AppError.badRequest(`Stock item for "${product.name}" no longer exists`);
+          }
+        } else {
+          stockItem = await dbService.queryOne<{ id: number; current_quantity: number; unit_type: string }>(
+            'SELECT id, current_quantity, unit_type FROM stock_items WHERE product_id = ?',
+            [product.id]
+          );
+        }
 
         let currentStock: number;
         if (stockItem) {
@@ -157,6 +176,7 @@ export class CheckoutService {
           totalAmount: itemSubtotal,
           notes: item.notes,
           currentStock,
+          stockItemId: stockItem ? stockItem.id : null,
         });
       }
 
@@ -366,10 +386,12 @@ export class CheckoutService {
         const newStock = item.currentStock - item.requiredStock;
 
         // 10a. Update or create master stock_items
-        const stkItem = await dbService.queryOne<{ id: number; average_unit_price: number; current_value: number }>(
-          'SELECT id, average_unit_price, current_value FROM stock_items WHERE product_id = ?',
-          [item.productId]
-        );
+        const stkItem = item.stockItemId
+          ? await dbService.queryOne<{ id: number; average_unit_price: number; current_value: number }>(
+              'SELECT id, average_unit_price, current_value FROM stock_items WHERE id = ?',
+              [item.stockItemId]
+            )
+          : null;
 
         if (stkItem) {
           const avgPrice = Number(stkItem.average_unit_price) || item.costPrice || 0;

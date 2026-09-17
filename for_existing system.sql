@@ -51,3 +51,29 @@ ALTER TABLE `bill_items`
   ADD COLUMN IF NOT EXISTS `variant_id` INT NULL AFTER `product_name`,
   ADD COLUMN IF NOT EXISTS `variant_name` VARCHAR(80) NULL AFTER `variant_id`,
   ADD COLUMN IF NOT EXISTS `stock_consumption` DECIMAL(12,3) NOT NULL DEFAULT 1.000 AFTER `variant_name`;
+
+-- =====================================================================
+-- 6. Where each variant draws its stock from
+--    COMMON  -> every variant consumes products.stock_item_id
+--    EACH    -> a variant consumes product_variants.stock_item_id
+--    Both columns are NULL on existing rows, which keeps the previous
+--    behaviour: fall back to the stock item linked by stock_items.product_id.
+-- =====================================================================
+
+ALTER TABLE `products`
+  ADD COLUMN IF NOT EXISTS `stock_item_id` INT NULL AFTER `low_stock_threshold`,
+  ADD COLUMN IF NOT EXISTS `variant_stock_mode` ENUM('COMMON','EACH') NOT NULL DEFAULT 'COMMON' AFTER `stock_item_id`;
+
+ALTER TABLE `product_variants`
+  ADD COLUMN IF NOT EXISTS `stock_item_id` INT NULL AFTER `name`;
+
+-- =====================================================================
+-- 7. Customer and staff photos
+--    Stored as a path under /uploads/, same as category and dish images.
+-- =====================================================================
+
+ALTER TABLE `customers`
+  ADD COLUMN IF NOT EXISTS `image_url` VARCHAR(255) NULL AFTER `address`;
+
+ALTER TABLE `users`
+  ADD COLUMN IF NOT EXISTS `image_url` VARCHAR(255) NULL AFTER `phone`;

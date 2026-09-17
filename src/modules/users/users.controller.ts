@@ -2,8 +2,20 @@
 import { UsersService } from './users.service';
 import { ResponseUtil } from '../../core/utils/response.util';
 import { ParamUtil } from '../../core/utils/param.util';
+import { UserImageService } from './user-image.service';
 
 export class UsersController {
+  /** Stores a staff photo and returns its URL; uploaded before the row exists. */
+  static async uploadImage(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { dataUrl } = req.body || {};
+      const data = UserImageService.save(dataUrl);
+      ResponseUtil.success(res, data, 'Staff photo uploaded successfully');
+    } catch (err) {
+      next(err);
+    }
+  }
+
   static async getAll(req: Request, res: Response, next: NextFunction) {
     try {
       const page = ParamUtil.page(req.query.page);

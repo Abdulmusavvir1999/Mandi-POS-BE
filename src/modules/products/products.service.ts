@@ -6,6 +6,8 @@ import { ProductImageService } from './product-image.service';
 export interface ProductVariantInput {
   id?: number;
   name: string;
+  /** Ledger item this portion draws from; null falls back to the dish's own. */
+  stockItemId?: number | null;
   sellingPrice?: number;
   stockConsumption?: number;
   displayOrder?: number;
@@ -14,15 +16,24 @@ export interface ProductVariantInput {
 }
 
 export class ProductsService {
-  /** Variants for one dish, cheapest-ordered first by display_order. */
   static async getVariants(productId: number) {
-    return await dbService.query(
-      `SELECT id, product_id, name, selling_price, stock_consumption, display_order, is_default, status
-       FROM product_variants
-       WHERE product_id = ?
-       ORDER BY display_order ASC, id ASC`,
-      [productId]
-    );
+    try {
+      return await dbService.query(
+        `SELECT v.id, v.product_id, v.name, v.stock_item_id,
+                v.selling_price, v.stock_consumption, v.display_order, v.is_default, v.status,
+                si.name       AS stock_item_name,
+                si.stock_code AS stock_item_code,
+                si.unit_type  AS stock_item_unit,
+                si.current_quantity AS stock_item_quantity
+         FROM product_variants v
+         LEFT JOIN stock_items si ON si.id = v.stock_item_id
+         WHERE v.product_id = ?
+         ORDER BY v.display_order ASC, v.id ASC`,
+        [productId]
+      );
+    } catch {
+      return [];
+    }
   }
 
   /**
@@ -51,11 +62,12 @@ export class ProductsService {
       if (isDefault) defaulted = true;
 
       await dbService.execute(
-        `INSERT INTO product_variants (product_id, name, selling_price, stock_consumption, display_order, is_default, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO product_variants (product_id, name, stock_item_id, selling_price, stock_consumption, display_order, is_default, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           productId,
           String(v.name).trim(),
+          v.stockItemId ? Number(v.stockItemId) : null,
           Number(v.sellingPrice) || 0,
           consumption,
           v.displayOrder !== undefined ? Number(v.displayOrder) : i,
@@ -138,6 +150,7 @@ export class ProductsService {
     const product = await dbService.queryOne<any>(
       `SELECT p.*, c.name as category_name,
               s.current_stock, s.reserved_stock, s.min_stock_alert,
+              COALESCE(p.stock_item_id, si.id) AS resolved_stock_item_id,
               si.stock_code        AS linked_stock_code,
               si.current_quantity  AS linked_stock_quantity,
               si.unit_type         AS linked_unit_type,
@@ -172,6 +185,8 @@ export class ProductsService {
     initialStock?: number;
     lowStockThreshold?: number;
     status?: string;
+    stockItemId?: number | null;
+    variantStockMode?: 'COMMON' | 'EACH';
     variants?: ProductVariantInput[];
   }, userId: number) {
     const existingSku = await dbService.queryOne('SELECT id FROM products WHERE sku = ?', [data.sku]);
@@ -250,6 +265,13 @@ export class ProductsService {
         );
       }
 
+      if (data.stockItemId !== undefined || data.variantStockMode !== undefined) {
+        await dbService.execute(
+          'UPDATE products SET stock_item_id = ?, variant_stock_mode = COALESCE(?, variant_stock_mode) WHERE id = ?',
+          [data.stockItemId ? Number(data.stockItemId) : null, data.variantStockMode || null, productId]
+        );
+      }
+
       await this.replaceVariants(productId, data.variants);
 
       await AuditService.log({
@@ -276,6 +298,8 @@ export class ProductsService {
     lowStockThreshold?: number;
     isAvailable?: boolean;
     status?: string;
+    stockItemId?: number | null;
+    variantStockMode?: 'COMMON' | 'EACH';
     variants?: ProductVariantInput[];
   }, userId: number) {
     const current = await this.getById(id);
@@ -321,6 +345,21 @@ export class ProductsService {
     if (data.lowStockThreshold !== undefined) {
       await dbService.execute('UPDATE stock SET min_stock_alert = ? WHERE product_id = ?', [data.lowStockThreshold, id]);
       await dbService.execute('UPDATE stock_items SET min_stock_alert = ? WHERE product_id = ?', [data.lowStockThreshold, id]);
+    }
+
+    if (data.stockItemId !== undefined || data.variantStockMode !== undefined) {
+      await dbService.execute(
+        `UPDATE products
+         SET stock_item_id = CASE WHEN ? THEN ? ELSE stock_item_id END,
+             variant_stock_mode = COALESCE(?, variant_stock_mode)
+         WHERE id = ?`,
+        [
+          data.stockItemId !== undefined ? 1 : 0,
+          data.stockItemId ? Number(data.stockItemId) : null,
+          data.variantStockMode || null,
+          id,
+        ]
+      );
     }
 
     await this.replaceVariants(id, data.variants);

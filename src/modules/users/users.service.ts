@@ -2,6 +2,7 @@ import bcrypt from 'bcryptjs';
 import { dbService } from '../../database/db';
 import { AppError } from '../../core/errors/AppError';
 import { AuditService } from '../audit/audit.service';
+import { UserImageService } from './user-image.service';
 
 export class UsersService {
   static async getAll(page = 1, limit = 20, search?: string, roleId?: number, status?: string) {
@@ -80,7 +81,7 @@ export class UsersService {
     };
   }
 
-  static async create(data: { username: string; email: string; password: string; name: string; phone?: string; roleId: number; status?: string }, adminUserId: number) {
+  static async create(data: { username: string; email: string; password: string; name: string; phone?: string; image_url?: string; roleId: number; status?: string }, adminUserId: number) {
     const existing = await dbService.queryOne(
       'SELECT id FROM users WHERE username = ? OR email = ?',
       [data.username, data.email]
@@ -94,9 +95,9 @@ export class UsersService {
     const passwordHash = bcrypt.hashSync(data.password, salt);
 
     const res = await dbService.execute(
-      `INSERT INTO users (username, email, password_hash, name, phone, role_id, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [data.username, data.email, passwordHash, data.name, data.phone || null, data.roleId, data.status || 'ACTIVE']
+      `INSERT INTO users (username, email, password_hash, name, phone, image_url, role_id, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [data.username, data.email, passwordHash, data.name, data.phone || null, data.image_url || null, data.roleId, data.status || 'ACTIVE']
     );
 
     await AuditService.log({
@@ -110,8 +111,8 @@ export class UsersService {
     return await this.getById(res.lastInsertRowid);
   }
 
-  static async update(id: number, data: { name?: string; phone?: string; roleId?: number; status?: string; password?: string }, adminUserId: number) {
-    const user = await dbService.queryOne('SELECT * FROM users WHERE id = ?', [id]);
+  static async update(id: number, data: { name?: string; phone?: string; image_url?: string; roleId?: number; status?: string; password?: string }, adminUserId: number) {
+    const user = await dbService.queryOne<any>('SELECT * FROM users WHERE id = ?', [id]);
     if (!user) {
       throw AppError.notFound('User not found');
     }
@@ -126,12 +127,13 @@ export class UsersService {
       `UPDATE users
        SET name = COALESCE(?, name),
            phone = COALESCE(?, phone),
+           image_url = COALESCE(?, image_url),
            role_id = COALESCE(?, role_id),
            status = COALESCE(?, status),
            password_hash = ?,
            updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
-      [data.name, data.phone, data.roleId, data.status, passwordHash, id]
+      [data.name, data.phone, data.image_url, data.roleId, data.status, passwordHash, id]
     );
 
     await AuditService.log({
