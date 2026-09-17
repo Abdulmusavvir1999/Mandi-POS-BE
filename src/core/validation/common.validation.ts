@@ -106,6 +106,9 @@ export const stockAdjustSchema = z
       required_error: 'Adjustment type is required',
     }),
     quantity: z.coerce.number({ required_error: 'Quantity is required' }).positive('Quantity must be greater than 0'),
+    multiplier: z.coerce.number().positive('Multiplier must be greater than 0').optional(),
+    totalPrice: z.coerce.number().min(0, 'Total cost cannot be negative').optional(),
+    unitPrice: z.coerce.number().min(0, 'Unit cost cannot be negative').optional(),
     reason: nonEmpty('Adjustment reason'),
   })
   .passthrough();

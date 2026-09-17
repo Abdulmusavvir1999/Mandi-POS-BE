@@ -606,6 +606,9 @@ export class StockService {
       productId?: number;
       adjustmentType: 'INCREASE' | 'DECREASE' | 'adjustment' | 'wastage' | 'return' | 'in' | 'out';
       quantity: number;
+      multiplier?: number;
+      totalPrice?: number;
+      unitPrice?: number;
       reason: string;
       notes?: string;
     },
@@ -631,8 +634,16 @@ export class StockService {
       const prevValue = Number(stockItem.current_value) || 0;
       const avgPrice = Number(stockItem.average_unit_price) || 0;
 
+      // Base quantity x multiplier, mirroring how a purchase entry is measured.
+      const baseQuantity = Number(data.quantity);
+      const multiplier = Number(data.multiplier ?? 1) || 1;
+      const totalQuantity = baseQuantity * multiplier;
+      if (totalQuantity <= 0) {
+        throw AppError.badRequest('Quantity x Multiplier must be greater than 0');
+      }
+
       const isIncrease = data.adjustmentType === 'INCREASE' || data.adjustmentType === 'in' || data.adjustmentType === 'return';
-      let deltaQty = isIncrease ? Number(data.quantity) : -Number(data.quantity);
+      let deltaQty = isIncrease ? totalQuantity : -totalQuantity;
       let movementType: StockMovementType = 'adjustment';
 
       if (data.adjustmentType === 'wastage') movementType = 'wastage';
@@ -648,9 +659,29 @@ export class StockService {
         }
       }
 
-      // Calculate adjusted value based on weighted average price
-      const movementValue = Math.abs(deltaQty) * avgPrice;
-      const newValue = Math.max(0, newQuantity * avgPrice);
+      // Unit cost for this movement: an explicit total wins, then an explicit
+      // unit rate, otherwise the item's existing weighted average.
+      let unitCost = avgPrice;
+      if (data.totalPrice !== undefined && data.totalPrice !== null) {
+        unitCost = totalQuantity > 0 ? Number(data.totalPrice) / totalQuantity : 0;
+      } else if (data.unitPrice !== undefined && data.unitPrice !== null) {
+        unitCost = Number(data.unitPrice);
+      }
+
+      const movementValue = totalQuantity * unitCost;
+
+      // Stock coming IN re-averages exactly like a purchase entry. Stock going
+      // OUT is always depleted at the existing average, so a wastage entry can
+      // never shift the item's costing — any cost supplied on a decrease is
+      // recorded on the movement row as the write-off value only.
+      let newValue: number;
+      let newAvgPrice = avgPrice;
+      if (isIncrease) {
+        newValue = Math.max(0, prevValue + movementValue);
+        newAvgPrice = newQuantity > 0 ? newValue / newQuantity : unitCost;
+      } else {
+        newValue = Math.max(0, newQuantity * avgPrice);
+      }
 
       const moveUuid = `move-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`;
       const adjRef = `ADJ-${Date.now().toString().slice(-6)}`;
@@ -668,7 +699,7 @@ export class StockService {
           movementType,
           adjRef,
           deltaQty,
-          avgPrice,
+          unitCost,
           movementValue,
           newQuantity,
           newValue,
@@ -682,9 +713,10 @@ export class StockService {
         `UPDATE stock_items
          SET current_quantity = ?,
              current_value = ?,
+             average_unit_price = ?,
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ?`,
-        [newQuantity, newValue, stockItem.id]
+        [newQuantity, newValue, newAvgPrice, stockItem.id]
       );
 
       // Sync legacy tables if linked
