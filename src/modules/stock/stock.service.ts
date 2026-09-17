@@ -402,7 +402,7 @@ export class StockService {
         `INSERT INTO stock_movements (
           uuid, stock_item_id, movement_type, reference_type, reference_id,
           quantity, unit_price, total_value, balance_quantity, balance_value,
-          movement_date, notes, created_by
+          notes, created_by
         ) VALUES (?, ?, 'in', 'PURCHASE_ENTRY', ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           movementUuid,

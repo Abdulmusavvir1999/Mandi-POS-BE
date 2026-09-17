@@ -506,13 +506,50 @@ export async function runMysqlMigration() {
     ]);
   }
 
-  // Assign permissions to Admin
+  // Assign permissions to Admin, Manager, Cashier, Staff
   const [adminRoleRow]: any = await conn.query(`SELECT id FROM roles WHERE name = 'ADMIN' LIMIT 1`);
-  const [allPerms]: any = await conn.query(`SELECT id FROM permissions`);
+  const [managerRoleRow]: any = await conn.query(`SELECT id FROM roles WHERE name = 'MANAGER' LIMIT 1`);
+  const [cashierRoleRow]: any = await conn.query(`SELECT id FROM roles WHERE name = 'CASHIER' LIMIT 1`);
+  const [staffRoleRow]: any = await conn.query(`SELECT id FROM roles WHERE name = 'STAFF' LIMIT 1`);
+  const [allPerms]: any = await conn.query(`SELECT id, code FROM permissions`);
+
   if (adminRoleRow.length > 0) {
     const adminRoleId = adminRoleRow[0].id;
     for (const p of allPerms) {
       await conn.query(`INSERT IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)`, [adminRoleId, p.id]);
+    }
+  }
+
+  if (managerRoleRow.length > 0) {
+    const managerRoleId = managerRoleRow[0].id;
+    for (const p of allPerms) {
+      if (p.code !== 'user.manage' && p.code !== 'settings.manage') {
+        await conn.query(`INSERT IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)`, [managerRoleId, p.id]);
+      }
+    }
+  }
+
+  if (cashierRoleRow.length > 0) {
+    const cashierRoleId = cashierRoleRow[0].id;
+    const cashierCodes = [
+      'pos.billing', 'pos.hold_bill', 'pos.discount', 'pos.reprint',
+      'order.view', 'order.manage', 'bill.view', 'dining.view', 'dining.manage',
+      'queue.view', 'queue.manage', 'product.view', 'stock.view', 'customer.manage'
+    ];
+    for (const p of allPerms) {
+      if (cashierCodes.includes(p.code)) {
+        await conn.query(`INSERT IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)`, [cashierRoleId, p.id]);
+      }
+    }
+  }
+
+  if (staffRoleRow.length > 0) {
+    const staffRoleId = staffRoleRow[0].id;
+    const staffCodes = ['order.view', 'order.manage', 'dining.view', 'queue.view', 'product.view'];
+    for (const p of allPerms) {
+      if (staffCodes.includes(p.code)) {
+        await conn.query(`INSERT IGNORE INTO role_permissions (role_id, permission_id) VALUES (?, ?)`, [staffRoleId, p.id]);
+      }
     }
   }
 
