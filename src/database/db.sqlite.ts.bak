@@ -1,0 +1,148 @@
+import initSqlJs, { Database, SqlJsStatic } from 'sql.js';
+import fs from 'fs';
+import path from 'path';
+import { config } from '../config/env';
+import { logger } from '../config/logger';
+
+class DatabaseService {
+  private db: Database | null = null;
+  private SQL: SqlJsStatic | null = null;
+  private dbFilePath: string;
+  private isSaving = false;
+  private saveTimeout: NodeJS.Timeout | null = null;
+
+  constructor() {
+    this.dbFilePath = path.resolve(process.cwd(), config.databasePath);
+  }
+
+  public async initialize(): Promise<void> {
+    if (this.db) return;
+
+    this.SQL = await initSqlJs();
+    const dir = path.dirname(this.dbFilePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    if (fs.existsSync(this.dbFilePath)) {
+      try {
+        const fileBuffer = fs.readFileSync(this.dbFilePath);
+        this.db = new this.SQL.Database(fileBuffer);
+        logger.info(`Loaded existing database from ${this.dbFilePath}`);
+      } catch (err) {
+        logger.warn(`Failed to read existing database file, creating fresh database`, err);
+        this.db = new this.SQL.Database();
+      }
+    } else {
+      this.db = new this.SQL.Database();
+      logger.info(`Created new in-memory SQLite database (backed by ${this.dbFilePath})`);
+    }
+
+    // Enable foreign keys
+    this.db.run('PRAGMA foreign_keys = ON;');
+  }
+
+  public getRawDb(): Database {
+    if (!this.db) {
+      throw new Error('Database not initialized. Call initialize() first.');
+    }
+    return this.db;
+  }
+
+  /** sql.js cannot bind `undefined`; COALESCE-style partial updates mean NULL. */
+  private normalizeParams(params: any[]): any[] {
+    return params.map((p) => (p === undefined ? null : p));
+  }
+
+  public query<T = any>(sql: string, params: any[] = []): T[] {
+    const rawDb = this.getRawDb();
+    const stmt = rawDb.prepare(sql);
+    try {
+      if (params.length > 0) {
+        stmt.bind(this.normalizeParams(params));
+      }
+      const results: T[] = [];
+      while (stmt.step()) {
+        results.push(stmt.getAsObject() as unknown as T);
+      }
+      return results;
+    } finally {
+      stmt.free();
+    }
+  }
+
+  public queryOne<T = any>(sql: string, params: any[] = []): T | null {
+    const rows = this.query<T>(sql, params);
+    return rows.length > 0 ? rows[0] : null;
+  }
+
+  public execute(sql: string, params: any[] = []): { changes: number; lastInsertRowid: number } {
+    const rawDb = this.getRawDb();
+    if (params.length === 0) {
+      rawDb.run(sql);
+    } else {
+      const stmt = rawDb.prepare(sql);
+      try {
+        stmt.run(this.normalizeParams(params));
+      } finally {
+        stmt.free();
+      }
+    }
+
+    const changesResult = this.queryOne<{ changes: number }>('SELECT changes() as changes');
+    const lastRowIdResult = this.queryOne<{ last_id: number }>('SELECT last_insert_rowid() as last_id');
+
+    this.schedulePersist();
+
+    return {
+      changes: changesResult?.changes || 0,
+      lastInsertRowid: lastRowIdResult?.last_id || 0,
+    };
+  }
+
+  public executeBatch(sqlBatch: string): void {
+    const rawDb = this.getRawDb();
+    rawDb.exec(sqlBatch);
+    this.schedulePersist();
+  }
+
+  public transaction<T>(callback: () => T): T {
+    const rawDb = this.getRawDb();
+    rawDb.run('BEGIN TRANSACTION;');
+    try {
+      const result = callback();
+      rawDb.run('COMMIT;');
+      this.schedulePersist();
+      return result;
+    } catch (error) {
+      try {
+        rawDb.run('ROLLBACK;');
+      } catch (rollbackErr) {
+        logger.error('Rollback error:', rollbackErr);
+      }
+      throw error;
+    }
+  }
+
+  public persistSync(): void {
+    if (!this.db) return;
+    try {
+      const data = this.db.export();
+      const buffer = Buffer.from(data);
+      fs.writeFileSync(this.dbFilePath, buffer);
+    } catch (err) {
+      logger.error('Failed to persist database to disk:', err);
+    }
+  }
+
+  private schedulePersist(): void {
+    if (this.saveTimeout) {
+      clearTimeout(this.saveTimeout);
+    }
+    this.saveTimeout = setTimeout(() => {
+      this.persistSync();
+    }, 100);
+  }
+}
+
+export const dbService = new DatabaseService();

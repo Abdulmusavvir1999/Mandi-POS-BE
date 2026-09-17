@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Local database files and dumps
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Runtime uploads (keep the folder, ignore its contents)
+uploads/*
+!uploads/.gitkeep
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# IDE / editor
+.idea/
+.vscode/*
+!.vscode/settings.json
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
