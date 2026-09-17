@@ -1,6 +1,8 @@
-import { Request, Response, NextFunction } from 'express';
+﻿import { Request, Response, NextFunction } from 'express';
 import { CategoriesService } from './categories.service';
 import { ResponseUtil } from '../../core/utils/response.util';
+import { ParamUtil } from '../../core/utils/param.util';
+import { CategoryImageService } from './category-image.service';
 
 export class CategoriesController {
   static async getAll(req: Request, res: Response, next: NextFunction) {
@@ -15,9 +17,24 @@ export class CategoriesController {
 
   static async getById(req: Request, res: Response, next: NextFunction) {
     try {
-      const id = parseInt(req.params.id, 10);
+      const id = ParamUtil.id(req.params.id, 'id');
       const category = await CategoriesService.getById(id);
       ResponseUtil.success(res, category, 'Category retrieved successfully');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  /**
+   * Stores a category thumbnail and returns its URL. The upload happens before
+   * the category row exists (the Add modal uploads as soon as a file is
+   * picked), so this is a standalone endpoint rather than /:id/image.
+   */
+  static async uploadImage(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { dataUrl } = req.body || {};
+      const data = CategoryImageService.save(dataUrl);
+      ResponseUtil.success(res, data, 'Category image uploaded successfully');
     } catch (err) {
       next(err);
     }
@@ -34,7 +51,7 @@ export class CategoriesController {
 
   static async update(req: Request, res: Response, next: NextFunction) {
     try {
-      const id = parseInt(req.params.id, 10);
+      const id = ParamUtil.id(req.params.id, 'id');
       const category = await CategoriesService.update(id, req.body, req.user!.id);
       ResponseUtil.success(res, category, 'Category updated successfully');
     } catch (err) {
@@ -44,7 +61,7 @@ export class CategoriesController {
 
   static async delete(req: Request, res: Response, next: NextFunction) {
     try {
-      const id = parseInt(req.params.id, 10);
+      const id = ParamUtil.id(req.params.id, 'id');
       const result = await CategoriesService.delete(id, req.user!.id);
       ResponseUtil.success(res, result, 'Category deleted successfully');
     } catch (err) {

@@ -1,6 +1,7 @@
-import { Request, Response, NextFunction } from 'express';
+﻿import { Request, Response, NextFunction } from 'express';
 import { StockService } from './stock.service';
 import { ResponseUtil } from '../../core/utils/response.util';
+import { ParamUtil } from '../../core/utils/param.util';
 
 export class StockController {
   /**
@@ -8,10 +9,10 @@ export class StockController {
    */
   static async getCurrentStock(req: Request, res: Response, next: NextFunction) {
     try {
-      const page = parseInt(req.query.page as string, 10) || 1;
-      const limit = parseInt(req.query.limit as string, 10) || 50;
+      const page = ParamUtil.page(req.query.page);
+      const limit = ParamUtil.limit(req.query.limit, 50);
       const search = req.query.search as string | undefined;
-      const categoryId = req.query.categoryId ? parseInt(req.query.categoryId as string, 10) : undefined;
+      const categoryId = ParamUtil.optionalId(req.query.categoryId, 'categoryId');
       const lowStockOnly = req.query.lowStockOnly === 'true';
       const status = req.query.status as string | undefined;
       const unitType = req.query.unitType as string | undefined;
@@ -28,7 +29,7 @@ export class StockController {
    */
   static async getStockItemById(req: Request, res: Response, next: NextFunction) {
     try {
-      const id = parseInt(req.params.id, 10);
+      const id = ParamUtil.id(req.params.id, 'id');
       const result = await StockService.getStockItemById(id);
       ResponseUtil.success(res, result, 'Stock item details fetched successfully');
     } catch (err) {
@@ -53,7 +54,7 @@ export class StockController {
    */
   static async updateStockItem(req: Request, res: Response, next: NextFunction) {
     try {
-      const id = parseInt(req.params.id, 10);
+      const id = ParamUtil.id(req.params.id, 'id');
       const result = await StockService.updateStockItem(id, req.body, req.user!.id);
       ResponseUtil.success(res, result, 'Stock master item updated successfully');
     } catch (err) {
@@ -66,9 +67,9 @@ export class StockController {
    */
   static async getStockEntries(req: Request, res: Response, next: NextFunction) {
     try {
-      const page = parseInt(req.query.page as string, 10) || 1;
-      const limit = parseInt(req.query.limit as string, 10) || 50;
-      const stockItemId = req.query.stockItemId ? parseInt(req.query.stockItemId as string, 10) : undefined;
+      const page = ParamUtil.page(req.query.page);
+      const limit = ParamUtil.limit(req.query.limit, 50);
+      const stockItemId = ParamUtil.optionalId(req.query.stockItemId, 'stockItemId');
       const search = req.query.search as string | undefined;
       const supplier = req.query.supplier as string | undefined;
       const dateFrom = req.query.dateFrom as string | undefined;
@@ -98,9 +99,9 @@ export class StockController {
    */
   static async getStockMovements(req: Request, res: Response, next: NextFunction) {
     try {
-      const page = parseInt(req.query.page as string, 10) || 1;
-      const limit = parseInt(req.query.limit as string, 10) || 50;
-      const stockItemId = req.query.stockItemId ? parseInt(req.query.stockItemId as string, 10) : undefined;
+      const page = ParamUtil.page(req.query.page);
+      const limit = ParamUtil.limit(req.query.limit, 50);
+      const stockItemId = ParamUtil.optionalId(req.query.stockItemId, 'stockItemId');
       const movementType = req.query.movementType as string | undefined;
       const search = req.query.search as string | undefined;
       const dateFrom = req.query.dateFrom as string | undefined;
@@ -154,9 +155,9 @@ export class StockController {
    */
   static async getTransactions(req: Request, res: Response, next: NextFunction) {
     try {
-      const page = parseInt(req.query.page as string, 10) || 1;
-      const limit = parseInt(req.query.limit as string, 10) || 50;
-      const productId = req.query.productId ? parseInt(req.query.productId as string, 10) : undefined;
+      const page = ParamUtil.page(req.query.page);
+      const limit = ParamUtil.limit(req.query.limit, 50);
+      const productId = ParamUtil.optionalId(req.query.productId, 'productId');
       const type = req.query.type as string | undefined;
 
       const result = await StockService.getTransactions(page, limit, productId, type);

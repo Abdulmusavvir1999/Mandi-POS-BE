@@ -1,6 +1,7 @@
-import { Request, Response, NextFunction } from 'express';
+﻿import { Request, Response, NextFunction } from 'express';
 import { dbService } from '../../database/db';
 import { ResponseUtil } from '../../core/utils/response.util';
+import { ParamUtil } from '../../core/utils/param.util';
 import { AppError } from '../../core/errors/AppError';
 import { AuditService } from '../audit/audit.service';
 
@@ -48,7 +49,7 @@ export class RolesController {
 
   static async getRoleById(req: Request, res: Response, next: NextFunction) {
     try {
-      const roleId = parseInt(req.params.id, 10);
+      const roleId = ParamUtil.id(req.params.id, 'id');
       const role = await dbService.queryOne<any>(
         `SELECT r.id, r.name, r.description, COALESCE(r.is_system, 0) as is_system, r.created_at, r.updated_at,
                 COUNT(u.id) as user_count
@@ -175,7 +176,7 @@ export class RolesController {
 
   static async updateRole(req: Request, res: Response, next: NextFunction) {
     try {
-      const roleId = parseInt(req.params.id, 10);
+      const roleId = ParamUtil.id(req.params.id, 'id');
       const { name, description, permissionIds } = req.body as {
         name?: string;
         description?: string;
@@ -261,7 +262,7 @@ export class RolesController {
 
   static async deleteRole(req: Request, res: Response, next: NextFunction) {
     try {
-      const roleId = parseInt(req.params.id, 10);
+      const roleId = ParamUtil.id(req.params.id, 'id');
 
       const role = await dbService.queryOne<any>('SELECT * FROM roles WHERE id = ?', [roleId]);
       if (!role) {
@@ -351,7 +352,7 @@ export class RolesController {
 
   static async deletePermission(req: Request, res: Response, next: NextFunction) {
     try {
-      const permissionId = parseInt(req.params.id, 10);
+      const permissionId = ParamUtil.id(req.params.id, 'id');
 
       const perm = await dbService.queryOne<any>('SELECT * FROM permissions WHERE id = ?', [permissionId]);
       if (!perm) {
@@ -371,7 +372,7 @@ export class RolesController {
 
   static async updateRolePermissions(req: Request, res: Response, next: NextFunction) {
     try {
-      const roleId = parseInt(req.params.id, 10);
+      const roleId = ParamUtil.id(req.params.id, 'id');
       const { permissionIds } = req.body as { permissionIds: number[] };
 
       const role = await dbService.queryOne('SELECT * FROM roles WHERE id = ?', [roleId]);

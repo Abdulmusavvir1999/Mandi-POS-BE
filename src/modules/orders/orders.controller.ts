@@ -1,17 +1,18 @@
-import { Request, Response, NextFunction } from 'express';
+﻿import { Request, Response, NextFunction } from 'express';
 import { OrdersService } from './orders.service';
 import { ResponseUtil } from '../../core/utils/response.util';
+import { ParamUtil } from '../../core/utils/param.util';
 import { OrderStatus, OrderType } from '../../core/types';
 
 export class OrdersController {
   static async getAll(req: Request, res: Response, next: NextFunction) {
     try {
-      const page = parseInt(req.query.page as string, 10) || 1;
-      const limit = parseInt(req.query.limit as string, 10) || 50;
+      const page = ParamUtil.page(req.query.page);
+      const limit = ParamUtil.limit(req.query.limit, 50);
       const status = req.query.status as OrderStatus | undefined;
       const orderType = req.query.orderType as OrderType | undefined;
       const search = req.query.search as string | undefined;
-      const diningTableId = req.query.diningTableId ? parseInt(req.query.diningTableId as string, 10) : undefined;
+      const diningTableId = ParamUtil.optionalId(req.query.diningTableId, 'diningTableId');
       const dateFrom = req.query.dateFrom as string | undefined;
       const dateTo = req.query.dateTo as string | undefined;
 
@@ -24,7 +25,7 @@ export class OrdersController {
 
   static async getById(req: Request, res: Response, next: NextFunction) {
     try {
-      const id = parseInt(req.params.id, 10);
+      const id = ParamUtil.id(req.params.id, 'id');
       const order = await OrdersService.getById(id);
       ResponseUtil.success(res, order, 'Order retrieved successfully');
     } catch (err) {
@@ -43,7 +44,7 @@ export class OrdersController {
 
   static async startOrder(req: Request, res: Response, next: NextFunction) {
     try {
-      const id = parseInt(req.params.id, 10);
+      const id = ParamUtil.id(req.params.id, 'id');
       const order = await OrdersService.updateStatus(id, 'IN_PROGRESS', req.user!.id, req.body.notes);
       ResponseUtil.success(res, order, 'Order is now in progress');
     } catch (err) {
@@ -53,7 +54,7 @@ export class OrdersController {
 
   static async completeOrder(req: Request, res: Response, next: NextFunction) {
     try {
-      const id = parseInt(req.params.id, 10);
+      const id = ParamUtil.id(req.params.id, 'id');
       const order = await OrdersService.updateStatus(id, 'COMPLETED', req.user!.id, req.body.notes);
       ResponseUtil.success(res, order, 'Order marked as completed');
     } catch (err) {
@@ -63,7 +64,7 @@ export class OrdersController {
 
   static async cancelOrder(req: Request, res: Response, next: NextFunction) {
     try {
-      const id = parseInt(req.params.id, 10);
+      const id = ParamUtil.id(req.params.id, 'id');
       const order = await OrdersService.updateStatus(id, 'CANCELLED', req.user!.id, req.body.reason || 'Order cancelled by staff');
       ResponseUtil.success(res, order, 'Order cancelled');
     } catch (err) {

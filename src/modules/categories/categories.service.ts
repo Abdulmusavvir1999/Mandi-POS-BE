@@ -1,6 +1,7 @@
 import { dbService } from '../../database/db';
 import { AppError } from '../../core/errors/AppError';
 import { AuditService } from '../audit/audit.service';
+import { CategoryImageService } from './category-image.service';
 
 export class CategoriesService {
   static async getAll(includeInactive = false) {
@@ -47,6 +48,12 @@ export class CategoriesService {
 
   static async update(id: number, data: { name?: string; description?: string; icon?: string; image_url?: string; display_order?: number; status?: string }, userId: number) {
     const current = await this.getById(id);
+
+    // A replaced or cleared image leaves its file behind otherwise, and a POS
+    // that runs for years would accumulate them indefinitely.
+    if (data.image_url !== undefined && current && (current as any).image_url && (current as any).image_url !== data.image_url) {
+      CategoryImageService.removeByUrl((current as any).image_url);
+    }
     await dbService.execute(
       `UPDATE categories
        SET name = COALESCE(?, name),
@@ -80,6 +87,7 @@ export class CategoriesService {
     }
 
     await dbService.execute('DELETE FROM categories WHERE id = ?', [id]);
+    CategoryImageService.removeByUrl((current as any)?.image_url);
 
     await AuditService.log({
       userId,

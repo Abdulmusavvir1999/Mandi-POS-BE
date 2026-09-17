@@ -1,8 +1,71 @@
 import { dbService } from '../../database/db';
 import { AppError } from '../../core/errors/AppError';
 import { AuditService } from '../audit/audit.service';
+import { ProductImageService } from './product-image.service';
+
+export interface ProductVariantInput {
+  id?: number;
+  name: string;
+  sellingPrice?: number;
+  stockConsumption?: number;
+  displayOrder?: number;
+  isDefault?: boolean;
+  status?: string;
+}
 
 export class ProductsService {
+  /** Variants for one dish, cheapest-ordered first by display_order. */
+  static async getVariants(productId: number) {
+    return await dbService.query(
+      `SELECT id, product_id, name, selling_price, stock_consumption, display_order, is_default, status
+       FROM product_variants
+       WHERE product_id = ?
+       ORDER BY display_order ASC, id ASC`,
+      [productId]
+    );
+  }
+
+  /**
+   * Replaces a dish's variant set in one go — the editor sends the full list,
+   * which keeps "removed a row" and "renamed a row" from needing their own
+   * endpoints. Rows still referenced by past orders are untouched: bill_items
+   * and order_items keep their own copy of the name and consumption.
+   */
+  private static async replaceVariants(productId: number, variants: ProductVariantInput[] | undefined) {
+    if (variants === undefined) return;
+
+    await dbService.execute('DELETE FROM product_variants WHERE product_id = ?', [productId]);
+
+    const rows = variants.filter((v) => v && String(v.name || '').trim().length > 0);
+    let defaulted = false;
+
+    for (let i = 0; i < rows.length; i++) {
+      const v = rows[i];
+      const consumption = Number(v.stockConsumption);
+      if (!Number.isFinite(consumption) || consumption <= 0) {
+        throw AppError.badRequest(`Variant "${v.name}" must consume more than 0 stock.`);
+      }
+
+      // Exactly one default, so the POS always has something to fall back on.
+      const isDefault = !defaulted && (v.isDefault || i === rows.length - 1 ? true : false);
+      if (isDefault) defaulted = true;
+
+      await dbService.execute(
+        `INSERT INTO product_variants (product_id, name, selling_price, stock_consumption, display_order, is_default, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          productId,
+          String(v.name).trim(),
+          Number(v.sellingPrice) || 0,
+          consumption,
+          v.displayOrder !== undefined ? Number(v.displayOrder) : i,
+          isDefault ? 1 : 0,
+          v.status || 'ACTIVE',
+        ]
+      );
+    }
+  }
+
   static async getAll(
     page = 1,
     limit = 50,
@@ -41,16 +104,22 @@ export class ProductsService {
     const validSortBy = allowedSort.includes(sortBy) ? sortBy : 'name';
     const validSortOrder = sortOrder.toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
 
-    const products = await dbService.query(
-      `SELECT p.*, c.name as category_name, s.current_stock, s.min_stock_alert
+    const products = await dbService.query<any>(
+      `SELECT p.*, c.name as category_name, s.current_stock, s.min_stock_alert,
+              si.current_quantity AS linked_stock_quantity, si.unit_type AS linked_unit_type
        FROM products p
        JOIN categories c ON p.category_id = c.id
        LEFT JOIN stock s ON p.id = s.product_id
+       LEFT JOIN stock_items si ON si.product_id = p.id
        ${where}
        ORDER BY p.${validSortBy} ${validSortOrder}
        LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );
+
+    for (const product of products) {
+      product.variants = await this.getVariants(product.id);
+    }
 
     return {
       data: products,
@@ -64,11 +133,21 @@ export class ProductsService {
   }
 
   static async getById(id: number) {
-    const product = await dbService.queryOne(
-      `SELECT p.*, c.name as category_name, s.current_stock, s.min_stock_alert
+    // The View page reports on the ledger item a dish draws from, so the join
+    // carries the unit, the balance, the code and the weighted average cost.
+    const product = await dbService.queryOne<any>(
+      `SELECT p.*, c.name as category_name,
+              s.current_stock, s.reserved_stock, s.min_stock_alert,
+              si.stock_code        AS linked_stock_code,
+              si.current_quantity  AS linked_stock_quantity,
+              si.unit_type         AS linked_unit_type,
+              si.average_unit_price AS linked_avg_cost,
+              si.min_stock_alert   AS linked_min_alert,
+              si.status            AS linked_stock_status
        FROM products p
        JOIN categories c ON p.category_id = c.id
        LEFT JOIN stock s ON p.id = s.product_id
+       LEFT JOIN stock_items si ON si.product_id = p.id
        WHERE p.id = ?`,
       [id]
     );
@@ -77,6 +156,7 @@ export class ProductsService {
       throw AppError.notFound('Product not found');
     }
 
+    product.variants = await this.getVariants(id);
     return product;
   }
 
@@ -92,6 +172,7 @@ export class ProductsService {
     initialStock?: number;
     lowStockThreshold?: number;
     status?: string;
+    variants?: ProductVariantInput[];
   }, userId: number) {
     const existingSku = await dbService.queryOne('SELECT id FROM products WHERE sku = ?', [data.sku]);
     if (existingSku) {
@@ -169,6 +250,8 @@ export class ProductsService {
         );
       }
 
+      await this.replaceVariants(productId, data.variants);
+
       await AuditService.log({
         userId,
         action: 'PRODUCT_CREATED',
@@ -193,6 +276,7 @@ export class ProductsService {
     lowStockThreshold?: number;
     isAvailable?: boolean;
     status?: string;
+    variants?: ProductVariantInput[];
   }, userId: number) {
     const current = await this.getById(id);
 
@@ -237,6 +321,13 @@ export class ProductsService {
     if (data.lowStockThreshold !== undefined) {
       await dbService.execute('UPDATE stock SET min_stock_alert = ? WHERE product_id = ?', [data.lowStockThreshold, id]);
       await dbService.execute('UPDATE stock_items SET min_stock_alert = ? WHERE product_id = ?', [data.lowStockThreshold, id]);
+    }
+
+    await this.replaceVariants(id, data.variants);
+
+    // A replaced or cleared photo would otherwise leave its file behind.
+    if (data.imageUrl !== undefined && current.image_url && current.image_url !== data.imageUrl) {
+      ProductImageService.removeByUrl(current.image_url);
     }
 
     if (data.name) {

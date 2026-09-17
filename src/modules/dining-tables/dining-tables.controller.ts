@@ -1,6 +1,7 @@
-import { Request, Response, NextFunction } from 'express';
+﻿import { Request, Response, NextFunction } from 'express';
 import { DiningTablesService } from './dining-tables.service';
 import { ResponseUtil } from '../../core/utils/response.util';
+import { ParamUtil } from '../../core/utils/param.util';
 
 export class DiningTablesController {
   static async getAll(req: Request, res: Response, next: NextFunction) {
@@ -25,7 +26,7 @@ export class DiningTablesController {
 
   static async getById(req: Request, res: Response, next: NextFunction) {
     try {
-      const id = parseInt(req.params.id, 10);
+      const id = ParamUtil.id(req.params.id, 'id');
       const table = await DiningTablesService.getById(id);
       ResponseUtil.success(res, table, 'Dining table retrieved successfully');
     } catch (err) {
@@ -44,7 +45,7 @@ export class DiningTablesController {
 
   static async update(req: Request, res: Response, next: NextFunction) {
     try {
-      const id = parseInt(req.params.id, 10);
+      const id = ParamUtil.id(req.params.id, 'id');
       const table = await DiningTablesService.update(id, req.body, req.user!.id);
       ResponseUtil.success(res, table, 'Dining table updated successfully');
     } catch (err) {
@@ -54,7 +55,7 @@ export class DiningTablesController {
 
   static async setStatus(req: Request, res: Response, next: NextFunction) {
     try {
-      const id = parseInt(req.params.id, 10);
+      const id = ParamUtil.id(req.params.id, 'id');
       const { status, orderId } = req.body;
       const table = await DiningTablesService.setStatus(id, status, orderId, req.user!.id);
       ResponseUtil.success(res, table, 'Table status updated successfully');
@@ -65,7 +66,7 @@ export class DiningTablesController {
 
   static async delete(req: Request, res: Response, next: NextFunction) {
     try {
-      const id = parseInt(req.params.id, 10);
+      const id = ParamUtil.id(req.params.id, 'id');
       const result = await DiningTablesService.delete(id, req.user!.id);
       ResponseUtil.success(res, result, 'Dining table deleted successfully');
     } catch (err) {

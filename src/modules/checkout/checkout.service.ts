@@ -17,6 +17,8 @@ export interface CheckoutPayload {
   notes?: string;
   items: Array<{
     productId: number;
+    /** Chosen dish variant (portion). Omitted for dishes that have none. */
+    variantId?: number | null;
     quantity: number;
     notes?: string;
   }>;
@@ -45,6 +47,12 @@ export class CheckoutService {
       const verifiedItems: Array<{
         productId: number;
         productName: string;
+        variantId: number | null;
+        variantName: string | null;
+        /** Stock units one unit of this line consumes (1 when there is no variant). */
+        stockConsumption: number;
+        /** stockConsumption x quantity — what actually leaves the ledger. */
+        requiredStock: number;
         unitPrice: number;
         costPrice: number;
         quantity: number;
@@ -79,23 +87,67 @@ export class CheckoutService {
           throw AppError.badRequest(`Product "${product.name}" is currently inactive and cannot be sold`);
         }
 
-        // Check stock
-        const stockRec = await dbService.queryOne<{ current_stock: number }>('SELECT current_stock FROM stock WHERE product_id = ?', [product.id]);
-        const currentStock = stockRec?.current_stock || 0;
+        // The chosen variant decides both the price and how much stock the
+        // line consumes. Re-read server-side: a price posted by the client is
+        // never trusted, and neither is a variant belonging to another dish.
+        let variant: { id: number; name: string; selling_price: number; stock_consumption: number } | null = null;
+        if (item.variantId) {
+          variant = await dbService.queryOne<{ id: number; name: string; selling_price: number; stock_consumption: number }>(
+            'SELECT id, name, selling_price, stock_consumption FROM product_variants WHERE id = ? AND product_id = ? AND status = ?',
+            [item.variantId, product.id, 'ACTIVE']
+          );
+          if (!variant) {
+            throw AppError.badRequest(`Selected portion is not available for "${product.name}"`);
+          }
+        } else {
+          // A dish that defines variants must be sold as one of them, otherwise
+          // the sale would silently consume the fallback 1 unit.
+          const variantCount = await dbService.queryOne<{ count: number }>(
+            "SELECT COUNT(*) as count FROM product_variants WHERE product_id = ? AND status = 'ACTIVE'",
+            [product.id]
+          );
+          if ((variantCount?.count || 0) > 0) {
+            throw AppError.badRequest(`Please choose a portion for "${product.name}"`);
+          }
+        }
 
-        if (!allowNegativeStock && currentStock < item.quantity) {
+        const stockConsumption = variant ? Number(variant.stock_consumption) || 0 : 1;
+        const requiredStock = stockConsumption * item.quantity;
+
+        // Stock lives on the linked ledger item when the dish has one; dishes
+        // with no ledger row fall back to the legacy per-product counter.
+        const stockItem = await dbService.queryOne<{ current_quantity: number; unit_type: string }>(
+          'SELECT current_quantity, unit_type FROM stock_items WHERE product_id = ?',
+          [product.id]
+        );
+
+        let currentStock: number;
+        if (stockItem) {
+          currentStock = Number(stockItem.current_quantity) || 0;
+        } else {
+          const stockRec = await dbService.queryOne<{ current_stock: number }>('SELECT current_stock FROM stock WHERE product_id = ?', [product.id]);
+          currentStock = Number(stockRec?.current_stock) || 0;
+        }
+
+        if (!allowNegativeStock && currentStock < requiredStock) {
+          const label = variant ? `${product.name} (${variant.name})` : product.name;
+          const unit = stockItem?.unit_type ? ` ${stockItem.unit_type}` : '';
           throw AppError.badRequest(
-            `Insufficient stock for "${product.name}". Available: ${currentStock}, Requested: ${item.quantity}`
+            `Insufficient stock for "${label}". Available: ${currentStock}${unit}, Required: ${requiredStock}${unit}`
           );
         }
 
-        const unitPrice = product.selling_price;
+        const unitPrice = variant ? Number(variant.selling_price) : Number(product.selling_price);
         const itemSubtotal = unitPrice * item.quantity;
         subtotal += itemSubtotal;
 
         verifiedItems.push({
           productId: product.id,
           productName: product.name,
+          variantId: variant ? variant.id : null,
+          variantName: variant ? variant.name : null,
+          stockConsumption,
+          requiredStock,
           unitPrice,
           costPrice: product.cost_price,
           quantity: item.quantity,
@@ -275,13 +327,16 @@ export class CheckoutService {
       for (const item of verifiedItems) {
         await dbService.execute(
           `INSERT INTO bill_items (
-            bill_id, product_id, product_name, unit_price, quantity,
-            subtotal, discount_amount, tax_amount, total_amount
-          ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?)`,
+            bill_id, product_id, product_name, variant_id, variant_name, stock_consumption,
+            unit_price, quantity, subtotal, discount_amount, tax_amount, total_amount
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
           [
             billId,
             item.productId,
             item.productName,
+            item.variantId,
+            item.variantName,
+            item.stockConsumption,
             item.unitPrice,
             item.quantity,
             item.subtotal,
@@ -307,7 +362,8 @@ export class CheckoutService {
 
       // 10. Deduct Stock & Record Stock Movements
       for (const item of verifiedItems) {
-        const newStock = item.currentStock - item.quantity;
+        // The line removes stockConsumption per unit sold, not one per unit.
+        const newStock = item.currentStock - item.requiredStock;
 
         // 10a. Update or create master stock_items
         const stkItem = await dbService.queryOne<{ id: number; average_unit_price: number; current_value: number }>(
@@ -318,7 +374,7 @@ export class CheckoutService {
         if (stkItem) {
           const avgPrice = Number(stkItem.average_unit_price) || item.costPrice || 0;
           const newValue = Math.max(0, newStock * avgPrice);
-          const moveValue = item.quantity * avgPrice;
+          const moveValue = item.requiredStock * avgPrice;
           const moveUuid = `move-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`;
 
           await dbService.execute(
@@ -340,12 +396,12 @@ export class CheckoutService {
               moveUuid,
               stkItem.id,
               billNumber,
-              -item.quantity,
+              -item.requiredStock,
               avgPrice,
               moveValue,
               newStock,
               newValue,
-              `Sale deduction on Bill #${billNumber} (${item.quantity} units)`,
+              `Sale deduction on Bill #${billNumber} (${item.quantity} x ${item.variantName || 'standard'} @ ${item.stockConsumption} = ${item.requiredStock} units)`,
               cashierId,
             ]
           );
@@ -369,11 +425,13 @@ export class CheckoutService {
           ) VALUES (?, 'SALE', ?, ?, ?, ?, 'POS_CHECKOUT_BILL', ?, ?)`,
           [
             item.productId,
-            item.quantity,
+            item.requiredStock,
             item.currentStock,
             newStock,
             billNumber,
-            `Sale on Bill #${billNumber}`,
+            item.variantName
+              ? `Sale on Bill #${billNumber} - ${item.quantity} x ${item.variantName}`
+              : `Sale on Bill #${billNumber}`,
             cashierId,
           ]
         );

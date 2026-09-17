@@ -8,6 +8,7 @@ const router = Router();
 
 router.get('/', authenticate, ProductsController.getAll);
 router.get('/:id', authenticate, ProductsController.getById);
+router.post('/image', authenticate, requirePermission('product.manage'), ProductsController.uploadImage);
 router.post('/', authenticate, requirePermission('product.manage'), validateBody(createProductSchema), ProductsController.create);
 router.put('/:id', authenticate, requirePermission('product.manage'), ProductsController.update);
 router.delete('/:id', authenticate, requirePermission('product.manage'), ProductsController.delete);

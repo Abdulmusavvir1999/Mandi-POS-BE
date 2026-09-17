@@ -1,6 +1,7 @@
-import { Request, Response, NextFunction } from 'express';
+﻿import { Request, Response, NextFunction } from 'express';
 import { ReportsService } from './reports.service';
 import { ResponseUtil } from '../../core/utils/response.util';
+import { ParamUtil } from '../../core/utils/param.util';
 
 export class ReportsController {
   static async getSalesReport(req: Request, res: Response, next: NextFunction) {
@@ -9,7 +10,7 @@ export class ReportsController {
       const dateTo = req.query.dateTo as string | undefined;
       const paymentMethod = req.query.paymentMethod as string | undefined;
       const orderType = req.query.orderType as string | undefined;
-      const cashierId = req.query.cashierId ? parseInt(req.query.cashierId as string, 10) : undefined;
+      const cashierId = ParamUtil.optionalId(req.query.cashierId, 'cashierId');
 
       const report = await ReportsService.getSalesReport(dateFrom, dateTo, paymentMethod, orderType, cashierId);
       ResponseUtil.success(res, report, 'Sales report generated successfully');
@@ -22,7 +23,7 @@ export class ReportsController {
     try {
       const dateFrom = req.query.dateFrom as string | undefined;
       const dateTo = req.query.dateTo as string | undefined;
-      const categoryId = req.query.categoryId ? parseInt(req.query.categoryId as string, 10) : undefined;
+      const categoryId = ParamUtil.optionalId(req.query.categoryId, 'categoryId');
 
       const report = await ReportsService.getProductSalesReport(dateFrom, dateTo, categoryId);
       ResponseUtil.success(res, report, 'Product sales report generated successfully');

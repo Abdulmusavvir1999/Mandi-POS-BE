@@ -307,7 +307,8 @@ export const seedDatabase = async (): Promise<void> => {
 
     for (const s of defaultSettings) {
       await dbService.execute(
-        `INSERT INTO settings (key, value, category, description, is_system)
+        // `key` and `value` are MySQL reserved words — unquoted they are a syntax error.
+        `INSERT INTO settings (\`key\`, \`value\`, category, description, is_system)
          VALUES (?, ?, ?, ?, 1)`,
         [s.key, s.value, s.cat, s.desc]
       );

@@ -1,6 +1,7 @@
-import { Request, Response, NextFunction } from 'express';
+﻿import { Request, Response, NextFunction } from 'express';
 import { QueueService } from './queue.service';
 import { ResponseUtil } from '../../core/utils/response.util';
+import { ParamUtil } from '../../core/utils/param.util';
 import { QueueStatus } from '../../core/types';
 
 export class QueueController {
@@ -26,7 +27,7 @@ export class QueueController {
 
   static async getById(req: Request, res: Response, next: NextFunction) {
     try {
-      const id = parseInt(req.params.id, 10);
+      const id = ParamUtil.id(req.params.id, 'id');
       const item = await QueueService.getById(id);
       ResponseUtil.success(res, item, 'Queue token retrieved successfully');
     } catch (err) {
@@ -45,7 +46,7 @@ export class QueueController {
 
   static async start(req: Request, res: Response, next: NextFunction) {
     try {
-      const id = parseInt(req.params.id, 10);
+      const id = ParamUtil.id(req.params.id, 'id');
       const item = await QueueService.updateStatus(id, 'IN_PROGRESS', req.user!.id);
       ResponseUtil.success(res, item, 'Queue token marked as preparing');
     } catch (err) {
@@ -55,7 +56,7 @@ export class QueueController {
 
   static async complete(req: Request, res: Response, next: NextFunction) {
     try {
-      const id = parseInt(req.params.id, 10);
+      const id = ParamUtil.id(req.params.id, 'id');
       const item = await QueueService.updateStatus(id, 'COMPLETED', req.user!.id);
       ResponseUtil.success(res, item, 'Queue token ready / completed');
     } catch (err) {
@@ -65,7 +66,7 @@ export class QueueController {
 
   static async cancel(req: Request, res: Response, next: NextFunction) {
     try {
-      const id = parseInt(req.params.id, 10);
+      const id = ParamUtil.id(req.params.id, 'id');
       const item = await QueueService.updateStatus(id, 'CANCELLED', req.user!.id);
       ResponseUtil.success(res, item, 'Queue token cancelled');
     } catch (err) {

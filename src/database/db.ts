@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'async_hooks';
 import mysql, { Pool, PoolConnection, RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import { config } from '../config/env';
 import { logger } from '../config/logger';
+import { AppError } from '../core/errors/AppError';
 
 /**
  * MySQL/MariaDB data layer.
@@ -59,9 +60,28 @@ class DatabaseService {
     return this.txStorage.getStore() ?? this.getPool();
   }
 
-  /** mysql2 rejects `undefined`; COALESCE-style partial updates mean NULL. */
+  /**
+   * mysql2 rejects `undefined`; COALESCE-style partial updates mean NULL.
+   *
+   * NaN and Infinity are rejected outright. mysql2 renders them into SQL as the
+   * bare words `NaN` / `Infinity`, which the server parses as column names — the
+   * query then fails with ER_BAD_FIELD_ERROR, a non-AppError that surfaced to
+   * users as an opaque "Internal server error occurred" 500. Callers sanitise
+   * input at the controller boundary (see ParamUtil); this is the backstop for
+   * a NaN computed further in, and it names the offending slot so the cause is
+   * obvious in the log instead of being a mystery 500.
+   */
   private normalizeParams(params: any[]): any[] {
-    return params.map((p) => (p === undefined ? null : p));
+    return params.map((p, i) => {
+      if (p === undefined) return null;
+      if (typeof p === 'number' && !Number.isFinite(p)) {
+        throw AppError.badRequest(
+          `Invalid numeric value supplied for query parameter #${i + 1}.`,
+          'INVALID_PARAMETER'
+        );
+      }
+      return p;
+    });
   }
 
   public async query<T = any>(sql: string, params: any[] = []): Promise<T[]> {
