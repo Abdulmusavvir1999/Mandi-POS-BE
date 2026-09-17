@@ -169,6 +169,8 @@ export class StockService {
       minStockAlert?: number;
       productId?: number | null;
       initialQuantity?: number;
+      multiplier?: number;
+      initialTotalPrice?: number;
       initialPrice?: number;
     },
     userId: number
@@ -190,22 +192,34 @@ export class StockService {
       const uuid = `stk-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`;
       const unitType = data.unitType || 'piece';
       const minAlert = data.minStockAlert !== undefined ? data.minStockAlert : 10.0;
-      const initialQty = data.initialQuantity || 0;
-      const initialPrice = data.initialPrice || 0;
-      const initialVal = initialQty * initialPrice;
+      const baseQty = Number(data.initialQuantity) || 0;
+      const multiplier = Number(data.multiplier) && Number(data.multiplier) > 0 ? Number(data.multiplier) : 1.0;
+      const totalQty = baseQty * multiplier;
+
+      let totalPrice = Number(data.initialTotalPrice) || 0;
+      let unitPrice = Number(data.initialPrice) || 0;
+
+      if (totalPrice > 0 && unitPrice === 0 && totalQty > 0) {
+        unitPrice = totalPrice / totalQty;
+      } else if (unitPrice > 0 && totalPrice === 0 && totalQty > 0) {
+        totalPrice = totalQty * unitPrice;
+      } else if (totalPrice === 0 && unitPrice === 0 && totalQty > 0) {
+        totalPrice = 0;
+        unitPrice = 0;
+      }
 
       const res = await dbService.execute(
         `INSERT INTO stock_items (
           uuid, stock_code, name, unit_type, current_quantity,
           current_value, average_unit_price, status, min_stock_alert, product_id
         ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
-        [uuid, code, data.name, unitType, initialQty, initialVal, initialPrice, minAlert, data.productId || null]
+        [uuid, code, data.name, unitType, totalQty, totalPrice, unitPrice, minAlert, data.productId || null]
       );
 
       const stockItemId = res.lastInsertRowid;
 
       // If initial stock provided, log entry and movement
-      if (initialQty > 0) {
+      if (totalQty > 0) {
         const entryUuid = `entry-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`;
         const moveUuid = `move-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`;
         const entryNumber = `STK-IN-${String(stockItemId).padStart(5, '0')}`;
@@ -214,8 +228,8 @@ export class StockService {
           `INSERT INTO stock_entries (
             uuid, stock_item_id, entry_number, quantity, multiplier,
             total_quantity, total_price, unit_price, status, supplier, notes, created_by
-          ) VALUES (?, ?, ?, ?, 1.0, ?, ?, ?, 'posted', 'Initial Setup', 'Opening inventory entry', ?)`,
-          [entryUuid, stockItemId, entryNumber, initialQty, initialQty, initialVal, initialPrice, userId]
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'posted', 'Initial Setup', 'Opening inventory entry', ?)`,
+          [entryUuid, stockItemId, entryNumber, baseQty, multiplier, totalQty, totalPrice, unitPrice, userId]
         );
 
         await dbService.execute(
@@ -223,7 +237,7 @@ export class StockService {
             uuid, stock_item_id, movement_type, reference_type, reference_id,
             quantity, unit_price, total_value, balance_quantity, balance_value, notes, created_by
           ) VALUES (?, ?, 'in', 'INITIAL_STOCK', ?, ?, ?, ?, ?, ?, 'Opening inventory initial stock', ?)`,
-          [moveUuid, stockItemId, entryNumber, initialQty, initialPrice, initialVal, initialQty, initialVal, userId]
+          [moveUuid, stockItemId, entryNumber, totalQty, unitPrice, totalPrice, totalQty, totalPrice, userId]
         );
       }
 
@@ -232,7 +246,7 @@ export class StockService {
         action: 'STOCK_ITEM_CREATED',
         module: 'STOCK',
         recordId: stockItemId,
-        newValues: { name: data.name, stockCode: code, unitType, initialQty, initialPrice },
+        newValues: { name: data.name, stockCode: code, unitType, baseQty, multiplier, totalQty, totalPrice, unitPrice },
       });
 
       return await this.getStockItemById(stockItemId);

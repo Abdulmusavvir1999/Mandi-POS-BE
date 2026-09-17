@@ -57,6 +57,8 @@ export const createStockItemSchema = z
     minStockAlert: z.coerce.number().nonnegative().optional(),
     productId: z.coerce.number().int().positive().optional().nullable(),
     initialQuantity: z.coerce.number().nonnegative().optional(),
+    multiplier: z.coerce.number().positive().optional(),
+    initialTotalPrice: z.coerce.number().nonnegative().optional(),
     initialPrice: z.coerce.number().nonnegative().optional(),
   })
   .passthrough();
