@@ -31,7 +31,7 @@ export class UsersService {
     const total = countRes?.total || 0;
 
     const users = await dbService.query(
-      `SELECT u.id, u.username, u.email, u.name, u.phone, u.status, u.role_id, r.name as role_name,
+      `SELECT u.id, u.username, u.email, u.name, u.phone, u.status, u.role_id, r.name as role_name, r.name as role,
               u.last_login_at, u.created_at, u.updated_at
        FROM users u
        JOIN roles r ON u.role_id = r.id
@@ -54,7 +54,7 @@ export class UsersService {
 
   static async getById(id: number) {
     const user = await dbService.queryOne(
-      `SELECT u.id, u.username, u.email, u.name, u.phone, u.status, u.role_id, r.name as role_name,
+      `SELECT u.id, u.username, u.email, u.name, u.phone, u.status, u.role_id, r.name as role_name, r.name as role,
               u.last_login_at, u.created_at, u.updated_at
        FROM users u
        JOIN roles r ON u.role_id = r.id

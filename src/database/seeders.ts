@@ -16,11 +16,12 @@ export const seedDatabase = async (): Promise<void> => {
   logger.info('Seeding database with default roles, permissions, master data, products, tables, and settings...');
 
   await dbService.transaction(async () => {
-    // 1. Roles
-    await dbService.execute("INSERT INTO roles (name, description) VALUES ('ADMIN', 'Full Administrator with unrestricted system access')");
-    await dbService.execute("INSERT INTO roles (name, description) VALUES ('MANAGER', 'Store Manager with inventory, dining, reports, and operational control')");
-    await dbService.execute("INSERT INTO roles (name, description) VALUES ('CASHIER', 'POS Cashier with billing, payment, draft bill, and customer management access')");
-    await dbService.execute("INSERT INTO roles (name, description) VALUES ('STAFF', 'Floor & Kitchen Staff with order queue and table status access')");
+    // 1. Roles - seeded roles are system roles and do not count towards the
+    //    manual role limit (see MAX_CUSTOM_ROLES in roles.controller.ts).
+    await dbService.execute("INSERT INTO roles (name, description, is_system) VALUES ('ADMIN', 'Full Administrator with unrestricted system access', 1)");
+    await dbService.execute("INSERT INTO roles (name, description, is_system) VALUES ('MANAGER', 'Store Manager with inventory, dining, reports, and operational control', 1)");
+    await dbService.execute("INSERT INTO roles (name, description, is_system) VALUES ('CASHIER', 'POS Cashier with billing, payment, draft bill, and customer management access', 1)");
+    await dbService.execute("INSERT INTO roles (name, description, is_system) VALUES ('STAFF', 'Floor & Kitchen Staff with order queue and table status access', 1)");
 
     const adminRole = await dbService.queryOne<{ id: number }>("SELECT id FROM roles WHERE name = 'ADMIN'")!;
     const managerRole = await dbService.queryOne<{ id: number }>("SELECT id FROM roles WHERE name = 'MANAGER'")!;

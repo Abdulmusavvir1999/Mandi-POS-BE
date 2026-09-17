@@ -49,6 +49,60 @@ describe('Mandi Shop POS API Suite', () => {
       const res = await request(app).get('/api/products');
       expect(res.status).toBe(401);
     });
+
+    it('should list all dynamic roles and permissions from database', async () => {
+      const rolesRes = await request(app)
+        .get('/api/roles')
+        .set('Authorization', `Bearer ${adminToken}`);
+      expect(rolesRes.status).toBe(200);
+      expect(rolesRes.body.success).toBe(true);
+      expect(Array.isArray(rolesRes.body.data)).toBe(true);
+      expect(rolesRes.body.data.length).toBeGreaterThan(0);
+      expect(rolesRes.body.data[0]).toHaveProperty('permissions');
+
+      const permsRes = await request(app)
+        .get('/api/permissions')
+        .set('Authorization', `Bearer ${adminToken}`);
+      expect(permsRes.status).toBe(200);
+      expect(permsRes.body.success).toBe(true);
+      expect(Array.isArray(permsRes.body.data)).toBe(true);
+      expect(permsRes.body.data.length).toBeGreaterThan(0);
+    });
+
+    it('should create, update, and manage a custom dynamic role', async () => {
+      const uniqueRoleName = `TEST_SUPERVISOR_${Date.now()}`;
+      
+      // 1. Create custom role
+      const createRes = await request(app)
+        .post('/api/roles')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          name: uniqueRoleName,
+          description: 'Custom Test Shift Lead',
+          permissionIds: [1, 2, 3],
+        });
+      expect(createRes.status).toBe(201);
+      expect(createRes.body.data.name).toBe(uniqueRoleName);
+      const roleId = createRes.body.data.id;
+
+      // 2. Update role description and permissions
+      const updateRes = await request(app)
+        .put(`/api/roles/${roleId}`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          description: 'Updated shift supervisor',
+          permissionIds: [1, 2],
+        });
+      expect(updateRes.status).toBe(200);
+      expect(updateRes.body.data.description).toBe('Updated shift supervisor');
+
+      // 3. Delete custom role (has 0 users)
+      const deleteRes = await request(app)
+        .delete(`/api/roles/${roleId}`)
+        .set('Authorization', `Bearer ${adminToken}`);
+      expect(deleteRes.status).toBe(200);
+      expect(deleteRes.body.success).toBe(true);
+    });
   });
 
   describe('Products & Categories', () => {
