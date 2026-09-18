@@ -1,16 +1,23 @@
 import { Router } from 'express';
 import { StaffTrackController } from './staff-track.controller';
-import { authenticate, requirePermission } from '../../core/middleware/auth.middleware';
+import { authenticate } from '../../core/middleware/auth.middleware';
+import { attachStaffTrackScope } from './staff-track.scope';
 
 /**
- * Staff Track exposes one person's takings and activity to another, so every
- * route is gated on `stafftrack.view` at the server, not merely hidden in the
- * sidebar. `requirePermission` already lets ADMIN through, matching the rest of
- * the API; MANAGER inherits the permission from the role seed.
+ * Staff Track exposes one person's takings and activity to another, so the
+ * whole-project view stays gated on `stafftrack.view` at the server, not merely
+ * hidden in the sidebar. ADMIN passes implicitly and MANAGER inherits the grant
+ * from the role seed, matching the rest of the API.
+ *
+ * Authentication alone now reaches these routes, but a caller without that
+ * permission is scoped to their own attribution and can see nobody else: the
+ * check moved from the router into `attachStaffTrackScope`, which every
+ * controller below reads. Scoping is applied per query on the server, so a
+ * self-scoped caller cannot widen the view with a crafted `?userId=`.
  */
 const router = Router();
 
-router.use(authenticate, requirePermission('stafftrack.view'));
+router.use(authenticate, attachStaffTrackScope);
 
 router.get('/overview', StaffTrackController.getOverview);
 router.get('/live', StaffTrackController.getLive);

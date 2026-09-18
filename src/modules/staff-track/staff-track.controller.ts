@@ -3,21 +3,40 @@ import { StaffTrackService } from './staff-track.service';
 import { ResponseUtil } from '../../core/utils/response.util';
 import { ParamUtil } from '../../core/utils/param.util';
 import { StaffTrackFilters } from './staff-track.types';
+import { StaffTrackScope, applyScopeToFilters, scopeAllowsUser } from './staff-track.scope';
+import { AppError } from '../../core/errors/AppError';
 
-/** Pulls the filter set every Staff Track endpoint accepts off the query string. */
-const readFilters = (req: Request): StaffTrackFilters => ({
-  dateFrom: ParamUtil.text(req.query.dateFrom),
-  dateTo: ParamUtil.text(req.query.dateTo),
-  userId: ParamUtil.optionalId(req.query.userId, 'userId'),
-  roleId: ParamUtil.optionalId(req.query.roleId, 'roleId'),
-  status: ParamUtil.text(req.query.status),
-  search: ParamUtil.text(req.query.search),
-});
+/** The scope `attachStaffTrackScope` resolved for this request. */
+const scopeOf = (req: Request): StaffTrackScope => {
+  if (!req.staffTrackScope) {
+    throw AppError.forbidden('Staff track scope unresolved');
+  }
+  return req.staffTrackScope;
+};
+
+/**
+ * Pulls the filter set every Staff Track endpoint accepts off the query string,
+ * then pins it to the caller's scope. Order matters: the scope is applied last
+ * so a self-scoped caller passing `?userId=<someone else>` has it overwritten
+ * with their own id rather than being served another person's figures.
+ */
+const readFilters = (req: Request): StaffTrackFilters =>
+  applyScopeToFilters(
+    {
+      dateFrom: ParamUtil.text(req.query.dateFrom),
+      dateTo: ParamUtil.text(req.query.dateTo),
+      userId: ParamUtil.optionalId(req.query.userId, 'userId'),
+      roleId: ParamUtil.optionalId(req.query.roleId, 'roleId'),
+      status: ParamUtil.text(req.query.status),
+      search: ParamUtil.text(req.query.search),
+    },
+    scopeOf(req)
+  );
 
 export class StaffTrackController {
   static async getOverview(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const data = await StaffTrackService.getOverview(readFilters(req));
+      const data = await StaffTrackService.getOverview(readFilters(req), scopeOf(req));
       ResponseUtil.success(res, data, 'Staff track overview fetched successfully');
     } catch (err) {
       next(err);
@@ -38,6 +57,11 @@ export class StaffTrackController {
   static async getStaffDetail(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const id = ParamUtil.id(req.params.id, 'staff id');
+      // Checked before the lookup so a self-scoped caller cannot probe which
+      // staff ids exist by telling a 403 and a 404 apart.
+      if (!scopeAllowsUser(scopeOf(req), id)) {
+        throw AppError.forbidden('Requires permission: stafftrack.view');
+      }
       const data = await StaffTrackService.getStaffDetail(id, readFilters(req));
       ResponseUtil.success(res, data, 'Staff detail fetched successfully');
     } catch (err) {
@@ -48,7 +72,7 @@ export class StaffTrackController {
   static async getLive(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const windowMinutes = ParamUtil.optionalId(req.query.windowMinutes, 'windowMinutes') || 30;
-      const data = await StaffTrackService.getLiveActivity(windowMinutes);
+      const data = await StaffTrackService.getLiveActivity(windowMinutes, scopeOf(req));
       ResponseUtil.success(res, data, 'Live activity fetched successfully');
     } catch (err) {
       next(err);
@@ -78,7 +102,7 @@ export class StaffTrackController {
   static async getOrderDetail(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const id = ParamUtil.id(req.params.orderId, 'order id');
-      const data = await StaffTrackService.getOrderAttribution(id);
+      const data = await StaffTrackService.getOrderAttribution(id, scopeOf(req));
       ResponseUtil.success(res, data, 'Order attribution fetched successfully');
     } catch (err) {
       next(err);
@@ -124,11 +148,18 @@ export class StaffTrackController {
 
   static async getFilterOptions(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
+      const scope = scopeOf(req);
       const [options, facets] = await Promise.all([
-        StaffTrackService.getFilterOptions(),
+        StaffTrackService.getFilterOptions(scope),
         StaffTrackService.getActivityFacets(),
       ]);
-      ResponseUtil.success(res, { ...options, ...facets }, 'Filter options fetched successfully');
+      // `scope` travels with the options so the UI can hide the staff picker
+      // rather than render a one-entry dropdown it cannot widen.
+      ResponseUtil.success(
+        res,
+        { ...options, ...facets, scope: scope.kind },
+        'Filter options fetched successfully'
+      );
     } catch (err) {
       next(err);
     }

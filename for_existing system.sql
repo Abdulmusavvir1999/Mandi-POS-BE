@@ -10,7 +10,9 @@
 -- bills.cashier_id, payments.created_by and audit_logs — so there is no new
 -- place for order, revenue, table or activity data to drift out of sync.
 --
--- PART 1 registers the permission that gates /api/staff-track.
+-- PART 1 registers the permission that widens /api/staff-track to the whole
+-- roster. It does not gate the module: a signed-in user without it still
+-- reaches Staff Track and is scoped by the server to their own attribution.
 -- PART 2 adds read indexes only. Both parts are safe to re-run.
 -- ═══════════════════════════════════════════════════════════════════════════
 
@@ -19,8 +21,11 @@
 -- PART 1 — Permission
 -- ───────────────────────────────────────────────────────────────────────────
 
--- The permission Staff Track's routes require. `permissions.code` is UNIQUE,
--- so IGNORE makes a second run a no-op rather than an error.
+-- The permission that turns Staff Track from "my own figures" into "everyone's".
+-- Holding it means a viewer sees every staff member; lacking it means the API
+-- pins every query, report and filter list to the caller's own id rather than
+-- refusing them. `permissions.code` is UNIQUE, so IGNORE makes a second run a
+-- no-op rather than an error.
 INSERT IGNORE INTO permissions (code, module, description)
 VALUES ('stafftrack.view', 'STAFF_TRACK', 'View staff activity, order and revenue tracking');
 
@@ -33,8 +38,9 @@ CROSS JOIN permissions p
 WHERE p.code = 'stafftrack.view'
   AND r.name IN ('ADMIN', 'MANAGER');
 
--- To extend Staff Track to another role later, add its name to the IN list
--- above and re-run. To revoke:
+-- To give another role the all-staff view later, add its name to the IN list
+-- above and re-run. Revoking does not remove the role's access to Staff Track;
+-- it drops that role back to seeing only its own rows. To revoke:
 --   DELETE rp FROM role_permissions rp
 --   JOIN permissions p ON p.id = rp.permission_id
 --   JOIN roles r       ON r.id = rp.role_id

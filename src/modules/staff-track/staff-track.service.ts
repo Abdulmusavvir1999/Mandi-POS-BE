@@ -8,6 +8,7 @@ import {
   StaffTrackFilters,
   StaffTrackRow,
 } from './staff-track.types';
+import { StaffTrackScope, scopeClause } from './staff-track.scope';
 
 /**
  * Staff Track query layer.
@@ -71,24 +72,39 @@ export class StaffTrackService {
    * Recent audit activity is the strongest evidence the data actually supports,
    * and the window travels in the response so the UI can label it honestly.
    */
-  static async getOverview(filters: StaffTrackFilters, activeWindowMinutes = 30) {
+  static async getOverview(
+    filters: StaffTrackFilters,
+    scope: StaffTrackScope = { kind: 'ALL' },
+    activeWindowMinutes = 30
+  ) {
     const { dateFrom, dateTo } = filters;
     const orderDate = this.dateClause('o.created_at', dateFrom, dateTo);
     const billDate = this.dateClause('b.created_at', dateFrom, dateTo);
+
+    // The overview aggregates rather than listing, so it ignores `filters.userId`
+    // and has to be constrained on its own. Each card is pinned to the column
+    // that actually attributes it: orders to the taker, bills to the settler,
+    // audit rows and the roster counts to the viewer's own record.
+    const ordersScope = scopeClause(scope, 'o.created_by');
+    const billsScope = scopeClause(scope, 'b.cashier_id');
+    const auditScope = scopeClause(scope, 'a.user_id');
+    const userScope = scopeClause(scope, 'u.id');
 
     const users = await dbService.queryOne<{ total_users: number; active_users: number }>(
       `SELECT
          COUNT(*) AS total_users,
          SUM(u.status = 'ACTIVE') AS active_users
-       FROM users u`
+       FROM users u
+       WHERE 1=1${userScope.sql}`,
+      userScope.params
     );
 
     const recent = await dbService.queryOne<{ recently_active: number }>(
       `SELECT COUNT(DISTINCT a.user_id) AS recently_active
        FROM audit_logs a
        WHERE a.user_id IS NOT NULL
-         AND a.created_at >= DATE_SUB(NOW(), INTERVAL ? MINUTE)`,
-      [activeWindowMinutes]
+         AND a.created_at >= DATE_SUB(NOW(), INTERVAL ? MINUTE)${auditScope.sql}`,
+      [activeWindowMinutes, ...auditScope.params]
     );
 
     const orders = await dbService.queryOne<{
@@ -109,8 +125,8 @@ export class StaffTrackService {
          COUNT(DISTINCT o.dining_table_id) AS tables_served,
          COALESCE(SUM(o.total_amount), 0) AS order_value
        FROM orders o
-       WHERE 1=1${orderDate.sql}`,
-      orderDate.params
+       WHERE 1=1${orderDate.sql}${ordersScope.sql}`,
+      [...orderDate.params, ...ordersScope.params]
     );
 
     const revenue = await dbService.queryOne<{
@@ -127,15 +143,25 @@ export class StaffTrackService {
          COALESCE(SUM(b.discount_amount), 0) AS discount_amount,
          COALESCE(SUM(b.tax_amount), 0) AS tax_amount
        FROM bills b
-       WHERE 1=1${billDate.sql}`,
-      billDate.params
+       WHERE 1=1${billDate.sql}${billsScope.sql}`,
+      [...billDate.params, ...billsScope.params]
     );
 
+    // `totalTables` is a property of the restaurant, not of any staff member, so
+    // it stays whole at both scopes. `activeTables` is attributable, so a
+    // self-scoped viewer sees only the occupied tables holding their own order.
     const tables = await dbService.queryOne<{ active_tables: number; total_tables: number }>(
-      `SELECT
-         COALESCE(SUM(t.status = 'OCCUPIED'), 0) AS active_tables,
-         COUNT(*) AS total_tables
-       FROM dining_tables t`
+      scope.kind === 'ALL'
+        ? `SELECT
+             COALESCE(SUM(t.status = 'OCCUPIED'), 0) AS active_tables,
+             COUNT(*) AS total_tables
+           FROM dining_tables t`
+        : `SELECT
+             COALESCE(SUM(t.status = 'OCCUPIED' AND o.created_by = ?), 0) AS active_tables,
+             COUNT(*) AS total_tables
+           FROM dining_tables t
+           LEFT JOIN orders o ON t.current_order_id = o.id`,
+      scope.kind === 'ALL' ? [] : [scope.userId]
     );
 
     return {
@@ -407,7 +433,14 @@ export class StaffTrackService {
    * socket, SSE or subscription layer, so there is nothing to subscribe to;
    * adding a poll loop here would be the background chatter the brief rules out.
    */
-  static async getLiveActivity(activeWindowMinutes = 30) {
+  static async getLiveActivity(activeWindowMinutes = 30, scope: StaffTrackScope = { kind: 'ALL' }) {
+    // Live takes no filter set, so each of its three panels is constrained here.
+    // Open orders and occupied tables are attributed through orders.created_by;
+    // the recent-staff panel is a roster and collapses to the viewer alone.
+    const liveOrders = scopeClause(scope, 'o.created_by');
+    const liveTables = scopeClause(scope, 'o.created_by');
+    const liveStaff = scopeClause(scope, 'u.id');
+
     const openOrders = await dbService.query<any>(
       `SELECT o.id, o.order_number, o.status, o.order_type, o.total_amount,
               o.created_at, o.updated_at,
@@ -422,8 +455,9 @@ export class StaffTrackService {
        LEFT JOIN users u         ON o.created_by = u.id
        LEFT JOIN roles ru        ON u.role_id = ru.id
        LEFT JOIN bills b         ON b.order_id = o.id
-       WHERE o.status IN ('PENDING', 'IN_PROGRESS')
-       ORDER BY o.created_at ASC`
+       WHERE o.status IN ('PENDING', 'IN_PROGRESS')${liveOrders.sql}
+       ORDER BY o.created_at ASC`,
+      liveOrders.params
     );
 
     const occupiedTables = await dbService.query<any>(
@@ -437,8 +471,9 @@ export class StaffTrackService {
        LEFT JOIN orders o ON t.current_order_id = o.id
        LEFT JOIN users u  ON o.created_by = u.id
        LEFT JOIN roles ru ON u.role_id = ru.id
-       WHERE t.status = 'OCCUPIED'
-       ORDER BY t.display_order ASC, t.table_number ASC`
+       WHERE t.status = 'OCCUPIED'${liveTables.sql}
+       ORDER BY t.display_order ASC, t.table_number ASC`,
+      liveTables.params
     );
 
     const recentStaff = await dbService.query<any>(
@@ -473,9 +508,9 @@ export class StaffTrackService {
          WHERE oo.status IN ('PENDING', 'IN_PROGRESS') AND oo.created_by IS NOT NULL
          GROUP BY oo.created_by
        ) opn ON opn.uid = u.id
-       WHERE act.created_at >= DATE_SUB(NOW(), INTERVAL ? MINUTE)
+       WHERE act.created_at >= DATE_SUB(NOW(), INTERVAL ? MINUTE)${liveStaff.sql}
        ORDER BY act.created_at DESC`,
-      [activeWindowMinutes]
+      [activeWindowMinutes, ...liveStaff.params]
     );
 
     return {
@@ -669,7 +704,29 @@ export class StaffTrackService {
    * marks an order "served", and there is no edit, refund or void flow — the
    * field is absent rather than guessed at from whoever last opened the order.
    */
-  static async getOrderAttribution(orderId: number) {
+  static async getOrderAttribution(orderId: number, scope: StaffTrackScope = { kind: 'ALL' }) {
+    // A self-scoped viewer may open an order they had a hand in — one they took,
+    // settled, moved through a status, or took a payment on. Anything else is
+    // another person's work and returns 403 rather than a redacted body, since
+    // the whole point of this screen is naming who did what.
+    if (scope.kind === 'SELF') {
+      const involved = await dbService.queryOne<{ involved: number }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM orders o            WHERE o.id = ? AND o.created_by = ?
+           UNION ALL
+           SELECT 1 FROM bills b             WHERE b.order_id = ? AND b.cashier_id = ?
+           UNION ALL
+           SELECT 1 FROM order_status_history h WHERE h.order_id = ? AND h.changed_by = ?
+           UNION ALL
+           SELECT 1 FROM payments p          WHERE p.order_id = ? AND p.created_by = ?
+         ) AS involved`,
+        [orderId, scope.userId, orderId, scope.userId, orderId, scope.userId, orderId, scope.userId]
+      );
+      if (!Number(involved?.involved || 0)) {
+        throw AppError.forbidden('Requires permission: stafftrack.view');
+      }
+    }
+
     const order = await dbService.queryOne<any>(
       `SELECT o.id, o.order_number, o.status, o.order_type, o.total_amount, o.subtotal,
               o.discount_amount, o.tax_amount, o.notes, o.created_at, o.updated_at,
@@ -968,6 +1025,14 @@ export class StaffTrackService {
    * presents a derivation as a recorded assignment.
    */
   static async getTables(filters: StaffTrackFilters) {
+    // The live table panel names the staff member attending each table, so it
+    // has to honour `userId` like the history query below it. Without this a
+    // self-scoped viewer was served the whole floor with every colleague's name
+    // on it, and a staff filter applied to the history left this panel showing
+    // everyone — the two halves of one screen disagreeing about the filter.
+    const currentWhere = filters.userId ? 'WHERE o.created_by = ?' : '';
+    const currentParams = filters.userId ? [filters.userId] : [];
+
     const current = await dbService.query<any>(
       `SELECT t.id, t.table_number, t.name, t.section, t.capacity, t.status,
               o.id AS order_id, o.order_number, o.status AS order_status,
@@ -979,7 +1044,9 @@ export class StaffTrackService {
        LEFT JOIN orders o ON t.current_order_id = o.id
        LEFT JOIN users u  ON o.created_by = u.id
        LEFT JOIN roles r  ON u.role_id = r.id
-       ORDER BY t.display_order ASC, t.table_number ASC`
+       ${currentWhere}
+       ORDER BY t.display_order ASC, t.table_number ASC`,
+      currentParams
     );
 
     const conditions: string[] = ['o.dining_table_id IS NOT NULL'];
@@ -1450,13 +1517,23 @@ export class StaffTrackService {
     return [...merged.values()].sort((a, b) => (a.bucket < b.bucket ? 1 : -1));
   }
 
-  /** Roles list for the filter bar — reuses the existing roles table. */
-  static async getFilterOptions() {
+  /**
+   * Roles list for the filter bar — reuses the existing roles table.
+   *
+   * The staff list is scoped too. Leaving it whole would have handed a
+   * self-scoped viewer the full roster of names and usernames through the
+   * filter dropdown, which is the disclosure the scoping exists to prevent
+   * even though the figures behind it stay hidden. Roles and tables are not
+   * personal data and stay whole so the date and table filters keep working.
+   */
+  static async getFilterOptions(scope: StaffTrackScope = { kind: 'ALL' }) {
     const roles = await dbService.query<{ id: number; name: string }>(
       'SELECT id, name FROM roles ORDER BY name ASC'
     );
+    const staffScope = scopeClause(scope, 'id');
     const staff = await dbService.query<{ id: number; name: string; username: string }>(
-      'SELECT id, name, username FROM users ORDER BY name ASC'
+      `SELECT id, name, username FROM users WHERE 1=1${staffScope.sql} ORDER BY name ASC`,
+      staffScope.params
     );
     const tables = await dbService.query<{ id: number; table_number: string; name: string }>(
       'SELECT id, table_number, name FROM dining_tables ORDER BY display_order ASC, table_number ASC'
