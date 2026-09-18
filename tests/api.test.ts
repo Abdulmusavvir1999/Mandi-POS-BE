@@ -45,6 +45,51 @@ describe('Mandi Shop POS API Suite', () => {
       expect(Array.isArray(res.body.data.permissions)).toBe(true);
     });
 
+    it('should update user profile on PUT /api/auth/profile', async () => {
+      const res = await request(app)
+        .put('/api/auth/profile')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          name: 'System Administrator Updated',
+          email: 'admin.updated@mandipos.com',
+          phone: '+919999988888',
+        });
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.name).toBe('System Administrator Updated');
+      expect(res.body.data.email).toBe('admin.updated@mandipos.com');
+
+      // Revert name and email
+      await request(app)
+        .put('/api/auth/profile')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          name: 'System Administrator',
+          email: 'admin@mandipos.com',
+        });
+    });
+
+    it('should change password on POST /api/auth/change-password', async () => {
+      const res = await request(app)
+        .post('/api/auth/change-password')
+        .set('Authorization', `Bearer ${cashierToken}`)
+        .send({
+          currentPassword: 'Cashier@123',
+          newPassword: 'Cashier@NewPass123',
+        });
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+
+      // Revert password
+      await request(app)
+        .post('/api/auth/change-password')
+        .set('Authorization', `Bearer ${cashierToken}`)
+        .send({
+          currentPassword: 'Cashier@NewPass123',
+          newPassword: 'Cashier@123',
+        });
+    });
+
     it('should reject unauthenticated requests', async () => {
       const res = await request(app).get('/api/products');
       expect(res.status).toBe(401);

@@ -45,6 +45,16 @@ export class AuthController {
     }
   }
 
+  static async updateProfile(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { name, email, phone, image_url } = req.body;
+      const result = await AuthService.updateProfile(req.user!.id, { name, email, phone, image_url });
+      ResponseUtil.success(res, result, 'Profile updated successfully');
+    } catch (err) {
+      next(err);
+    }
+  }
+
   static async logout(req: Request, res: Response, next: NextFunction) {
     try {
       ResponseUtil.success(res, { loggedOut: true }, 'Logged out successfully');

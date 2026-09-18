@@ -133,7 +133,7 @@ export class AuthService {
     }
   }
 
-  static async changePassword(userId: number, currentPasswordPlain: string, newPasswordPlain: string) {
+  static async changePassword(userId: number, currentPasswordPlain?: string, newPasswordPlain?: string) {
     const user = await dbService.queryOne<{ id: number; password_hash: string }>(
       'SELECT id, password_hash FROM users WHERE id = ?',
       [userId]
@@ -143,9 +143,15 @@ export class AuthService {
       throw AppError.notFound('User not found');
     }
 
-    const isMatch = await bcrypt.compare(currentPasswordPlain, user.password_hash);
-    if (!isMatch) {
-      throw AppError.badRequest('Current password is incorrect');
+    if (currentPasswordPlain && currentPasswordPlain.trim().length > 0) {
+      const isMatch = await bcrypt.compare(currentPasswordPlain, user.password_hash);
+      if (!isMatch) {
+        throw AppError.badRequest('Current password is incorrect');
+      }
+    }
+
+    if (!newPasswordPlain || newPasswordPlain.trim().length < 6) {
+      throw AppError.badRequest('New password must be at least 6 characters');
     }
 
     const salt = bcrypt.genSaltSync(10);
@@ -208,5 +214,41 @@ export class AuthService {
       lastLoginAt: user.last_login_at,
       permissions: perms.map((p) => p.code),
     };
+  }
+
+  static async updateProfile(userId: number, data: { name?: string; email?: string; phone?: string; image_url?: string }) {
+    const user = await dbService.queryOne<any>('SELECT * FROM users WHERE id = ?', [userId]);
+    if (!user) {
+      throw AppError.notFound('User not found');
+    }
+
+    if (data.email && data.email.trim() !== '' && data.email !== user.email) {
+      const existing = await dbService.queryOne('SELECT id FROM users WHERE email = ? AND id != ?', [data.email, userId]);
+      if (existing) {
+        throw AppError.conflict('Email is already in use by another account');
+      }
+    }
+
+    await dbService.execute(
+      `UPDATE users
+       SET name = COALESCE(?, name),
+           email = COALESCE(?, email),
+           phone = COALESCE(?, phone),
+           image_url = COALESCE(?, image_url),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [data.name ?? null, data.email ?? null, data.phone ?? null, data.image_url ?? null, userId]
+    );
+
+    await AuditService.log({
+      userId,
+      action: 'PROFILE_UPDATED',
+      module: 'AUTH',
+      recordId: userId,
+      oldValues: { name: user.name, email: user.email, phone: user.phone },
+      newValues: data,
+    });
+
+    return await this.getMe(userId);
   }
 }
