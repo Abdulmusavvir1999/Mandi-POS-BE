@@ -16,6 +16,7 @@ import dashboardRoutes from '../modules/dashboard/dashboard.routes';
 import reportsRoutes from '../modules/reports/reports.routes';
 import settingsRoutes from '../modules/settings/settings.routes';
 import auditRoutes from '../modules/audit/audit.routes';
+import staffTrackRoutes from '../modules/staff-track/staff-track.routes';
 
 const router = Router();
 
@@ -44,5 +45,6 @@ router.use('/dashboard', dashboardRoutes);
 router.use('/reports', reportsRoutes);
 router.use('/settings', settingsRoutes);
 router.use('/audit', auditRoutes);
+router.use('/staff-track', staffTrackRoutes);
 
 export default router;

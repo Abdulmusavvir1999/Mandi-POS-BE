@@ -50,6 +50,7 @@ export const seedDatabase = async (): Promise<void> => {
       { code: 'dashboard.view', module: 'DASHBOARD', desc: 'View analytics dashboard' },
       { code: 'settings.manage', module: 'SETTINGS', desc: 'Configure system, tax and theme settings' },
       { code: 'audit.view', module: 'AUDIT', desc: 'View security and change audit logs' },
+      { code: 'stafftrack.view', module: 'STAFF_TRACK', desc: 'View staff activity, order and revenue tracking' },
     ];
 
     for (const p of permissions) {

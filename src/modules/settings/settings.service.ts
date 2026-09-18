@@ -305,7 +305,7 @@ export class SettingsService {
   static async updateBulk(settings: Record<string, any>, userId: number, tabName?: string) {
     const flatSettings: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(settings)) {
-      if (v && typeof v === 'object' && !Array.isArray(v) && !['system_theme', 'system_toast', 'system_business', 'system_hardware', 'system_dining_layout', 'system_dish_layout', 'system_pos_design', 'system_category_layout', 'system_stock_layout', 'system_customer_layout', 'system_staff_layout', 'system_sidebar_layout'].includes(k) && ['GENERAL', 'THEME', 'POS', 'TAX', 'RECEIPT'].includes(k)) {
+      if (v && typeof v === 'object' && !Array.isArray(v) && !['system_theme', 'system_toast', 'system_business', 'system_hardware', 'system_dining_layout', 'system_dish_layout', 'system_pos_design', 'system_category_layout', 'system_stock_layout', 'system_customer_layout', 'system_staff_layout', 'system_sidebar_layout', 'system_customization'].includes(k) && ['GENERAL', 'THEME', 'POS', 'TAX', 'RECEIPT'].includes(k)) {
         Object.assign(flatSettings, v);
       } else {
         flatSettings[k] = v;
@@ -356,6 +356,7 @@ export class SettingsService {
           else if (key === 'system_customer_layout') description = 'Customer Directory page design and customization stored as JSON';
           else if (key === 'system_staff_layout') description = 'Staff Accounts & Roles page design and customization stored as JSON';
           else if (key === 'system_sidebar_layout') description = 'Sidebar navigation rail template and customization stored as JSON';
+          else if (key === 'system_customization') description = 'Per-page customization on/off switches stored as JSON';
 
           await dbService.execute(
             "INSERT INTO settings (`key`, `value`, category, description, is_system) VALUES (?, ?, ?, ?, 0)",
