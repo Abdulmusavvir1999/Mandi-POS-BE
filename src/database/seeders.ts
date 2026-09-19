@@ -51,6 +51,8 @@ export const seedDatabase = async (): Promise<void> => {
       { code: 'settings.manage', module: 'SETTINGS', desc: 'Configure system, tax and theme settings' },
       { code: 'audit.view', module: 'AUDIT', desc: 'View security and change audit logs' },
       { code: 'stafftrack.view', module: 'STAFF_TRACK', desc: 'View staff activity, order and revenue tracking' },
+      { code: 'vendor.view', module: 'VENDORS', desc: 'View vendor list, profiles, ratings and purchase records' },
+      { code: 'vendor.manage', module: 'VENDORS', desc: 'Create, edit, delete vendors and record purchases and payments' },
     ];
 
     for (const p of permissions) {
@@ -72,7 +74,7 @@ export const seedDatabase = async (): Promise<void> => {
     }
 
     // Assign CASHIER perms
-    const cashierCodes = ['auth.login', 'auth.change_password', 'pos.billing', 'pos.hold_bill', 'pos.discount', 'customer.manage', 'bill.view', 'bill.print', 'order.manage', 'queue.manage', 'dining.manage', 'stock.view'];
+    const cashierCodes = ['auth.login', 'auth.change_password', 'pos.billing', 'pos.hold_bill', 'pos.discount', 'customer.manage', 'vendor.view', 'bill.view', 'bill.print', 'order.manage', 'queue.manage', 'dining.manage', 'stock.view'];
     for (const p of allPerms) {
       if (cashierCodes.includes(p.code)) {
         await dbService.execute('INSERT INTO role_permissions (role_id, permission_id) VALUES (?, ?)', [cashierRole!.id, p.id]);
@@ -304,6 +306,13 @@ export const seedDatabase = async (): Promise<void> => {
       { key: 'THEME_ACCENT_COLOR', value: '#EA580C', cat: 'THEME', desc: 'Warm fiery orange accent' },
       { key: 'THEME_DARK_BG', value: '#0F172A', cat: 'THEME', desc: 'Deep slate background' },
       { key: 'system_theme', value: '{"primary":"#D97706","primaryHover":"#EA580C","sidebarBg":"#1C1917","sidebarText":"#F5F5F4","sidebarActiveAccent":"#F59E0B","bgApp":"#F8F7F4","cardBg":"#FFFFFF","cardBorder":"#E7E5E4","textMain":"#1C1917","success":"#15803D","danger":"#DC2626","warning":"#D97706"}', cat: 'THEME', desc: 'Full UI theme palette stored as JSON (overrides individual THEME_* keys)' },
+
+      // Printer / Notification / Invoice — one JSON document per settings tab,
+      // unpacked into flat PRINTER_* / NOTIFY_* / INVOICE_* keys by the API.
+      // Keep these in step with src/database/seeders.sql.
+      { key: 'system_printer', value: '{"receiptEnabled":"true","receiptName":"Cashier Thermal Receipt Printer","receiptPaperWidth":"80mm","receiptAutoPrint":"true","receiptCopies":"1","kitchenEnabled":"true","kitchenName":"Kitchen Order Ticket (KOT) Printer","kitchenPaperWidth":"80mm","kitchenAutoPrint":"true","kitchenCopies":"1","barEnabled":"false","barName":"Bar Beverage Printer","barPaperWidth":"80mm","barAutoPrint":"false","barCopies":"1","connection":"usb","deviceIp":"","devicePort":"9100","charset":"CP437","density":"normal","autoCut":"true","cashDrawer":"true","buzzer":"false","feedLines":"3"}', cat: 'RECEIPT', desc: 'Print stations, device connection & paper behaviour stored as JSON' },
+      { key: 'system_notification', value: '{"newOrder":"true","orderReady":"true","billVoided":"true","lowStock":"true","lowStockThreshold":"5","dayClose":"true","channelInApp":"true","channelDesktop":"false","channelEmail":"false","emailRecipients":"","channelSms":"false","smsRecipients":"","sound":"true","soundTone":"chime","quietStart":"","quietEnd":"","dailySummary":"false","dailySummaryTime":"23:30"}', cat: 'POS', desc: 'Operational alert triggers, channels & quiet hours stored as JSON' },
+      { key: 'system_invoice', value: '{"prefix":"INV-","nextNumber":"1","padLength":"4","resetCycle":"yearly","title":"TAX INVOICE","paperSize":"A4","dateFormat":"dd/MM/yyyy","decimals":"2","currencyPosition":"prefix","showLogo":"true","showTaxBreakdown":"true","showQr":"false","upiId":"","showSignature":"true","signatory":"Authorised Signatory","dueDays":"0","terms":"Goods once sold will not be taken back or exchanged.","footerNote":"Thank you for your business."}', cat: 'RECEIPT', desc: 'Invoice numbering, document format & printed blocks stored as JSON' },
     ];
 
     for (const s of defaultSettings) {

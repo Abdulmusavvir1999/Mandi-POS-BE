@@ -25,8 +25,9 @@ router.post('/entries', authenticate, requirePermission('stock.manage'), validat
 // 3. Stock Movements (Audit Trail)
 router.get('/movements', authenticate, requirePermission('stock.view'), StockController.getStockMovements);
 
-// 4. Stock Adjustments & Low Stock
+// 4. Stock Adjustments & Alerts
 router.post('/adjust', authenticate, requirePermission('stock.manage'), validateBody(stockAdjustSchema), StockController.adjustStock);
+router.get('/alerts', authenticate, requirePermission('stock.view'), StockController.getStockAlerts);
 router.get('/low-stock', authenticate, requirePermission('stock.view'), StockController.getLowStock);
 
 // 5. Backward-compatibility endpoints

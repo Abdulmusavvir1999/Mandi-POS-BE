@@ -1,4 +1,4 @@
-﻿import { Request, Response, NextFunction } from 'express';
+import { Request, Response, NextFunction } from 'express';
 import { StockService } from './stock.service';
 import { ResponseUtil } from '../../core/utils/response.util';
 import { ParamUtil } from '../../core/utils/param.util';
@@ -127,7 +127,20 @@ export class StockController {
   }
 
   /**
-   * 9. Low Stock Alerts
+   * 9. Inventory Alerts (Out of stock, Low stock, Minimum stock, Reorder level, Expiry, Overstock)
+   */
+  static async getStockAlerts(req: Request, res: Response, next: NextFunction) {
+    try {
+      const type = req.query.type as string | undefined;
+      const result = await StockService.getStockAlerts(type);
+      ResponseUtil.success(res, result, 'Inventory alerts fetched successfully');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  /**
+   * 10. Low Stock Alerts
    */
   static async getLowStock(req: Request, res: Response, next: NextFunction) {
     try {

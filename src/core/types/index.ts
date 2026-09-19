@@ -1,14 +1,14 @@
 export type RoleName = 'ADMIN' | 'MANAGER' | 'CASHIER' | 'STAFF';
 
-export type OrderType = 'WALK_IN' | 'TAKEAWAY' | 'DINING';
+export type OrderType = 'WALK_IN' | 'TAKEAWAY' | 'DINING' | 'PICKUP' | 'COUNTER';
 
 export type OrderStatus = 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
 
-export type TableStatus = 'AVAILABLE' | 'SELECTED' | 'OCCUPIED' | 'UNAVAILABLE';
+export type TableStatus = 'AVAILABLE' | 'SELECTED' | 'OCCUPIED' | 'RESERVED' | 'CLEANING' | 'UNAVAILABLE';
 
-export type PaymentMethod = 'CASH' | 'CARD' | 'UPI' | 'OTHER';
+export type PaymentMethod = 'CASH' | 'CARD' | 'UPI' | 'ONLINE' | 'OTHER';
 
-export type PaymentStatus = 'PAID' | 'PENDING' | 'FAILED' | 'REFUNDED';
+export type PaymentStatus = 'PAID' | 'PENDING' | 'FAILED' | 'REFUNDED' | 'VOIDED';
 
 export type StockTransactionType = 'STOCK_IN' | 'SALE' | 'ADJUSTMENT' | 'RETURN';
 

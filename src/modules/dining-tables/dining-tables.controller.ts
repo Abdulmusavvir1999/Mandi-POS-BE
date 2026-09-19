@@ -1,4 +1,4 @@
-﻿import { Request, Response, NextFunction } from 'express';
+import { Request, Response, NextFunction } from 'express';
 import { DiningTablesService } from './dining-tables.service';
 import { ResponseUtil } from '../../core/utils/response.util';
 import { ParamUtil } from '../../core/utils/param.util';
@@ -56,9 +56,50 @@ export class DiningTablesController {
   static async setStatus(req: Request, res: Response, next: NextFunction) {
     try {
       const id = ParamUtil.id(req.params.id, 'id');
-      const { status, orderId } = req.body;
-      const table = await DiningTablesService.setStatus(id, status, orderId, req.user!.id);
+      const { status, orderId, guestCount } = req.body;
+      const table = await DiningTablesService.setStatus(id, status, orderId, guestCount, req.user!.id);
       ResponseUtil.success(res, table, 'Table status updated successfully');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async seatGuests(req: Request, res: Response, next: NextFunction) {
+    try {
+      const id = ParamUtil.id(req.params.id, 'id');
+      const { guestCount, orderId } = req.body;
+      const table = await DiningTablesService.seatGuests(id, Number(guestCount) || 2, orderId, req.user!.id);
+      ResponseUtil.success(res, table, 'Guests seated successfully');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async cleanTable(req: Request, res: Response, next: NextFunction) {
+    try {
+      const id = ParamUtil.id(req.params.id, 'id');
+      const table = await DiningTablesService.cleanTable(id, req.user!.id);
+      ResponseUtil.success(res, table, 'Table marked for cleaning');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async finishCleaning(req: Request, res: Response, next: NextFunction) {
+    try {
+      const id = ParamUtil.id(req.params.id, 'id');
+      const table = await DiningTablesService.finishCleaning(id, req.user!.id);
+      ResponseUtil.success(res, table, 'Table is clean and available');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async getTableHistory(req: Request, res: Response, next: NextFunction) {
+    try {
+      const id = ParamUtil.id(req.params.id, 'id');
+      const history = await DiningTablesService.getTableHistory(id);
+      ResponseUtil.success(res, history, 'Table history retrieved successfully');
     } catch (err) {
       next(err);
     }
@@ -69,6 +110,89 @@ export class DiningTablesController {
       const id = ParamUtil.id(req.params.id, 'id');
       const result = await DiningTablesService.delete(id, req.user!.id);
       ResponseUtil.success(res, result, 'Dining table deleted successfully');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  // Reservations
+  static async getReservations(req: Request, res: Response, next: NextFunction) {
+    try {
+      const date = req.query.date as string | undefined;
+      const status = req.query.status as string | undefined;
+      const reservations = await DiningTablesService.getReservations({ date, status });
+      ResponseUtil.success(res, reservations, 'Reservations fetched successfully');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async createReservation(req: Request, res: Response, next: NextFunction) {
+    try {
+      const reservation = await DiningTablesService.createReservation(req.body, req.user!.id);
+      ResponseUtil.created(res, reservation, 'Table reservation booked successfully');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async seatReservation(req: Request, res: Response, next: NextFunction) {
+    try {
+      const id = ParamUtil.id(req.params.id, 'id');
+      const { tableId } = req.body;
+      const table = await DiningTablesService.seatReservation(id, tableId, req.user!.id);
+      ResponseUtil.success(res, table, 'Reservation party seated successfully');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async cancelReservation(req: Request, res: Response, next: NextFunction) {
+    try {
+      const id = ParamUtil.id(req.params.id, 'id');
+      const result = await DiningTablesService.cancelReservation(id, req.user!.id);
+      ResponseUtil.success(res, result, 'Reservation cancelled');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  // Waiting List & Queue Tokens
+  static async getWaitlist(req: Request, res: Response, next: NextFunction) {
+    try {
+      const waitlist = await DiningTablesService.getWaitlist();
+      ResponseUtil.success(res, waitlist, 'Waitlist retrieved successfully');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async addToWaitlist(req: Request, res: Response, next: NextFunction) {
+    try {
+      const entry = await DiningTablesService.addToWaitlist(req.body, req.user!.id);
+      ResponseUtil.created(res, entry, 'Guest party added to waitlist queue');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async seatWaitlistParty(req: Request, res: Response, next: NextFunction) {
+    try {
+      const id = ParamUtil.id(req.params.id, 'id');
+      const { tableId } = req.body;
+      const table = await DiningTablesService.seatWaitlistParty(id, tableId, req.user!.id);
+      ResponseUtil.success(res, table, 'Waitlist party seated at table');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async updateWaitlistStatus(req: Request, res: Response, next: NextFunction) {
+    try {
+      const id = ParamUtil.id(req.params.id, 'id');
+      const { status } = req.body;
+      const result = await DiningTablesService.updateWaitlistStatus(id, status, req.user!.id);
+      ResponseUtil.success(res, result, 'Waitlist status updated');
     } catch (err) {
       next(err);
     }

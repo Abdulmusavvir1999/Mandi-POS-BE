@@ -18,6 +18,81 @@ const KEY_ALIASES: Record<string, string> = {
   RECEIPT_PAPER_WIDTH: 'thermal_printer_paper_width',
 };
 
+/**
+ * The Printer / Notification / Invoice settings screens each persist one JSON
+ * row. These maps spread that row back out over flat keys on the public
+ * settings payload, so a consumer can read `PRINTER_RECEIPT_WIDTH` without
+ * having to know it lives inside `system_printer`.
+ */
+const EXTENDED_MODULE_FIELDS: Record<string, Record<string, string>> = {
+  system_printer: {
+    receiptEnabled: 'PRINTER_RECEIPT_ENABLED',
+    receiptName: 'PRINTER_RECEIPT_NAME',
+    receiptPaperWidth: 'PRINTER_RECEIPT_WIDTH',
+    receiptAutoPrint: 'PRINTER_RECEIPT_AUTO',
+    receiptCopies: 'PRINTER_RECEIPT_COPIES',
+    kitchenEnabled: 'PRINTER_KITCHEN_ENABLED',
+    kitchenName: 'PRINTER_KITCHEN_NAME',
+    kitchenPaperWidth: 'PRINTER_KITCHEN_WIDTH',
+    kitchenAutoPrint: 'PRINTER_KITCHEN_AUTO',
+    kitchenCopies: 'PRINTER_KITCHEN_COPIES',
+    barEnabled: 'PRINTER_BAR_ENABLED',
+    barName: 'PRINTER_BAR_NAME',
+    barPaperWidth: 'PRINTER_BAR_WIDTH',
+    barAutoPrint: 'PRINTER_BAR_AUTO',
+    barCopies: 'PRINTER_BAR_COPIES',
+    connection: 'PRINTER_CONNECTION',
+    deviceIp: 'PRINTER_DEVICE_IP',
+    devicePort: 'PRINTER_DEVICE_PORT',
+    charset: 'PRINTER_CHARSET',
+    density: 'PRINTER_DENSITY',
+    autoCut: 'PRINTER_AUTO_CUT',
+    cashDrawer: 'PRINTER_CASH_DRAWER',
+    buzzer: 'PRINTER_BUZZER',
+    feedLines: 'PRINTER_FEED_LINES',
+  },
+  system_notification: {
+    newOrder: 'NOTIFY_NEW_ORDER',
+    orderReady: 'NOTIFY_ORDER_READY',
+    billVoided: 'NOTIFY_BILL_VOID',
+    lowStock: 'NOTIFY_LOW_STOCK',
+    lowStockThreshold: 'NOTIFY_LOW_STOCK_THRESHOLD',
+    dayClose: 'NOTIFY_DAY_CLOSE',
+    channelInApp: 'NOTIFY_CHANNEL_INAPP',
+    channelDesktop: 'NOTIFY_CHANNEL_DESKTOP',
+    channelEmail: 'NOTIFY_CHANNEL_EMAIL',
+    emailRecipients: 'NOTIFY_EMAIL_RECIPIENTS',
+    channelSms: 'NOTIFY_CHANNEL_SMS',
+    smsRecipients: 'NOTIFY_SMS_RECIPIENTS',
+    sound: 'NOTIFY_SOUND',
+    soundTone: 'NOTIFY_SOUND_TONE',
+    quietStart: 'NOTIFY_QUIET_START',
+    quietEnd: 'NOTIFY_QUIET_END',
+    dailySummary: 'NOTIFY_DAILY_SUMMARY',
+    dailySummaryTime: 'NOTIFY_DAILY_SUMMARY_TIME',
+  },
+  system_invoice: {
+    prefix: 'INVOICE_PREFIX',
+    nextNumber: 'INVOICE_NEXT_NUMBER',
+    padLength: 'INVOICE_PAD_LENGTH',
+    resetCycle: 'INVOICE_RESET_CYCLE',
+    title: 'INVOICE_TITLE',
+    paperSize: 'INVOICE_PAPER_SIZE',
+    dateFormat: 'INVOICE_DATE_FORMAT',
+    decimals: 'INVOICE_DECIMALS',
+    currencyPosition: 'INVOICE_CURRENCY_POSITION',
+    showLogo: 'INVOICE_SHOW_LOGO',
+    showTaxBreakdown: 'INVOICE_SHOW_TAX_BREAKDOWN',
+    showQr: 'INVOICE_SHOW_QR',
+    upiId: 'INVOICE_UPI_ID',
+    showSignature: 'INVOICE_SHOW_SIGNATURE',
+    signatory: 'INVOICE_SIGNATORY',
+    dueDays: 'INVOICE_DUE_DAYS',
+    terms: 'INVOICE_TERMS',
+    footerNote: 'INVOICE_FOOTER_NOTE',
+  },
+};
+
 export class SettingsService {
   /** Reads a setting by its canonical key, falling back to the legacy alias. */
   static async getValue(canonicalKey: string): Promise<string | null> {
@@ -73,6 +148,9 @@ export class SettingsService {
       return 'THEME';
     }
     if (key === 'system_toast' || key === 'SYSTEM_TOAST' || key.startsWith('TOAST_')) return 'POS';
+    if (key === 'system_notification' || key === 'SYSTEM_NOTIFICATION' || key.startsWith('NOTIFY_')) return 'POS';
+    if (key === 'system_printer' || key === 'SYSTEM_PRINTER' || key.startsWith('PRINTER_')) return 'RECEIPT';
+    if (key === 'system_invoice' || key === 'SYSTEM_INVOICE' || key.startsWith('INVOICE_')) return 'RECEIPT';
     if (key === 'system_hardware' || key === 'SYSTEM_HARDWARE' || key.startsWith('RECEIPT_')) return 'RECEIPT';
     if (key === 'system_business' || key === 'SYSTEM_BUSINESS' || key.startsWith('TAX_') || key.startsWith('BUSINESS_') || key.startsWith('CURRENCY_')) return 'GENERAL';
     if (key.startsWith('POS_')) return 'POS';
@@ -298,6 +376,21 @@ export class SettingsService {
       } catch (_) {}
     }
 
+    // Unpack the Printer / Notification / Invoice JSON rows onto their flat keys
+    for (const [rawKey, fields] of Object.entries(EXTENDED_MODULE_FIELDS)) {
+      const raw = settingsMap[rawKey] || settingsMap[rawKey.toUpperCase()];
+      if (!raw) continue;
+      try {
+        const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!parsed || typeof parsed !== 'object') continue;
+        for (const [jsonKey, flatKey] of Object.entries(fields)) {
+          if (parsed[jsonKey] !== undefined && parsed[jsonKey] !== null) {
+            settingsMap[flatKey] = String(parsed[jsonKey]);
+          }
+        }
+      } catch (_) {}
+    }
+
     // Serve canonical key names alongside legacy ones
     return this.applyKeyAliases(settingsMap);
   }
@@ -305,7 +398,7 @@ export class SettingsService {
   static async updateBulk(settings: Record<string, any>, userId: number, tabName?: string) {
     const flatSettings: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(settings)) {
-      if (v && typeof v === 'object' && !Array.isArray(v) && !['system_theme', 'system_toast', 'system_business', 'system_hardware', 'system_dining_layout', 'system_dish_layout', 'system_pos_design', 'system_category_layout', 'system_stock_layout', 'system_customer_layout', 'system_staff_layout', 'system_sidebar_layout', 'system_customization'].includes(k) && ['GENERAL', 'THEME', 'POS', 'TAX', 'RECEIPT'].includes(k)) {
+      if (v && typeof v === 'object' && !Array.isArray(v) && !['system_theme', 'system_toast', 'system_business', 'system_hardware', 'system_dining_layout', 'system_dish_layout', 'system_pos_design', 'system_category_layout', 'system_stock_layout', 'system_customer_layout', 'system_staff_layout', 'system_sidebar_layout', 'system_customization', 'system_printer', 'system_notification', 'system_invoice'].includes(k) && ['GENERAL', 'THEME', 'POS', 'TAX', 'RECEIPT'].includes(k)) {
         Object.assign(flatSettings, v);
       } else {
         flatSettings[k] = v;
@@ -357,6 +450,9 @@ export class SettingsService {
           else if (key === 'system_staff_layout') description = 'Staff Accounts & Roles page design and customization stored as JSON';
           else if (key === 'system_sidebar_layout') description = 'Sidebar navigation rail template and customization stored as JSON';
           else if (key === 'system_customization') description = 'Per-page customization on/off switches stored as JSON';
+          else if (key === 'system_printer') description = 'Print stations, device connection & paper behaviour stored as JSON';
+          else if (key === 'system_notification') description = 'Operational alert triggers, channels & quiet hours stored as JSON';
+          else if (key === 'system_invoice') description = 'Invoice numbering, document format & printed blocks stored as JSON';
 
           await dbService.execute(
             "INSERT INTO settings (`key`, `value`, category, description, is_system) VALUES (?, ?, ?, ?, 0)",

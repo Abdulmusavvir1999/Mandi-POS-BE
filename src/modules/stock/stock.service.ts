@@ -167,6 +167,10 @@ export class StockService {
       stockCode?: string;
       unitType?: StockUnitType;
       minStockAlert?: number;
+      reorderLevel?: number;
+      reorderQuantity?: number;
+      maxStockThreshold?: number;
+      shelfLifeDays?: number;
       productId?: number | null;
       initialQuantity?: number;
       multiplier?: number;
@@ -208,12 +212,18 @@ export class StockService {
         unitPrice = 0;
       }
 
+      const reorderLevel = data.reorderLevel !== undefined ? Number(data.reorderLevel) : 10.0;
+      const reorderQty = data.reorderQuantity !== undefined ? Number(data.reorderQuantity) : 20.0;
+      const maxThreshold = data.maxStockThreshold !== undefined ? Number(data.maxStockThreshold) : 100.0;
+      const shelfLife = data.shelfLifeDays !== undefined ? Number(data.shelfLifeDays) : null;
+
       const res = await dbService.execute(
         `INSERT INTO stock_items (
           uuid, stock_code, name, unit_type, current_quantity,
-          current_value, average_unit_price, status, min_stock_alert, product_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)`,
-        [uuid, code, data.name, unitType, totalQty, totalPrice, unitPrice, minAlert, data.productId || null]
+          current_value, average_unit_price, status, min_stock_alert,
+          reorder_level, reorder_quantity, max_stock_threshold, shelf_life_days, product_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`,
+        [uuid, code, data.name, unitType, totalQty, totalPrice, unitPrice, minAlert, reorderLevel, reorderQty, maxThreshold, shelfLife, data.productId || null]
       );
 
       const stockItemId = res.lastInsertRowid;
@@ -262,6 +272,10 @@ export class StockService {
       name?: string;
       unitType?: StockUnitType;
       minStockAlert?: number;
+      reorderLevel?: number;
+      reorderQuantity?: number;
+      maxStockThreshold?: number;
+      shelfLifeDays?: number;
       status?: 'active' | 'inactive';
     },
     userId: number
@@ -273,10 +287,24 @@ export class StockService {
        SET name = COALESCE(?, name),
            unit_type = COALESCE(?, unit_type),
            min_stock_alert = COALESCE(?, min_stock_alert),
+           reorder_level = COALESCE(?, reorder_level),
+           reorder_quantity = COALESCE(?, reorder_quantity),
+           max_stock_threshold = COALESCE(?, max_stock_threshold),
+           shelf_life_days = COALESCE(?, shelf_life_days),
            status = COALESCE(?, status),
            updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
-      [data.name, data.unitType, data.minStockAlert, data.status, id]
+      [
+        data.name,
+        data.unitType,
+        data.minStockAlert,
+        data.reorderLevel,
+        data.reorderQuantity,
+        data.maxStockThreshold,
+        data.shelfLifeDays,
+        data.status,
+        id,
+      ]
     );
 
     await AuditService.log({
@@ -309,6 +337,8 @@ export class StockService {
       unitPrice?: number;
       supplier?: string;
       invoiceNumber?: string;
+      batchNumber?: string;
+      expiryDate?: string;
       notes?: string;
       entryDate?: string;
     },
@@ -382,8 +412,8 @@ export class StockService {
         `INSERT INTO stock_entries (
           uuid, stock_item_id, entry_number, entry_date, quantity,
           multiplier, total_quantity, total_price, unit_price, status,
-          supplier, invoice_number, notes, created_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'posted', ?, ?, ?, ?)`,
+          supplier, invoice_number, batch_number, expiry_date, notes, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'posted', ?, ?, ?, ?, ?, ?)`,
         [
           entryUuid,
           stockItem.id,
@@ -396,6 +426,8 @@ export class StockService {
           unitPrice,
           data.supplier || null,
           data.invoiceNumber || null,
+          data.batchNumber || null,
+          data.expiryDate || null,
           data.notes || null,
           userId,
         ]
@@ -854,7 +886,117 @@ export class StockService {
   }
 
   /**
-   * 9. Get Low Stock Alerts
+   * 9. Get Comprehensive Inventory Alerts
+   * Categorized: Out of Stock, Low Stock, Minimum Stock, Reorder Level, Expiry, Overstock
+   */
+  static async getStockAlerts(filterType?: string) {
+    const summary = await dbService.queryOne<any>(
+      `SELECT
+         COUNT(DISTINCT CASE WHEN si.current_quantity <= 0 THEN si.id END) as out_of_stock_count,
+         COUNT(DISTINCT CASE WHEN si.current_quantity > 0 AND si.current_quantity <= si.min_stock_alert THEN si.id END) as low_stock_count,
+         COUNT(DISTINCT CASE WHEN si.current_quantity <= si.min_stock_alert THEN si.id END) as min_stock_count,
+         COUNT(DISTINCT CASE WHEN si.current_quantity <= si.reorder_level THEN si.id END) as reorder_level_count,
+         COUNT(DISTINCT CASE WHEN si.max_stock_threshold > 0 AND si.current_quantity > si.max_stock_threshold THEN si.id END) as overstock_count,
+         COUNT(DISTINCT CASE WHEN se.expiry_date IS NOT NULL AND se.expiry_date < CURDATE() THEN si.id END) as expired_count,
+         COUNT(DISTINCT CASE WHEN se.expiry_date IS NOT NULL AND se.expiry_date >= CURDATE() AND se.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 30 DAY) THEN si.id END) as expiring_soon_count
+       FROM stock_items si
+       LEFT JOIN stock_entries se ON si.id = se.stock_item_id
+       WHERE si.status = 'active'`
+    );
+
+    const itemsQuery = `
+      SELECT
+        si.*,
+        p.name as product_name,
+        p.sku,
+        p.selling_price,
+        c.name as category_name,
+        latest_exp.batch_number as latest_batch,
+        latest_exp.expiry_date as nearest_expiry_date,
+        DATEDIFF(latest_exp.expiry_date, CURDATE()) as days_until_expiry,
+        CASE
+          WHEN si.current_quantity <= 0 THEN 'OUT_OF_STOCK'
+          WHEN si.current_quantity <= si.min_stock_alert THEN 'LOW_STOCK'
+          WHEN si.current_quantity <= si.reorder_level THEN 'REORDER_LEVEL'
+          WHEN si.max_stock_threshold > 0 AND si.current_quantity > si.max_stock_threshold THEN 'OVERSTOCK'
+          WHEN latest_exp.expiry_date IS NOT NULL AND latest_exp.expiry_date < CURDATE() THEN 'EXPIRED'
+          WHEN latest_exp.expiry_date IS NOT NULL AND latest_exp.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 30 DAY) THEN 'EXPIRING_SOON'
+          ELSE 'NORMAL'
+        END as alert_category,
+        CASE
+          WHEN si.current_quantity <= 0 THEN 'critical'
+          WHEN si.current_quantity <= (si.min_stock_alert / 2) THEN 'critical'
+          WHEN latest_exp.expiry_date IS NOT NULL AND latest_exp.expiry_date < CURDATE() THEN 'critical'
+          WHEN si.current_quantity <= si.min_stock_alert THEN 'warning'
+          WHEN si.current_quantity <= si.reorder_level THEN 'warning'
+          WHEN latest_exp.expiry_date IS NOT NULL AND latest_exp.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 7 DAY) THEN 'warning'
+          WHEN si.max_stock_threshold > 0 AND si.current_quantity > si.max_stock_threshold THEN 'info'
+          WHEN latest_exp.expiry_date IS NOT NULL AND latest_exp.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 30 DAY) THEN 'info'
+          ELSE 'normal'
+        END as severity,
+        GREATEST(0, (COALESCE(si.reorder_quantity, 20) + GREATEST(0, COALESCE(si.reorder_level, 10) - si.current_quantity))) as suggested_reorder_quantity
+      FROM stock_items si
+      LEFT JOIN products p ON si.product_id = p.id
+      LEFT JOIN categories c ON p.category_id = c.id
+      LEFT JOIN (
+        SELECT se1.stock_item_id, se1.batch_number, se1.expiry_date
+        FROM stock_entries se1
+        INNER JOIN (
+          SELECT stock_item_id, MIN(expiry_date) as min_exp
+          FROM stock_entries
+          WHERE expiry_date IS NOT NULL
+          GROUP BY stock_item_id
+        ) se2 ON se1.stock_item_id = se2.stock_item_id AND se1.expiry_date = se2.min_exp
+        GROUP BY se1.stock_item_id, se1.batch_number, se1.expiry_date
+      ) latest_exp ON si.id = latest_exp.stock_item_id
+      WHERE si.status = 'active'
+    `;
+
+    const allItems: any[] = await dbService.query(itemsQuery);
+
+    const filtered = allItems.filter(item => {
+      if (!filterType || filterType === 'all') {
+        return item.alert_category !== 'NORMAL';
+      }
+      switch (filterType.toLowerCase()) {
+        case 'out_of_stock':
+        case 'out-of-stock':
+          return Number(item.current_quantity) <= 0;
+        case 'low_stock':
+        case 'low-stock':
+          return Number(item.current_quantity) > 0 && Number(item.current_quantity) <= Number(item.min_stock_alert);
+        case 'minimum_stock':
+        case 'min-stock':
+          return Number(item.current_quantity) <= Number(item.min_stock_alert);
+        case 'reorder_level':
+        case 'reorder':
+          return Number(item.current_quantity) <= Number(item.reorder_level);
+        case 'overstock':
+          return Number(item.max_stock_threshold) > 0 && Number(item.current_quantity) > Number(item.max_stock_threshold);
+        case 'expiry':
+          return item.nearest_expiry_date && item.days_until_expiry <= 30;
+        default:
+          return item.alert_category !== 'NORMAL';
+      }
+    });
+
+    return {
+      alerts: filtered,
+      summary: {
+        totalAlerts: filtered.length,
+        outOfStock: Number(summary?.out_of_stock_count || 0),
+        lowStock: Number(summary?.low_stock_count || 0),
+        minStock: Number(summary?.min_stock_count || 0),
+        reorderLevel: Number(summary?.reorder_level_count || 0),
+        overstock: Number(summary?.overstock_count || 0),
+        expired: Number(summary?.expired_count || 0),
+        expiringSoon: Number(summary?.expiring_soon_count || 0),
+      },
+    };
+  }
+
+  /**
+   * 10. Backward Compatibility - Get Low Stock Alerts
    */
   static async getLowStock() {
     const lowStock = await dbService.query(

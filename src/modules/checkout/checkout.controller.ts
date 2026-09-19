@@ -11,4 +11,14 @@ export class CheckoutController {
       next(err);
     }
   }
+
+  static async syncOffline(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { orders } = req.body || {};
+      const result = await CheckoutService.syncOfflineOrders(orders, req.user!.id);
+      ResponseUtil.success(res, result, 'Offline orders synced successfully');
+    } catch (err) {
+      next(err);
+    }
+  }
 }

@@ -104,10 +104,11 @@ export class BillsService {
     }
 
     const items = await dbService.query(
-      `SELECT bi.*, p.sku
+      `SELECT bi.*, p.sku, p.image_url
        FROM bill_items bi
        JOIN products p ON bi.product_id = p.id
-       WHERE bi.bill_id = ?`,
+       WHERE bi.bill_id = ?
+       ORDER BY bi.id ASC`,
       [id]
     );
 
@@ -126,16 +127,13 @@ export class BillsService {
   static async getPrintData(id: number, userId?: number) {
     const bill = await this.getById(id);
 
-    // Fetch Shop & Receipt Settings
     const settingsRows = await dbService.query<{ key: string; value: string }>('SELECT `key`, `value` FROM settings');
     const settingsMap: Record<string, string> = {};
     for (const r of settingsRows) {
       settingsMap[r.key] = r.value;
     }
-    // Legacy databases spell these keys differently; expose both spellings.
     SettingsService.applyKeyAliases(settingsMap);
 
-    // Increment print count
     await dbService.execute('UPDATE bills SET printed_count = printed_count + 1 WHERE id = ?', [id]);
 
     if (userId) {
@@ -144,7 +142,7 @@ export class BillsService {
         action: 'BILL_PRINTED',
         module: 'BILLS',
         recordId: id,
-        newValues: { billNumber: bill.bill_number },
+        newValues: { billNumber: (bill as any).bill_number },
       });
     }
 
@@ -164,6 +162,212 @@ export class BillsService {
         showCustomer: settingsMap['RECEIPT_SHOW_CUSTOMER'] === 'true',
         paperWidth: settingsMap['RECEIPT_PAPER_WIDTH'] || '80mm',
       },
+    };
+  }
+
+  /**
+   * Kitchen Order Ticket (KOT) print layout for kitchen and bar printers.
+   */
+  static async getKotPrintData(id: number) {
+    const bill = await this.getById(id);
+
+    return {
+      kotNumber: `KOT-${(bill as any).bill_number.replace('INV-', '')}`,
+      orderNumber: (bill as any).order_number,
+      orderType: (bill as any).order_type,
+      tableNumber: (bill as any).table_number || 'Takeaway/Counter',
+      tableName: (bill as any).table_name || '',
+      cashierName: (bill as any).cashier_name || 'Staff',
+      orderTime: (bill as any).created_at,
+      notes: (bill as any).notes || '',
+      items: (bill as any).items.map((it: any) => ({
+        productName: it.product_name,
+        variantName: it.variant_name || '',
+        quantity: it.quantity,
+        notes: it.notes || '',
+        isComplimentary: Boolean(it.is_complimentary),
+      })),
+    };
+  }
+
+  /**
+   * Void a bill: marks as VOIDED, returns deducted items back to inventory,
+   * updates order status, adjusts customer statistics, and logs audit record.
+   */
+  static async voidBill(id: number, reason: string, userId: number) {
+    const billData = await this.getById(id);
+    const bill: any = billData;
+
+    if (bill.is_voided || bill.payment_status === 'VOIDED') {
+      throw AppError.badRequest('This bill has already been voided');
+    }
+
+    if (!reason || !reason.trim()) {
+      throw AppError.badRequest('A mandatory reason is required to void this bill');
+    }
+
+    return await dbService.transaction(async () => {
+      // 1. Update bill status
+      await dbService.execute(
+        `UPDATE bills
+         SET is_voided = TRUE,
+             void_reason = ?,
+             void_by = ?,
+             void_at = CURRENT_TIMESTAMP,
+             payment_status = 'VOIDED',
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [reason.trim(), userId, id]
+      );
+
+      // 2. Update order status
+      if (bill.order_id) {
+        await dbService.execute(
+          `UPDATE orders
+           SET status = 'CANCELLED',
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?`,
+          [bill.order_id]
+        );
+      }
+
+      // 3. Return stock for each item
+      for (const item of bill.items) {
+        const stockQty = Number(item.stock_consumption || 1) * Number(item.quantity);
+
+        // Check if item was linked to stock_item
+        const product = await dbService.queryOne<{ stock_item_id: number | null }>(
+          'SELECT stock_item_id FROM products WHERE id = ?',
+          [item.product_id]
+        );
+
+        if (product?.stock_item_id) {
+          await dbService.execute(
+            'UPDATE stock_items SET current_quantity = current_quantity + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            [stockQty, product.stock_item_id]
+          );
+        } else {
+          await dbService.execute(
+            'UPDATE stock SET current_stock = current_stock + ?, updated_at = CURRENT_TIMESTAMP WHERE product_id = ?',
+            [stockQty, item.product_id]
+          );
+        }
+      }
+
+      // 4. Adjust customer statistics if registered
+      if (bill.customer_id) {
+        await dbService.execute(
+          `UPDATE customers
+           SET total_visits = GREATEST(0, total_visits - 1),
+               total_spent = GREATEST(0, total_spent - ?),
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?`,
+          [bill.total_amount, bill.customer_id]
+        );
+      }
+
+      // 5. Audit Log
+      await AuditService.log({
+        userId,
+        action: 'BILL_VOIDED',
+        module: 'BILLS',
+        recordId: id,
+        newValues: {
+          billNumber: bill.bill_number,
+          reason,
+          amountVoided: bill.total_amount,
+        },
+      });
+
+      return {
+        success: true,
+        message: `Bill #${bill.bill_number} has been voided and inventory was returned.`,
+      };
+    });
+  }
+
+  /**
+   * Reopen a bill: Marks bill as reopened and returns the cart payload
+   * so the cashier can edit and re-bill.
+   */
+  static async reopenBill(id: number, userId: number) {
+    const billData = await this.getById(id);
+    const bill: any = billData;
+
+    if (bill.is_voided) {
+      throw AppError.badRequest('Cannot reopen a voided bill');
+    }
+
+    await dbService.execute(
+      `UPDATE bills
+       SET is_reopened = TRUE,
+           reopened_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [id]
+    );
+
+    await AuditService.log({
+      userId,
+      action: 'BILL_REOPENED',
+      module: 'BILLS',
+      recordId: id,
+      newValues: { billNumber: bill.bill_number },
+    });
+
+    return {
+      originalBillId: bill.id,
+      billNumber: bill.bill_number,
+      orderType: bill.order_type,
+      customerId: bill.customer_id,
+      customerName: bill.customer_name,
+      customerPhone: bill.customer_phone,
+      diningTableId: bill.dining_table_id,
+      tableNumber: bill.table_number,
+      tableName: bill.table_name,
+      discountType: bill.discount_type,
+      discountValue: bill.discount_value,
+      serviceChargeAmount: bill.service_charge_amount,
+      surchargeAmount: bill.surcharge_amount,
+      couponCode: bill.coupon_code,
+      couponDiscount: bill.coupon_discount,
+      notes: bill.notes,
+      items: bill.items.map((it: any) => ({
+        productId: it.product_id,
+        productName: it.product_name,
+        variantId: it.variant_id,
+        variantName: it.variant_name,
+        quantity: it.quantity,
+        unitPrice: it.unit_price,
+        notes: it.notes,
+        isComplimentary: Boolean(it.is_complimentary),
+        complimentaryReason: it.complimentary_reason,
+      })),
+    };
+  }
+
+  /**
+   * Duplicate a bill: Returns items and customer payload ready to insert into active cart.
+   */
+  static async getDuplicateOrderData(id: number) {
+    const billData = await this.getById(id);
+    const bill: any = billData;
+
+    return {
+      orderType: bill.order_type,
+      customerId: bill.customer_id,
+      customerName: bill.customer_name,
+      customerPhone: bill.customer_phone,
+      notes: bill.notes,
+      items: bill.items.map((it: any) => ({
+        productId: it.product_id,
+        productName: it.product_name,
+        variantId: it.variant_id,
+        variantName: it.variant_name,
+        quantity: it.quantity,
+        unitPrice: it.unit_price,
+        notes: it.notes,
+        isComplimentary: false,
+      })),
     };
   }
 }

@@ -3,6 +3,7 @@ import { AppError } from '../../core/errors/AppError';
 import { AuditService } from '../audit/audit.service';
 import { SettingsService } from '../settings/settings.service';
 import { OrderStatus, OrderType } from '../../core/types';
+import { SequenceUtil } from '../../core/utils/sequence.util';
 
 export class OrdersService {
   static async getAll(
@@ -178,12 +179,7 @@ export class OrdersService {
       }
 
       // Generate Order Number
-      const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-      const countToday = await dbService.queryOne<{ count: number }>(
-        "SELECT COUNT(*) as count FROM orders WHERE DATE(created_at) = CURDATE()"
-      );
-      const nextSeq = ((countToday?.count || 0) + 1).toString().padStart(4, '0');
-      const orderNumber = `ORD-${dateStr}-${nextSeq}`;
+      const orderNumber = await SequenceUtil.nextDailyNumber('orders', 'order_number', 'ORD');
 
       let subtotal = 0;
       const calculatedItems: any[] = [];

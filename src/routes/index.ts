@@ -17,6 +17,11 @@ import reportsRoutes from '../modules/reports/reports.routes';
 import settingsRoutes from '../modules/settings/settings.routes';
 import auditRoutes from '../modules/audit/audit.routes';
 import staffTrackRoutes from '../modules/staff-track/staff-track.routes';
+import vendorsRoutes from '../modules/vendors/vendors.routes';
+import posClosingRoutes from '../modules/pos-closing/pos-closing.routes';
+import expensesRoutes from '../modules/expenses/expenses.routes';
+import refundsRoutes from '../modules/refunds/refunds.routes';
+import backOfficeRoutes from '../modules/back-office/back-office.routes';
 
 const router = Router();
 
@@ -35,16 +40,24 @@ router.use('/categories', categoriesRoutes);
 router.use('/products', productsRoutes);
 router.use('/stock', stockRoutes);
 router.use('/customers', customersRoutes);
+router.use('/vendors', vendorsRoutes);
 router.use('/dining-tables', diningTablesRoutes);
 router.use('/orders', ordersRoutes);
 router.use('/draft-bills', draftBillsRoutes);
 router.use('/checkout', checkoutRoutes);
 router.use('/bills', billsRoutes);
+router.use('/pos/closing', posClosingRoutes);
 router.use('/queue', queueRoutes);
 router.use('/dashboard', dashboardRoutes);
 router.use('/reports', reportsRoutes);
+router.use('/expenses', expensesRoutes);
+router.use('/refunds', refundsRoutes);
 router.use('/settings', settingsRoutes);
 router.use('/audit', auditRoutes);
 router.use('/staff-track', staffTrackRoutes);
+
+// Administrator-only Back-Office. Deliberately absent from the sidebar and
+// every panel navigation — the screen is reached only via /admin/back-office.
+router.use('/back-office', backOfficeRoutes);
 
 export default router;

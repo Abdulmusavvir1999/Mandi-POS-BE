@@ -3,6 +3,8 @@ import { AppError } from '../../core/errors/AppError';
 import { SettingsService } from '../settings/settings.service';
 import { AuditService } from '../audit/audit.service';
 import { OrderType, PaymentMethod } from '../../core/types';
+import { SequenceUtil } from '../../core/utils/sequence.util';
+import { logger } from '../../config/logger';
 
 export interface CheckoutPayload {
   customerId?: number | null;
@@ -11,47 +13,169 @@ export interface CheckoutPayload {
   orderType: OrderType;
   discountType?: 'FIXED' | 'PERCENTAGE';
   discountValue?: number;
+  serviceChargeAmount?: number;
+  surchargeAmount?: number;
+  couponCode?: string;
+  couponDiscount?: number;
+  cashTendered?: number;
+  changeReturned?: number;
+  offlineSyncId?: string;
   paymentMethod: PaymentMethod;
   paymentAmount?: number;
   paymentReference?: string;
   notes?: string;
   items: Array<{
     productId: number;
-    /** Chosen dish variant (portion). Omitted for dishes that have none. */
     variantId?: number | null;
     quantity: number;
     notes?: string;
+    isComplimentary?: boolean;
+    complimentaryReason?: string;
+    selectedAddons?: Array<{ id: number; name: string; price: number; quantity?: number }>;
+    itemType?: 'PRODUCT' | 'COMBO' | 'DEAL';
+    comboId?: number | null;
+    dealId?: number | null;
   }>;
 }
 
 export class CheckoutService {
+  private static schemaEnsured = false;
+
+  /**
+   * Auto-ensures billing, void, offline sync columns and day closing table exist.
+   */
+  static async ensureSchema(): Promise<void> {
+    if (this.schemaEnsured) return;
+
+    try {
+      // 1. Expand columns
+      try {
+        await dbService.execute("ALTER TABLE orders MODIFY COLUMN order_type VARCHAR(30) NOT NULL");
+        await dbService.execute("ALTER TABLE bills MODIFY COLUMN order_type VARCHAR(30) NOT NULL");
+        await dbService.execute("ALTER TABLE bills MODIFY COLUMN payment_method VARCHAR(30) NOT NULL");
+        await dbService.execute("ALTER TABLE bills MODIFY COLUMN payment_status VARCHAR(30) NOT NULL DEFAULT 'PAID'");
+      } catch (_) {}
+
+      // 2. Add columns to bills
+      const addCol = async (table: string, col: string, def: string) => {
+        try {
+          const colCheck = await dbService.queryOne<{ count: number }>(`
+            SELECT COUNT(*) as count 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_SCHEMA = DATABASE() 
+              AND TABLE_NAME = ? 
+              AND COLUMN_NAME = ?
+          `, [table, col]);
+          if (!colCheck || colCheck.count === 0) {
+            await dbService.execute(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
+          }
+        } catch (e) {
+          logger.warn(`Could not add column ${col} to ${table}:`, e);
+        }
+      };
+
+      await addCol('bills', 'service_charge_amount', 'DECIMAL(10,2) DEFAULT 0.00');
+      await addCol('bills', 'surcharge_amount', 'DECIMAL(10,2) DEFAULT 0.00');
+      await addCol('bills', 'coupon_code', 'VARCHAR(50) NULL');
+      await addCol('bills', 'coupon_discount', 'DECIMAL(10,2) DEFAULT 0.00');
+      await addCol('bills', 'cash_tendered', 'DECIMAL(10,2) NULL');
+      await addCol('bills', 'change_returned', 'DECIMAL(10,2) NULL');
+      await addCol('bills', 'payment_reference', 'VARCHAR(100) NULL');
+      await addCol('bills', 'is_voided', 'BOOLEAN DEFAULT FALSE');
+      await addCol('bills', 'void_reason', 'TEXT NULL');
+      await addCol('bills', 'void_by', 'INT NULL');
+      await addCol('bills', 'void_at', 'DATETIME NULL');
+      await addCol('bills', 'is_reopened', 'BOOLEAN DEFAULT FALSE');
+      await addCol('bills', 'reopened_from_bill_id', 'INT NULL');
+      await addCol('bills', 'reopened_at', 'DATETIME NULL');
+      await addCol('bills', 'offline_sync_id', 'VARCHAR(100) NULL');
+
+      // Add columns to order_items and bill_items
+      await addCol('order_items', 'addons_data', 'TEXT NULL');
+      await addCol('order_items', 'item_type', "VARCHAR(30) DEFAULT 'PRODUCT'");
+      await addCol('order_items', 'combo_id', 'INT NULL');
+      await addCol('order_items', 'deal_id', 'INT NULL');
+
+      await addCol('bill_items', 'is_complimentary', 'BOOLEAN DEFAULT FALSE');
+      await addCol('bill_items', 'complimentary_reason', 'VARCHAR(255) NULL');
+      await addCol('bill_items', 'addons_data', 'TEXT NULL');
+      await addCol('bill_items', 'item_type', "VARCHAR(30) DEFAULT 'PRODUCT'");
+      await addCol('bill_items', 'combo_id', 'INT NULL');
+      await addCol('bill_items', 'deal_id', 'INT NULL');
+
+      // 3. Create pos_day_closings table
+      await dbService.execute(`
+        CREATE TABLE IF NOT EXISTS pos_day_closings (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          closing_number VARCHAR(50) UNIQUE NOT NULL,
+          user_id INT NOT NULL,
+          cashier_name VARCHAR(100) NULL,
+          opening_time DATETIME NOT NULL,
+          closing_time DATETIME NOT NULL,
+          opening_cash DECIMAL(10,2) DEFAULT 0.00,
+          total_cash_sales DECIMAL(10,2) DEFAULT 0.00,
+          total_card_sales DECIMAL(10,2) DEFAULT 0.00,
+          total_upi_sales DECIMAL(10,2) DEFAULT 0.00,
+          total_online_sales DECIMAL(10,2) DEFAULT 0.00,
+          gross_sales DECIMAL(10,2) DEFAULT 0.00,
+          total_discounts DECIMAL(10,2) DEFAULT 0.00,
+          total_tax DECIMAL(10,2) DEFAULT 0.00,
+          total_service_charges DECIMAL(10,2) DEFAULT 0.00,
+          total_bills_count INT DEFAULT 0,
+          void_bills_count INT DEFAULT 0,
+          void_bills_amount DECIMAL(10,2) DEFAULT 0.00,
+          expected_cash DECIMAL(10,2) DEFAULT 0.00,
+          actual_cash DECIMAL(10,2) DEFAULT 0.00,
+          cash_variance DECIMAL(10,2) DEFAULT 0.00,
+          notes TEXT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_day_closing_user (user_id),
+          INDEX idx_day_closing_created (created_at)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+      `);
+
+      this.schemaEnsured = true;
+    } catch (err) {
+      logger.error('Failed to ensure checkout schema:', err);
+    }
+  }
+
   static async processCheckout(payload: CheckoutPayload, cashierId: number) {
+    await this.ensureSchema();
+
     if (!payload.items || payload.items.length === 0) {
       throw AppError.badRequest('Cart is empty. Please add items to checkout.');
     }
 
+    // Check for duplicate offline sync
+    if (payload.offlineSyncId) {
+      const existingOffline = await dbService.queryOne<{ id: number; bill_number: string }>(
+        'SELECT id, bill_number FROM bills WHERE offline_sync_id = ?',
+        [payload.offlineSyncId]
+      );
+      if (existingOffline) {
+        return await this.getBillSummary(existingOffline.id);
+      }
+    }
+
+    // Default tax rate from settings
+    let defaultTaxRate = 5.0;
+    try {
+      const taxSetting = await SettingsService.getValue('TAX_PERCENTAGE');
+      if (taxSetting) {
+        defaultTaxRate = parseFloat(taxSetting) || 5.0;
+      }
+    } catch (_) {}
+
     return await dbService.transaction(async () => {
-      // 1. Check settings for negative stock & tax
-      const allowNegativeStock = (await SettingsService.getValue('POS_ALLOW_NEGATIVE_STOCK')) === 'true';
-
-      const taxEnabledValue = await SettingsService.getValue('TAX_ENABLED');
-      const taxRateValue = await SettingsService.getValue('TAX_PERCENTAGE');
-      const configuredTaxRate = parseFloat(taxRateValue || '5.0');
-      // Databases provisioned before TAX_ENABLED existed only carry a tax rate;
-      // treat a configured rate as enabled unless the flag explicitly says otherwise.
-      const isTaxEnabled = taxEnabledValue !== null ? taxEnabledValue === 'true' : configuredTaxRate > 0;
-      const defaultTaxRate = isTaxEnabled ? configuredTaxRate : 0.0;
-
-      // 2. Validate Products & Stock & Recalculate Prices
+      // 1. Verify items & Stock availability
       let subtotal = 0;
       const verifiedItems: Array<{
         productId: number;
         productName: string;
         variantId: number | null;
         variantName: string | null;
-        /** Stock units one unit of this line consumes (1 when there is no variant). */
         stockConsumption: number;
-        /** stockConsumption x quantity — what actually leaves the ledger. */
         requiredStock: number;
         unitPrice: number;
         costPrice: number;
@@ -62,92 +186,63 @@ export class CheckoutService {
         totalAmount: number;
         notes?: string;
         currentStock: number;
-        /** Ledger item this line deducts from, already resolved. */
         stockItemId: number | null;
+        isComplimentary: boolean;
+        complimentaryReason: string | null;
+        addonsData: string | null;
+        itemType: string;
+        comboId: number | null;
+        dealId: number | null;
       }> = [];
 
       for (const item of payload.items) {
-        if (item.quantity <= 0) {
-          throw AppError.badRequest(`Invalid quantity (${item.quantity}) for product ID ${item.productId}`);
-        }
-
-        const product = await dbService.queryOne<{
-          id: number;
-          name: string;
-          sku: string;
-          selling_price: number;
-          cost_price: number;
-          tax_rate: number;
-          status: string;
-        }>('SELECT * FROM products WHERE id = ?', [item.productId]);
+        const product = await dbService.queryOne<any>(
+          'SELECT * FROM products WHERE id = ?',
+          [item.productId]
+        );
 
         if (!product) {
-          throw AppError.badRequest(`Product with ID ${item.productId} does not exist`);
+          throw AppError.notFound(`Product with ID ${item.productId} not found`);
         }
 
-        if (product.status !== 'ACTIVE') {
-          throw AppError.badRequest(`Product "${product.name}" is currently inactive and cannot be sold`);
+        if (product.status !== 'ACTIVE' || !product.is_available) {
+          throw AppError.badRequest(`Product "${product.name}" is currently unavailable for order.`);
         }
 
-        // The chosen variant decides both the price and how much stock the
-        // line consumes. Re-read server-side: a price posted by the client is
-        // never trusted, and neither is a variant belonging to another dish.
-        let variant: { id: number; name: string; selling_price: number; stock_consumption: number } | null = null;
+        let variant: any = null;
         if (item.variantId) {
-          variant = await dbService.queryOne<{ id: number; name: string; selling_price: number; stock_consumption: number }>(
-            'SELECT id, name, selling_price, stock_consumption, stock_item_id FROM product_variants WHERE id = ? AND product_id = ? AND status = ?',
-            [item.variantId, product.id, 'ACTIVE']
+          variant = await dbService.queryOne<any>(
+            'SELECT * FROM product_variants WHERE id = ? AND product_id = ?',
+            [item.variantId, item.productId]
           );
           if (!variant) {
-            throw AppError.badRequest(`Selected portion is not available for "${product.name}"`);
-          }
-        } else {
-          // A dish that defines variants must be sold as one of them, otherwise
-          // the sale would silently consume the fallback 1 unit.
-          const variantCount = await dbService.queryOne<{ count: number }>(
-            "SELECT COUNT(*) as count FROM product_variants WHERE product_id = ? AND status = 'ACTIVE'",
-            [product.id]
-          );
-          if ((variantCount?.count || 0) > 0) {
-            throw AppError.badRequest(`Please choose a portion for "${product.name}"`);
+            throw AppError.notFound(`Variant ${item.variantId} not found for product "${product.name}"`);
           }
         }
 
-        const stockConsumption = variant ? Number(variant.stock_consumption) || 0 : 1;
+        // Inventory check
+        const targetStockItemId = variant?.stock_item_id ?? product.stock_item_id;
+        const stockConsumption = variant ? Number(variant.stock_consumption || 1) : 1.0;
         const requiredStock = stockConsumption * item.quantity;
 
-        // Which ledger item this line draws from, most specific first:
-        //   1. the variant's own source  (EACH mode)
-        //   2. the dish's common source  (COMMON mode)
-        //   3. the item auto-linked to the product (pre-variant behaviour)
-        let stockItem: { id: number; current_quantity: number; unit_type: string } | null = null;
+        let currentStock = 0;
+        let stockItem: any = null;
 
-        const variantSource = variant ? (variant as any).stock_item_id : null;
-        const sourceId = variantSource || (product as any).stock_item_id || null;
-
-        if (sourceId) {
-          stockItem = await dbService.queryOne<{ id: number; current_quantity: number; unit_type: string }>(
-            'SELECT id, current_quantity, unit_type FROM stock_items WHERE id = ?',
-            [sourceId]
+        if (targetStockItemId) {
+          stockItem = await dbService.queryOne<any>(
+            'SELECT * FROM stock_items WHERE id = ?',
+            [targetStockItemId]
           );
-          if (!stockItem) {
-            throw AppError.badRequest(`Stock item for "${product.name}" no longer exists`);
-          }
+          currentStock = stockItem ? Number(stockItem.current_quantity) : 0;
         } else {
-          stockItem = await dbService.queryOne<{ id: number; current_quantity: number; unit_type: string }>(
-            'SELECT id, current_quantity, unit_type FROM stock_items WHERE product_id = ?',
+          const legacyStock = await dbService.queryOne<any>(
+            'SELECT current_stock FROM stock WHERE product_id = ?',
             [product.id]
           );
+          currentStock = legacyStock ? Number(legacyStock.current_stock) : Number(product.stock_quantity || 0);
         }
 
-        let currentStock: number;
-        if (stockItem) {
-          currentStock = Number(stockItem.current_quantity) || 0;
-        } else {
-          const stockRec = await dbService.queryOne<{ current_stock: number }>('SELECT current_stock FROM stock WHERE product_id = ?', [product.id]);
-          currentStock = Number(stockRec?.current_stock) || 0;
-        }
-
+        const allowNegativeStock = false;
         if (!allowNegativeStock && currentStock < requiredStock) {
           const label = variant ? `${product.name} (${variant.name})` : product.name;
           const unit = stockItem?.unit_type ? ` ${stockItem.unit_type}` : '';
@@ -156,7 +251,11 @@ export class CheckoutService {
           );
         }
 
-        const unitPrice = variant ? Number(variant.selling_price) : Number(product.selling_price);
+        const isComp = Boolean(item.isComplimentary);
+        const baseUnitPrice = variant ? Number(variant.selling_price) : Number(product.selling_price);
+        const addonsPrice = (item.selectedAddons || []).reduce((sum, a) => sum + (Number(a.price) || 0) * (a.quantity || 1), 0);
+        // If complimentary, price charged is 0
+        const unitPrice = isComp ? 0 : (baseUnitPrice + addonsPrice);
         const itemSubtotal = unitPrice * item.quantity;
         subtotal += itemSubtotal;
 
@@ -177,10 +276,16 @@ export class CheckoutService {
           notes: item.notes,
           currentStock,
           stockItemId: stockItem ? stockItem.id : null,
+          isComplimentary: isComp,
+          complimentaryReason: isComp ? (item.complimentaryReason || 'Staff Authorized Complimentary') : null,
+          addonsData: item.selectedAddons && item.selectedAddons.length > 0 ? JSON.stringify(item.selectedAddons) : null,
+          itemType: item.itemType || 'PRODUCT',
+          comboId: item.comboId || null,
+          dealId: item.dealId || null,
         });
       }
 
-      // 3. Server-side authoritative discount calculation
+      // 3. Discount calculation
       let discountAmount = 0;
       const discountVal = payload.discountValue || 0;
       if (discountVal > 0) {
@@ -197,15 +302,25 @@ export class CheckoutService {
         }
       }
 
-      // 4. Server-side tax calculation
-      const taxableAmount = Math.max(0, subtotal - discountAmount);
+      const couponDiscount = Math.max(0, Number(payload.couponDiscount) || 0);
+      const totalDiscounts = Math.min(subtotal, discountAmount + couponDiscount);
+
+      // 4. Tax & Additional Charges (Service Charge & Surcharges)
+      const taxableAmount = Math.max(0, subtotal - totalDiscounts);
       const taxAmount = Math.round(((taxableAmount * defaultTaxRate) / 100) * 100) / 100;
-      const grandTotal = Math.round((taxableAmount + taxAmount) * 100) / 100;
+      const serviceCharge = Math.max(0, Number(payload.serviceChargeAmount) || 0);
+      const surcharge = Math.max(0, Number(payload.surchargeAmount) || 0);
+      const grandTotal = Math.round((taxableAmount + taxAmount + serviceCharge + surcharge) * 100) / 100;
 
       const paymentAmount = payload.paymentAmount !== undefined ? payload.paymentAmount : grandTotal;
       if (paymentAmount < grandTotal) {
         throw AppError.badRequest(`Payment amount (${paymentAmount}) cannot be less than Grand Total (${grandTotal})`);
       }
+
+      const cashTendered = payload.paymentMethod === 'CASH' && payload.cashTendered
+        ? Number(payload.cashTendered)
+        : paymentAmount;
+      const changeReturned = Math.max(0, cashTendered - grandTotal);
 
       // 5. Create or reuse Order
       let orderId: number;
@@ -217,40 +332,28 @@ export class CheckoutService {
           [payload.existingOrderId]
         );
         if (!existingOrder) {
-          throw AppError.notFound('Referenced existing order not found');
+          throw AppError.notFound(`Order ${payload.existingOrderId} not found.`);
         }
         orderId = existingOrder.id;
         orderNumber = existingOrder.order_number;
 
-        // Update existing order status to COMPLETED
         await dbService.execute(
-          `UPDATE orders
-           SET status = 'COMPLETED',
-               subtotal = ?,
-               discount_type = ?,
-               discount_value = ?,
-               discount_amount = ?,
-               tax_amount = ?,
-               total_amount = ?,
-               updated_at = CURRENT_TIMESTAMP
+          `UPDATE orders 
+           SET status = 'COMPLETED', subtotal = ?, discount_type = ?, discount_value = ?,
+               discount_amount = ?, tax_amount = ?, total_amount = ?, updated_at = CURRENT_TIMESTAMP
            WHERE id = ?`,
           [
             subtotal,
             payload.discountType || 'FIXED',
             discountVal,
-            discountAmount,
+            totalDiscounts,
             taxAmount,
             grandTotal,
             orderId,
           ]
         );
       } else {
-        const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-        const countToday = await dbService.queryOne<{ count: number }>(
-          "SELECT COUNT(*) as count FROM orders WHERE DATE(created_at) = CURDATE()"
-        );
-        const nextSeq = ((countToday?.count || 0) + 1).toString().padStart(4, '0');
-        orderNumber = `ORD-${dateStr}-${nextSeq}`;
+        orderNumber = await SequenceUtil.nextDailyNumber('orders', 'order_number', 'ORD');
 
         const orderRes = await dbService.execute(
           `INSERT INTO orders (
@@ -266,63 +369,69 @@ export class CheckoutService {
             subtotal,
             payload.discountType || 'FIXED',
             discountVal,
-            discountAmount,
+            totalDiscounts,
             taxAmount,
             grandTotal,
             payload.notes || null,
             cashierId,
           ]
         );
-
         orderId = orderRes.lastInsertRowid;
+      }
 
-        // Insert Order Items
-        for (const item of verifiedItems) {
+      // Order Items & Stock Deductions
+      for (const item of verifiedItems) {
+        await dbService.execute(
+          `INSERT INTO order_items (
+            order_id, product_id, product_name, variant_id, variant_name,
+            stock_consumption, unit_price, quantity, subtotal,
+            discount_amount, tax_amount, total_amount, addons_data, item_type, combo_id, deal_id, notes
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)`,
+          [
+            orderId,
+            item.productId,
+            item.productName,
+            item.variantId,
+            item.variantName,
+            item.stockConsumption,
+            item.unitPrice,
+            item.quantity,
+            item.subtotal,
+            item.subtotal,
+            item.addonsData,
+            item.itemType,
+            item.comboId,
+            item.dealId,
+            item.notes || null,
+          ]
+        );
+
+        // Deduct inventory
+        if (item.stockItemId) {
           await dbService.execute(
-            `INSERT INTO order_items (
-              order_id, product_id, product_name, unit_price, cost_price,
-              quantity, subtotal, discount_amount, tax_amount, total_amount, notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              orderId,
-              item.productId,
-              item.productName,
-              item.unitPrice,
-              item.costPrice,
-              item.quantity,
-              item.subtotal,
-              0,
-              0,
-              item.subtotal,
-              item.notes || null,
-            ]
+            'UPDATE stock_items SET current_quantity = current_quantity - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            [item.requiredStock, item.stockItemId]
+          );
+        } else {
+          await dbService.execute(
+            'UPDATE stock SET current_stock = current_stock - ?, updated_at = CURRENT_TIMESTAMP WHERE product_id = ?',
+            [item.requiredStock, item.productId]
           );
         }
       }
 
-      // Record Order History
-      await dbService.execute(
-        `INSERT INTO order_status_history (order_id, previous_status, new_status, changed_by, notes)
-         VALUES (?, 'PENDING', 'COMPLETED', ?, 'Order billed and completed at checkout')`,
-        [orderId, cashierId]
-      );
-
-      // 6. Generate Unique Sequential Bill Number
-      const datePart = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-      const billCountToday = await dbService.queryOne<{ count: number }>(
-        "SELECT COUNT(*) as count FROM bills WHERE DATE(created_at) = CURDATE()"
-      );
-      const nextBillSeq = ((billCountToday?.count || 0) + 1).toString().padStart(4, '0');
-      const billNumber = `INV-${datePart}-${nextBillSeq}`;
+      // 6. Generate Sequential Bill Number
+      const billNumber = await SequenceUtil.nextDailyNumber('bills', 'bill_number', 'INV');
 
       // 7. Create Bill Record
       const billRes = await dbService.execute(
         `INSERT INTO bills (
           bill_number, order_id, customer_id, dining_table_id, cashier_id,
           order_type, subtotal, discount_type, discount_value,
-          discount_amount, tax_amount, total_amount, payment_status,
-          payment_method, notes, printed_count
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PAID', ?, ?, 0)`,
+          discount_amount, tax_amount, service_charge_amount, surcharge_amount,
+          coupon_code, coupon_discount, total_amount, payment_status,
+          payment_method, cash_tendered, change_returned, offline_sync_id, notes, printed_count
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PAID', ?, ?, ?, ?, ?, 0)`,
         [
           billNumber,
           orderId,
@@ -335,8 +444,15 @@ export class CheckoutService {
           discountVal,
           discountAmount,
           taxAmount,
+          serviceCharge,
+          surcharge,
+          payload.couponCode || null,
+          couponDiscount,
           grandTotal,
           payload.paymentMethod,
+          cashTendered,
+          changeReturned,
+          payload.offlineSyncId || null,
           payload.notes || null,
         ]
       );
@@ -348,8 +464,9 @@ export class CheckoutService {
         await dbService.execute(
           `INSERT INTO bill_items (
             bill_id, product_id, product_name, variant_id, variant_name, stock_consumption,
-            unit_price, quantity, subtotal, discount_amount, tax_amount, total_amount
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)`,
+            unit_price, quantity, subtotal, discount_amount, tax_amount, total_amount,
+            is_complimentary, complimentary_reason, addons_data, item_type, combo_id, deal_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?)`,
           [
             billId,
             item.productId,
@@ -361,6 +478,12 @@ export class CheckoutService {
             item.quantity,
             item.subtotal,
             item.subtotal,
+            item.isComplimentary,
+            item.complimentaryReason,
+            item.addonsData,
+            item.itemType,
+            item.comboId,
+            item.dealId,
           ]
         );
       }
@@ -380,144 +503,103 @@ export class CheckoutService {
         ]
       );
 
-      // 10. Deduct Stock & Record Stock Movements
-      for (const item of verifiedItems) {
-        // The line removes stockConsumption per unit sold, not one per unit.
-        const newStock = item.currentStock - item.requiredStock;
-
-        // 10a. Update or create master stock_items
-        const stkItem = item.stockItemId
-          ? await dbService.queryOne<{ id: number; average_unit_price: number; current_value: number }>(
-              'SELECT id, average_unit_price, current_value FROM stock_items WHERE id = ?',
-              [item.stockItemId]
-            )
-          : null;
-
-        if (stkItem) {
-          const avgPrice = Number(stkItem.average_unit_price) || item.costPrice || 0;
-          const newValue = Math.max(0, newStock * avgPrice);
-          const moveValue = item.requiredStock * avgPrice;
-          const moveUuid = `move-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`;
-
-          await dbService.execute(
-            `UPDATE stock_items
-             SET current_quantity = ?,
-                 current_value = ?,
-                 updated_at = CURRENT_TIMESTAMP
-             WHERE id = ?`,
-            [newStock, newValue, stkItem.id]
-          );
-
-          await dbService.execute(
-            `INSERT INTO stock_movements (
-              uuid, stock_item_id, movement_type, reference_type, reference_id,
-              quantity, unit_price, total_value, balance_quantity, balance_value,
-              notes, created_by
-            ) VALUES (?, ?, 'out', 'POS_SALE', ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              moveUuid,
-              stkItem.id,
-              billNumber,
-              -item.requiredStock,
-              avgPrice,
-              moveValue,
-              newStock,
-              newValue,
-              `Sale deduction on Bill #${billNumber} (${item.quantity} x ${item.variantName || 'standard'} @ ${item.stockConsumption} = ${item.requiredStock} units)`,
-              cashierId,
-            ]
-          );
-        }
-
-        // 10b. Legacy sync
-        await dbService.execute(
-          'UPDATE stock SET current_stock = ?, updated_at = CURRENT_TIMESTAMP WHERE product_id = ?',
-          [newStock, item.productId]
-        );
-
-        await dbService.execute(
-          'UPDATE products SET stock_quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-          [newStock, item.productId]
-        );
-
-        await dbService.execute(
-          `INSERT INTO stock_transactions (
-            product_id, transaction_type, quantity, previous_stock, new_stock,
-            reference_id, reference_type, notes, created_by
-          ) VALUES (?, 'SALE', ?, ?, ?, ?, 'POS_CHECKOUT_BILL', ?, ?)`,
-          [
-            item.productId,
-            item.requiredStock,
-            item.currentStock,
-            newStock,
-            billNumber,
-            item.variantName
-              ? `Sale on Bill #${billNumber} - ${item.quantity} x ${item.variantName}`
-              : `Sale on Bill #${billNumber}`,
-            cashierId,
-          ]
-        );
-      }
-
-      // 11. Update Dining Table (Release table if dining)
-      if (payload.diningTableId) {
-        await dbService.execute(
-          `UPDATE dining_tables
-           SET status = 'AVAILABLE', current_order_id = NULL, updated_at = CURRENT_TIMESTAMP
-           WHERE id = ?`,
-          [payload.diningTableId]
-        );
-      }
-
-      // 12. Update Customer statistics
+      // 10. Update Customer Stats
       if (payload.customerId) {
         await dbService.execute(
           `UPDATE customers
            SET total_visits = total_visits + 1,
                total_spent = total_spent + ?,
+               last_visit_at = CURRENT_TIMESTAMP,
                updated_at = CURRENT_TIMESTAMP
            WHERE id = ?`,
           [grandTotal, payload.customerId]
         );
       }
 
-      // 13. Audit Log
+      // 11. Free Table if dining
+      if (payload.diningTableId) {
+        await dbService.execute(
+          `UPDATE dining_tables
+           SET status = 'AVAILABLE',
+               active_guest_count = 0,
+               current_order_id = NULL,
+               seated_at = NULL,
+               cleaning_started_at = NULL,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?`,
+          [payload.diningTableId]
+        );
+      }
+
+      // 12. Audit Log
       await AuditService.log({
         userId: cashierId,
-        action: 'POS_CHECKOUT_COMPLETED',
+        action: 'ORDER_CHECKOUT_COMPLETED',
         module: 'CHECKOUT',
         recordId: billId,
         newValues: {
           billNumber,
           orderNumber,
-          totalAmount: grandTotal,
+          orderType: payload.orderType,
           paymentMethod: payload.paymentMethod,
+          grandTotal,
           itemCount: verifiedItems.length,
+          offlineSyncId: payload.offlineSyncId || null,
         },
       });
 
-      // 14. Return Complete Bill Representation
-      const fullBill = await dbService.queryOne(
-        `SELECT b.*, c.name as customer_name, c.phone as customer_phone,
-                t.table_number, t.name as table_name,
-                u.name as cashier_name
-         FROM bills b
-         LEFT JOIN customers c ON b.customer_id = c.id
-         LEFT JOIN dining_tables t ON b.dining_table_id = t.id
-         LEFT JOIN users u ON b.cashier_id = u.id
-         WHERE b.id = ?`,
-        [billId]
-      );
-
-      const billItems = await dbService.query('SELECT * FROM bill_items WHERE bill_id = ?', [billId]);
-      const paymentInfo = await dbService.queryOne('SELECT * FROM payments WHERE bill_id = ?', [billId]);
-
-      return {
-        ...fullBill,
-        items: billItems,
-        payment: paymentInfo,
-        changeDue: Math.max(0, paymentAmount - grandTotal),
-      };
+      return await this.getBillSummary(billId);
     });
+  }
+
+  static async getBillSummary(billId: number) {
+    const bill = await dbService.queryOne(
+      `SELECT b.*, o.order_number, c.name as customer_name, c.phone as customer_phone,
+              t.table_number, t.name as table_name,
+              u.name as cashier_name
+       FROM bills b
+       LEFT JOIN orders o ON b.order_id = o.id
+       LEFT JOIN customers c ON b.customer_id = c.id
+       LEFT JOIN dining_tables t ON b.dining_table_id = t.id
+       LEFT JOIN users u ON b.cashier_id = u.id
+       WHERE b.id = ?`,
+      [billId]
+    );
+
+    const items = await dbService.query(
+      'SELECT * FROM bill_items WHERE bill_id = ? ORDER BY id ASC',
+      [billId]
+    );
+
+    return {
+      bill,
+      items,
+    };
+  }
+
+  /**
+   * Sync a batch of offline orders created while disconnected.
+   */
+  static async syncOfflineOrders(orders: CheckoutPayload[], cashierId: number) {
+    await this.ensureSchema();
+    if (!orders || orders.length === 0) {
+      return { syncedCount: 0, results: [] };
+    }
+
+    const results: any[] = [];
+    for (const order of orders) {
+      try {
+        const res = await this.processCheckout(order, cashierId);
+        results.push({ success: true, offlineSyncId: order.offlineSyncId, bill: res.bill });
+      } catch (err: any) {
+        results.push({ success: false, offlineSyncId: order.offlineSyncId, error: err?.message || 'Sync failed' });
+      }
+    }
+
+    return {
+      syncedCount: results.filter((r) => r.success).length,
+      totalCount: orders.length,
+      results,
+    };
   }
 }

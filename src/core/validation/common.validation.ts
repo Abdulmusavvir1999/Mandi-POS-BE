@@ -55,6 +55,10 @@ export const createStockItemSchema = z
     stockCode: z.string().optional(),
     unitType: z.enum(['piece', 'kg', 'liter', 'gram', 'box', 'packet', 'portion', 'other']).optional(),
     minStockAlert: z.coerce.number().nonnegative().optional(),
+    reorderLevel: z.coerce.number().nonnegative().optional(),
+    reorderQuantity: z.coerce.number().nonnegative().optional(),
+    maxStockThreshold: z.coerce.number().nonnegative().optional(),
+    shelfLifeDays: z.coerce.number().int().nonnegative().optional(),
     productId: z.coerce.number().int().positive().optional().nullable(),
     initialQuantity: z.coerce.number().nonnegative().optional(),
     multiplier: z.coerce.number().positive().optional(),
@@ -68,6 +72,10 @@ export const updateStockItemSchema = z
     name: z.string().trim().min(1).optional(),
     unitType: z.enum(['piece', 'kg', 'liter', 'gram', 'box', 'packet', 'portion', 'other']).optional(),
     minStockAlert: z.coerce.number().nonnegative().optional(),
+    reorderLevel: z.coerce.number().nonnegative().optional(),
+    reorderQuantity: z.coerce.number().nonnegative().optional(),
+    maxStockThreshold: z.coerce.number().nonnegative().optional(),
+    shelfLifeDays: z.coerce.number().int().nonnegative().optional(),
     status: z.enum(['active', 'inactive']).optional(),
   })
   .passthrough();
@@ -82,6 +90,8 @@ export const createStockEntrySchema = z
     invoiceNumber: z.string().optional(),
     notes: z.string().optional(),
     entryDate: z.string().optional(),
+    batchNumber: z.string().optional(),
+    expiryDate: z.string().optional(),
   })
   .passthrough();
 
@@ -110,5 +120,46 @@ export const stockAdjustSchema = z
     totalPrice: z.coerce.number().min(0, 'Total cost cannot be negative').optional(),
     unitPrice: z.coerce.number().min(0, 'Unit cost cannot be negative').optional(),
     reason: nonEmpty('Adjustment reason'),
+  })
+  .passthrough();
+
+export const createExpenseSchema = z
+  .object({
+    category: nonEmpty('Expense category'),
+    expense_date: nonEmpty('Expense date'),
+    amount: z.coerce.number({ required_error: 'Amount is required' }).nonnegative('Amount cannot be negative'),
+    tax_amount: z.coerce.number().nonnegative('Tax amount cannot be negative').optional(),
+    payment_method: z.string().trim().min(1).optional(),
+    payment_status: z.enum(['PAID', 'PENDING', 'CANCELLED']).optional(),
+    vendor_id: z.coerce.number().int().positive().optional().nullable(),
+    vendor_name: z.string().trim().optional(),
+    reference_number: z.string().trim().optional(),
+    description: z.string().trim().optional(),
+    notes: z.string().trim().optional(),
+    is_recurring: z.coerce.boolean().optional(),
+  })
+  .passthrough();
+
+export const updateExpenseSchema = createExpenseSchema.partial();
+
+export const createRefundSchema = z
+  .object({
+    billId: z.coerce.number({ required_error: 'Bill is required' }).int().positive('Bill is required'),
+    reason: nonEmpty('Refund reason'),
+    reasonCode: z
+      .enum(['QUALITY', 'WRONG_ITEM', 'SERVICE_DELAY', 'BILLING_ERROR', 'CUSTOMER_REQUEST', 'OTHER'])
+      .optional(),
+    refundMethod: z.string().trim().min(1).optional(),
+    referenceNumber: z.string().trim().optional(),
+    restockItems: z.coerce.boolean().optional(),
+    // Omit `items` for a full refund; supply lines for a partial one.
+    items: z
+      .array(
+        z.object({
+          billItemId: z.coerce.number({ required_error: 'Bill item is required' }).int().positive(),
+          quantity: z.coerce.number({ required_error: 'Quantity is required' }).positive('Quantity must be greater than 0'),
+        })
+      )
+      .optional(),
   })
   .passthrough();

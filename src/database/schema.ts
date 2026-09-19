@@ -75,6 +75,8 @@ export const createSchema = async (): Promise<void> => {
       tax_rate REAL DEFAULT 5.0,
       stock_quantity INTEGER DEFAULT 0,
       low_stock_threshold INTEGER DEFAULT 10,
+      stock_item_id INTEGER,
+      variant_stock_mode TEXT DEFAULT 'COMMON' CHECK(variant_stock_mode IN ('COMMON', 'EACH')),
       is_available INTEGER DEFAULT 1 CHECK(is_available IN (0, 1)),
       status TEXT DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE', 'INACTIVE')),
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -82,7 +84,23 @@ export const createSchema = async (): Promise<void> => {
       FOREIGN KEY (category_id) REFERENCES categories(id)
     );
 
-    -- 7. Stock Items Master table
+    -- Dish Variants table (portion sizes: Full / Half / ...)
+    CREATE TABLE IF NOT EXISTS product_variants (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      product_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      stock_item_id INTEGER,
+      selling_price REAL NOT NULL DEFAULT 0.0,
+      stock_consumption REAL NOT NULL DEFAULT 1.0,
+      display_order INTEGER DEFAULT 0,
+      is_default INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE', 'INACTIVE')),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+    );
+
+    -- Stock Items Master table
     CREATE TABLE IF NOT EXISTS stock_items (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       uuid TEXT UNIQUE NOT NULL,
@@ -94,19 +112,25 @@ export const createSchema = async (): Promise<void> => {
       average_unit_price REAL NOT NULL DEFAULT 0.0,
       status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'inactive')),
       min_stock_alert REAL NOT NULL DEFAULT 10.0,
+      reorder_level REAL NOT NULL DEFAULT 15.0,
+      reorder_quantity REAL NOT NULL DEFAULT 50.0,
+      max_stock_threshold REAL NOT NULL DEFAULT 100.0,
+      shelf_life_days INTEGER,
       product_id INTEGER,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL
     );
 
-    -- 8. Stock Entries (Purchase / Addition Ledger)
+    -- Stock Entries (Purchase / Addition Ledger)
     CREATE TABLE IF NOT EXISTS stock_entries (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       uuid TEXT UNIQUE NOT NULL,
       stock_item_id INTEGER NOT NULL,
       entry_number TEXT UNIQUE NOT NULL,
       entry_date DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      expiry_date DATE,
+      batch_number TEXT,
       quantity REAL NOT NULL,
       multiplier REAL NOT NULL DEFAULT 1.0,
       total_quantity REAL NOT NULL,
@@ -123,7 +147,7 @@ export const createSchema = async (): Promise<void> => {
       FOREIGN KEY (created_by) REFERENCES users(id)
     );
 
-    -- 9. Stock Movements (History / Audit Trail)
+    -- Stock Movements (History / Audit Trail)
     CREATE TABLE IF NOT EXISTS stock_movements (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       uuid TEXT UNIQUE NOT NULL,
@@ -185,19 +209,127 @@ export const createSchema = async (): Promise<void> => {
       FOREIGN KEY (approved_by) REFERENCES users(id)
     );
 
+    -- Vendors table
+    CREATE TABLE IF NOT EXISTS vendors (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      uuid TEXT UNIQUE NOT NULL,
+      vendor_code TEXT UNIQUE NOT NULL,
+      name TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'General Supplies',
+      status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE', 'INACTIVE', 'BLOCKED')),
+      image_url TEXT,
+      notes TEXT,
+      contact_person TEXT,
+      phone TEXT NOT NULL,
+      email TEXT,
+      address TEXT,
+      city TEXT,
+      state TEXT,
+      postal_code TEXT,
+      website TEXT,
+      tax_id TEXT,
+      pan_number TEXT,
+      tax_category TEXT DEFAULT 'STANDARD',
+      msme_number TEXT,
+      payment_terms TEXT DEFAULT 'NET_30',
+      preferred_payment_method TEXT DEFAULT 'BANK_TRANSFER',
+      bank_name TEXT,
+      account_number TEXT,
+      ifsc_code TEXT,
+      branch_name TEXT,
+      upi_id TEXT,
+      credit_limit REAL NOT NULL DEFAULT 0.0,
+      credit_period_days INTEGER NOT NULL DEFAULT 30,
+      outstanding_balance REAL NOT NULL DEFAULT 0.0,
+      total_purchases_amount REAL NOT NULL DEFAULT 0.0,
+      total_purchases_count INTEGER NOT NULL DEFAULT 0,
+      last_purchase_date DATETIME,
+      last_payment_date DATETIME,
+      rating REAL NOT NULL DEFAULT 5.0,
+      delivery_speed_rating REAL NOT NULL DEFAULT 5.0,
+      quality_rating REAL NOT NULL DEFAULT 5.0,
+      pricing_rating REAL NOT NULL DEFAULT 5.0,
+      on_time_delivery_rate REAL NOT NULL DEFAULT 100.0,
+      quality_score REAL NOT NULL DEFAULT 100.0,
+      fulfillment_rate REAL NOT NULL DEFAULT 100.0,
+      performance_notes TEXT,
+      created_by INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (created_by) REFERENCES users(id)
+    );
+
+    -- Vendor Purchases (Invoices Ledger)
+    CREATE TABLE IF NOT EXISTS vendor_purchases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      uuid TEXT UNIQUE NOT NULL,
+      vendor_id INTEGER NOT NULL,
+      invoice_number TEXT NOT NULL,
+      order_date DATETIME NOT NULL,
+      due_date DATETIME,
+      total_amount REAL NOT NULL DEFAULT 0.0,
+      paid_amount REAL NOT NULL DEFAULT 0.0,
+      balance_amount REAL NOT NULL DEFAULT 0.0,
+      payment_status TEXT NOT NULL DEFAULT 'UNPAID' CHECK(payment_status IN ('PAID', 'PARTIAL', 'UNPAID', 'OVERDUE')),
+      delivery_status TEXT NOT NULL DEFAULT 'RECEIVED' CHECK(delivery_status IN ('RECEIVED', 'PENDING', 'CANCELLED')),
+      items_summary TEXT,
+      notes TEXT,
+      created_by INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE CASCADE,
+      FOREIGN KEY (created_by) REFERENCES users(id)
+    );
+
+    -- Vendor Payments (Disbursements Ledger)
+    CREATE TABLE IF NOT EXISTS vendor_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      uuid TEXT UNIQUE NOT NULL,
+      vendor_id INTEGER NOT NULL,
+      purchase_id INTEGER,
+      payment_number TEXT UNIQUE NOT NULL,
+      payment_date DATETIME NOT NULL,
+      amount REAL NOT NULL DEFAULT 0.0,
+      payment_method TEXT NOT NULL DEFAULT 'BANK_TRANSFER',
+      reference_number TEXT,
+      notes TEXT,
+      created_by INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE CASCADE,
+      FOREIGN KEY (purchase_id) REFERENCES vendor_purchases(id) ON DELETE SET NULL,
+      FOREIGN KEY (created_by) REFERENCES users(id)
+    );
+
     -- Customers table
     CREATE TABLE IF NOT EXISTS customers (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_code TEXT,
       name TEXT NOT NULL,
       phone TEXT UNIQUE NOT NULL,
       email TEXT,
       address TEXT,
       notes TEXT,
       status TEXT DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE', 'INACTIVE')),
+      tier TEXT DEFAULT 'REGULAR',
+      loyalty_points INTEGER DEFAULT 0,
+      last_visit_at DATETIME,
       total_visits INTEGER DEFAULT 0,
       total_spent REAL DEFAULT 0.0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Customer Notes table
+    CREATE TABLE IF NOT EXISTS customer_notes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      customer_id INTEGER NOT NULL,
+      user_id INTEGER,
+      author_name TEXT,
+      note_type TEXT NOT NULL DEFAULT 'GENERAL',
+      note_text TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id)
     );
 
     -- Dining Tables
@@ -207,11 +339,55 @@ export const createSchema = async (): Promise<void> => {
       name TEXT NOT NULL,
       section TEXT DEFAULT 'Main Hall',
       capacity INTEGER DEFAULT 4,
-      status TEXT DEFAULT 'AVAILABLE' CHECK(status IN ('AVAILABLE', 'SELECTED', 'OCCUPIED', 'UNAVAILABLE')),
+      active_guest_count INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'AVAILABLE',
       current_order_id INTEGER,
+      seated_at DATETIME,
+      cleaning_started_at DATETIME,
+      reservation_id INTEGER,
       display_order INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Table Reservations
+    CREATE TABLE IF NOT EXISTS table_reservations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      uuid TEXT UNIQUE NOT NULL,
+      reservation_code TEXT UNIQUE NOT NULL,
+      table_id INTEGER,
+      customer_name TEXT NOT NULL,
+      customer_phone TEXT NOT NULL,
+      guest_count INTEGER NOT NULL DEFAULT 2,
+      reservation_time DATETIME NOT NULL,
+      preferred_section TEXT,
+      special_requests TEXT,
+      status TEXT NOT NULL DEFAULT 'CONFIRMED' CHECK(status IN ('CONFIRMED', 'SEATED', 'CANCELLED', 'NO_SHOW')),
+      created_by INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (table_id) REFERENCES dining_tables(id) ON DELETE SET NULL,
+      FOREIGN KEY (created_by) REFERENCES users(id)
+    );
+
+    -- Table Waitlist & Queue Tokens
+    CREATE TABLE IF NOT EXISTS table_waitlist (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      uuid TEXT UNIQUE NOT NULL,
+      token_number TEXT NOT NULL,
+      customer_name TEXT NOT NULL,
+      customer_phone TEXT,
+      guest_count INTEGER NOT NULL DEFAULT 2,
+      preferred_section TEXT,
+      estimated_wait_minutes INTEGER NOT NULL DEFAULT 15,
+      status TEXT NOT NULL DEFAULT 'WAITING' CHECK(status IN ('WAITING', 'NOTIFIED', 'SEATED', 'CANCELLED')),
+      assigned_table_id INTEGER,
+      seated_at DATETIME,
+      created_by INTEGER,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (assigned_table_id) REFERENCES dining_tables(id) ON DELETE SET NULL,
+      FOREIGN KEY (created_by) REFERENCES users(id)
     );
 
     -- Orders table
@@ -220,7 +396,7 @@ export const createSchema = async (): Promise<void> => {
       order_number TEXT UNIQUE NOT NULL,
       customer_id INTEGER,
       dining_table_id INTEGER,
-      order_type TEXT NOT NULL CHECK(order_type IN ('WALK_IN', 'TAKEAWAY', 'DINING')),
+      order_type TEXT NOT NULL,
       status TEXT DEFAULT 'PENDING' CHECK(status IN ('PENDING', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED')),
       subtotal REAL NOT NULL DEFAULT 0.0,
       discount_type TEXT DEFAULT 'FIXED' CHECK(discount_type IN ('FIXED', 'PERCENTAGE')),
@@ -243,6 +419,9 @@ export const createSchema = async (): Promise<void> => {
       order_id INTEGER NOT NULL,
       product_id INTEGER NOT NULL,
       product_name TEXT NOT NULL,
+      variant_id INTEGER,
+      variant_name TEXT,
+      stock_consumption REAL DEFAULT 1.0,
       unit_price REAL NOT NULL,
       cost_price REAL DEFAULT 0.0,
       quantity INTEGER NOT NULL,
@@ -250,6 +429,10 @@ export const createSchema = async (): Promise<void> => {
       discount_amount REAL DEFAULT 0.0,
       tax_amount REAL DEFAULT 0.0,
       total_amount REAL NOT NULL,
+      addons_data TEXT,
+      item_type TEXT DEFAULT 'PRODUCT',
+      combo_id INTEGER,
+      deal_id INTEGER,
       notes TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
@@ -275,7 +458,7 @@ export const createSchema = async (): Promise<void> => {
       draft_number TEXT UNIQUE NOT NULL,
       customer_id INTEGER,
       dining_table_id INTEGER,
-      order_type TEXT NOT NULL DEFAULT 'WALK_IN' CHECK(order_type IN ('WALK_IN', 'TAKEAWAY', 'DINING')),
+      order_type TEXT NOT NULL DEFAULT 'WALK_IN',
       discount_type TEXT DEFAULT 'FIXED' CHECK(discount_type IN ('FIXED', 'PERCENTAGE')),
       discount_value REAL DEFAULT 0.0,
       notes TEXT,
@@ -308,16 +491,31 @@ export const createSchema = async (): Promise<void> => {
       customer_id INTEGER,
       dining_table_id INTEGER,
       cashier_id INTEGER NOT NULL,
-      order_type TEXT NOT NULL CHECK(order_type IN ('WALK_IN', 'TAKEAWAY', 'DINING')),
+      order_type TEXT NOT NULL,
       subtotal REAL NOT NULL,
       discount_type TEXT DEFAULT 'FIXED',
       discount_value REAL DEFAULT 0.0,
       discount_amount REAL NOT NULL DEFAULT 0.0,
       tax_amount REAL NOT NULL DEFAULT 0.0,
+      service_charge_amount REAL DEFAULT 0.0,
+      surcharge_amount REAL DEFAULT 0.0,
+      coupon_code TEXT,
+      coupon_discount REAL DEFAULT 0.0,
       total_amount REAL NOT NULL,
-      payment_status TEXT DEFAULT 'PAID' CHECK(payment_status IN ('PAID', 'PENDING', 'FAILED', 'REFUNDED')),
-      payment_method TEXT NOT NULL CHECK(payment_method IN ('CASH', 'CARD', 'UPI', 'OTHER')),
+      payment_status TEXT DEFAULT 'PAID',
+      payment_method TEXT NOT NULL,
+      cash_tendered REAL,
+      change_returned REAL,
+      payment_reference TEXT,
       notes TEXT,
+      is_voided INTEGER DEFAULT 0,
+      void_reason TEXT,
+      void_by INTEGER,
+      void_at DATETIME,
+      is_reopened INTEGER DEFAULT 0,
+      reopened_from_bill_id INTEGER,
+      reopened_at DATETIME,
+      offline_sync_id TEXT,
       printed_count INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -333,15 +531,115 @@ export const createSchema = async (): Promise<void> => {
       bill_id INTEGER NOT NULL,
       product_id INTEGER NOT NULL,
       product_name TEXT NOT NULL,
+      variant_id INTEGER,
+      variant_name TEXT,
+      stock_consumption REAL DEFAULT 1.0,
       unit_price REAL NOT NULL,
       quantity INTEGER NOT NULL,
       subtotal REAL NOT NULL,
       discount_amount REAL DEFAULT 0.0,
       tax_amount REAL DEFAULT 0.0,
+      is_complimentary INTEGER DEFAULT 0,
+      complimentary_reason TEXT,
+      addons_data TEXT,
+      item_type TEXT DEFAULT 'PRODUCT',
+      combo_id INTEGER,
+      deal_id INTEGER,
       total_amount REAL NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (bill_id) REFERENCES bills(id) ON DELETE CASCADE,
       FOREIGN KEY (product_id) REFERENCES products(id)
+    );
+
+    -- Product Add-ons
+    CREATE TABLE IF NOT EXISTS product_addons (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'Sides',
+      price REAL NOT NULL DEFAULT 0.0,
+      cost_price REAL NOT NULL DEFAULT 0.0,
+      is_available INTEGER DEFAULT 1,
+      stock_item_id INTEGER,
+      status TEXT DEFAULT 'ACTIVE',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Add-on Mappings
+    CREATE TABLE IF NOT EXISTS product_addon_mappings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      addon_id INTEGER NOT NULL,
+      product_id INTEGER,
+      category_id INTEGER,
+      is_global INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (addon_id) REFERENCES product_addons(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+      FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
+    );
+
+    -- Combo Meals
+    CREATE TABLE IF NOT EXISTS combo_meals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      combo_code TEXT UNIQUE NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      image_url TEXT,
+      category_id INTEGER,
+      original_price REAL NOT NULL DEFAULT 0.0,
+      combo_price REAL NOT NULL DEFAULT 0.0,
+      savings_amount REAL NOT NULL DEFAULT 0.0,
+      is_available INTEGER DEFAULT 1,
+      status TEXT DEFAULT 'ACTIVE',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Combo Meal Items
+    CREATE TABLE IF NOT EXISTS combo_meal_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      combo_id INTEGER NOT NULL,
+      product_id INTEGER NOT NULL,
+      variant_id INTEGER,
+      quantity INTEGER NOT NULL DEFAULT 1,
+      display_order INTEGER DEFAULT 0,
+      FOREIGN KEY (combo_id) REFERENCES combo_meals(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+      FOREIGN KEY (variant_id) REFERENCES product_variants(id) ON DELETE SET NULL
+    );
+
+    -- Meal Deals
+    CREATE TABLE IF NOT EXISTS meal_deals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_code TEXT UNIQUE NOT NULL,
+      title TEXT NOT NULL,
+      badge_text TEXT DEFAULT 'VALUE DEAL',
+      description TEXT,
+      image_url TEXT,
+      original_price REAL NOT NULL DEFAULT 0.0,
+      deal_price REAL NOT NULL DEFAULT 0.0,
+      savings_amount REAL NOT NULL DEFAULT 0.0,
+      start_date DATE,
+      end_date DATE,
+      start_time TEXT,
+      end_time TEXT,
+      days_of_week TEXT DEFAULT 'ALL',
+      is_active INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- Meal Deal Items
+    CREATE TABLE IF NOT EXISTS meal_deal_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      deal_id INTEGER NOT NULL,
+      product_id INTEGER NOT NULL,
+      variant_id INTEGER,
+      quantity INTEGER NOT NULL DEFAULT 1,
+      notes TEXT,
+      FOREIGN KEY (deal_id) REFERENCES meal_deals(id) ON DELETE CASCADE,
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+      FOREIGN KEY (variant_id) REFERENCES product_variants(id) ON DELETE SET NULL
     );
 
     -- Payments table
@@ -349,9 +647,9 @@ export const createSchema = async (): Promise<void> => {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       bill_id INTEGER NOT NULL,
       order_id INTEGER NOT NULL,
-      payment_method TEXT NOT NULL CHECK(payment_method IN ('CASH', 'CARD', 'UPI', 'OTHER')),
+      payment_method TEXT NOT NULL,
       amount REAL NOT NULL,
-      status TEXT DEFAULT 'PAID' CHECK(status IN ('PAID', 'PENDING', 'FAILED', 'REFUNDED')),
+      status TEXT DEFAULT 'PAID',
       reference_number TEXT,
       transaction_data TEXT,
       created_by INTEGER,
@@ -359,6 +657,34 @@ export const createSchema = async (): Promise<void> => {
       FOREIGN KEY (bill_id) REFERENCES bills(id) ON DELETE CASCADE,
       FOREIGN KEY (order_id) REFERENCES orders(id),
       FOREIGN KEY (created_by) REFERENCES users(id)
+    );
+
+    -- POS Day Closing (Z-Report / Shift Close) table
+    CREATE TABLE IF NOT EXISTS pos_day_closings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      closing_number TEXT UNIQUE NOT NULL,
+      user_id INTEGER NOT NULL,
+      cashier_name TEXT,
+      opening_time DATETIME NOT NULL,
+      closing_time DATETIME NOT NULL,
+      opening_cash REAL DEFAULT 0.0,
+      total_cash_sales REAL DEFAULT 0.0,
+      total_card_sales REAL DEFAULT 0.0,
+      total_upi_sales REAL DEFAULT 0.0,
+      total_online_sales REAL DEFAULT 0.0,
+      gross_sales REAL DEFAULT 0.0,
+      total_discounts REAL DEFAULT 0.0,
+      total_tax REAL DEFAULT 0.0,
+      total_service_charges REAL DEFAULT 0.0,
+      total_bills_count INTEGER DEFAULT 0,
+      void_bills_count INTEGER DEFAULT 0,
+      void_bills_amount REAL DEFAULT 0.0,
+      expected_cash REAL DEFAULT 0.0,
+      actual_cash REAL DEFAULT 0.0,
+      cash_variance REAL DEFAULT 0.0,
+      notes TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id)
     );
 
     -- Queue management
@@ -407,6 +733,7 @@ export const createSchema = async (): Promise<void> => {
     CREATE INDEX IF NOT EXISTS idx_products_status ON products(status);
     CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku);
     CREATE INDEX IF NOT EXISTS idx_products_name ON products(name);
+    CREATE INDEX IF NOT EXISTS idx_product_variants_prod ON product_variants(product_id);
 
     CREATE INDEX IF NOT EXISTS idx_orders_order_num ON orders(order_number);
     CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
@@ -414,11 +741,15 @@ export const createSchema = async (): Promise<void> => {
     CREATE INDEX IF NOT EXISTS idx_orders_customer ON orders(customer_id);
     CREATE INDEX IF NOT EXISTS idx_orders_table ON orders(dining_table_id);
     CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at);
+    CREATE INDEX IF NOT EXISTS idx_orders_created_by_date ON orders(created_by, created_at);
 
     CREATE INDEX IF NOT EXISTS idx_bills_bill_num ON bills(bill_number);
     CREATE INDEX IF NOT EXISTS idx_bills_order ON bills(order_id);
     CREATE INDEX IF NOT EXISTS idx_bills_created ON bills(created_at);
     CREATE INDEX IF NOT EXISTS idx_bills_payment_method ON bills(payment_method);
+    CREATE INDEX IF NOT EXISTS idx_bills_offline_sync ON bills(offline_sync_id);
+    CREATE INDEX IF NOT EXISTS idx_bills_voided ON bills(is_voided);
+    CREATE INDEX IF NOT EXISTS idx_bills_cashier_date ON bills(cashier_id, created_at);
 
     CREATE INDEX IF NOT EXISTS idx_stock_items_code ON stock_items(stock_code);
     CREATE INDEX IF NOT EXISTS idx_stock_items_status ON stock_items(status);
@@ -434,13 +765,63 @@ export const createSchema = async (): Promise<void> => {
     CREATE INDEX IF NOT EXISTS idx_stock_trans_product ON stock_transactions(product_id);
     CREATE INDEX IF NOT EXISTS idx_stock_trans_created ON stock_transactions(created_at);
 
+    CREATE INDEX IF NOT EXISTS idx_vendors_code ON vendors(vendor_code);
+    CREATE INDEX IF NOT EXISTS idx_vendors_name ON vendors(name);
+    CREATE INDEX IF NOT EXISTS idx_vendors_category ON vendors(category);
+    CREATE INDEX IF NOT EXISTS idx_vendors_status ON vendors(status);
+    CREATE INDEX IF NOT EXISTS idx_vendors_phone ON vendors(phone);
+
+    CREATE INDEX IF NOT EXISTS idx_vp_vendor_id ON vendor_purchases(vendor_id);
+    CREATE INDEX IF NOT EXISTS idx_vp_invoice ON vendor_purchases(invoice_number);
+    CREATE INDEX IF NOT EXISTS idx_vp_payment_status ON vendor_purchases(payment_status);
+    CREATE INDEX IF NOT EXISTS idx_vp_order_date ON vendor_purchases(order_date);
+
+    CREATE INDEX IF NOT EXISTS idx_vpay_vendor_id ON vendor_payments(vendor_id);
+    CREATE INDEX IF NOT EXISTS idx_vpay_purchase_id ON vendor_payments(purchase_id);
+    CREATE INDEX IF NOT EXISTS idx_vpay_date ON vendor_payments(payment_date);
+
+    CREATE INDEX IF NOT EXISTS idx_tr_time ON table_reservations(reservation_time);
+    CREATE INDEX IF NOT EXISTS idx_tr_table ON table_reservations(table_id);
+    CREATE INDEX IF NOT EXISTS idx_tr_status ON table_reservations(status);
+
+    CREATE INDEX IF NOT EXISTS idx_wl_status ON table_waitlist(status);
+    CREATE INDEX IF NOT EXISTS idx_wl_created ON table_waitlist(created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone);
+    CREATE INDEX IF NOT EXISTS idx_customers_name ON customers(name);
+    CREATE INDEX IF NOT EXISTS idx_customers_code ON customers(customer_code);
+    CREATE INDEX IF NOT EXISTS idx_customers_tier ON customers(tier);
+    CREATE INDEX IF NOT EXISTS idx_cust_notes_cid ON customer_notes(customer_id);
+
     CREATE INDEX IF NOT EXISTS idx_queue_num ON queue(queue_number);
     CREATE INDEX IF NOT EXISTS idx_queue_status ON queue(status);
     CREATE INDEX IF NOT EXISTS idx_queue_created ON queue(created_at);
 
-    CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone);
-    CREATE INDEX IF NOT EXISTS idx_customers_name ON customers(name);
     CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);
+    CREATE INDEX IF NOT EXISTS idx_audit_user_created ON audit_logs(user_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_audit_module ON audit_logs(module);
+
+    CREATE INDEX IF NOT EXISTS idx_osh_order_status ON order_status_history(order_id, new_status);
+
+    CREATE INDEX IF NOT EXISTS idx_day_closing_user ON pos_day_closings(user_id);
+    CREATE INDEX IF NOT EXISTS idx_day_closing_created ON pos_day_closings(created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_addon_name ON product_addons(name);
+    CREATE INDEX IF NOT EXISTS idx_addon_category ON product_addons(category);
+    CREATE INDEX IF NOT EXISTS idx_addon_status ON product_addons(status);
+
+    CREATE INDEX IF NOT EXISTS idx_combo_code ON combo_meals(combo_code);
+    CREATE INDEX IF NOT EXISTS idx_combo_status ON combo_meals(status);
+    CREATE INDEX IF NOT EXISTS idx_cmi_combo ON combo_meal_items(combo_id);
+    CREATE INDEX IF NOT EXISTS idx_cmi_product ON combo_meal_items(product_id);
+
+    CREATE INDEX IF NOT EXISTS idx_deal_code ON meal_deals(deal_code);
+    CREATE INDEX IF NOT EXISTS idx_deal_active ON meal_deals(is_active);
+    CREATE INDEX IF NOT EXISTS idx_mdi_deal ON meal_deal_items(deal_id);
+    CREATE INDEX IF NOT EXISTS idx_mdi_product ON meal_deal_items(product_id);
+
+    CREATE INDEX IF NOT EXISTS idx_stock_entries_expiry ON stock_entries(expiry_date);
+    CREATE INDEX IF NOT EXISTS idx_stock_items_reorder ON stock_items(reorder_level, current_quantity);
   `;
 
   await dbService.executeBatch(schemaSql);
