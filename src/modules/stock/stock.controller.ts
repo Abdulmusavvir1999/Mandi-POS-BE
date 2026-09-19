@@ -74,8 +74,9 @@ export class StockController {
       const supplier = req.query.supplier as string | undefined;
       const dateFrom = req.query.dateFrom as string | undefined;
       const dateTo = req.query.dateTo as string | undefined;
+      const vendorId = ParamUtil.optionalId(req.query.vendorId, 'vendorId');
 
-      const result = await StockService.getStockEntries(page, limit, stockItemId, search, supplier, dateFrom, dateTo);
+      const result = await StockService.getStockEntries(page, limit, stockItemId, search, supplier, dateFrom, dateTo, vendorId);
       ResponseUtil.paginated(res, result, 'Stock purchase entries fetched successfully');
     } catch (err) {
       next(err);

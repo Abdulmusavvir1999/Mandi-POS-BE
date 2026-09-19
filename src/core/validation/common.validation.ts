@@ -87,6 +87,7 @@ export const createStockEntrySchema = z
     multiplier: z.coerce.number().positive('Multiplier must be greater than 0').optional().default(1),
     totalPrice: z.coerce.number({ required_error: 'Total price is required' }).nonnegative('Total price must be zero or more'),
     supplier: z.string().optional(),
+    vendorId: z.coerce.number().int().positive('Vendor is invalid').optional(),
     invoiceNumber: z.string().optional(),
     notes: z.string().optional(),
     entryDate: z.string().optional(),

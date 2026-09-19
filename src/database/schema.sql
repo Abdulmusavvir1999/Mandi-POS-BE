@@ -182,6 +182,7 @@ CREATE TABLE IF NOT EXISTS stock_entries (
   unit_price DECIMAL(14,4) NOT NULL,
   status ENUM('draft', 'posted', 'cancelled') NOT NULL DEFAULT 'posted',
   supplier VARCHAR(150) NULL,
+  vendor_id INT NULL,
   invoice_number VARCHAR(100) NULL,
   notes TEXT NULL,
   created_by INT NULL,
@@ -192,7 +193,8 @@ CREATE TABLE IF NOT EXISTS stock_entries (
   INDEX idx_stock_entries_item (stock_item_id),
   INDEX idx_stock_entries_number (entry_number),
   INDEX idx_stock_entries_date (entry_date),
-  INDEX idx_stock_entries_expiry (expiry_date)
+  INDEX idx_stock_entries_expiry (expiry_date),
+  INDEX idx_stock_entries_vendor (vendor_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Append-only history. balance_quantity / balance_value are the running totals
@@ -830,6 +832,27 @@ CREATE TABLE IF NOT EXISTS vendor_payments (
   FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE CASCADE,
   FOREIGN KEY (purchase_id) REFERENCES vendor_purchases(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- stock_entries.vendor_id is declared up in SECTION 3, but the constraint has to
+-- wait until here: vendors does not exist yet at that point in this file.
+-- Guarded so re-running the schema does not fail on an existing constraint.
+SET @fk_exists := (
+  SELECT COUNT(*) FROM information_schema.table_constraints
+  WHERE table_schema = DATABASE()
+    AND table_name = 'stock_entries'
+    AND constraint_name = 'fk_stock_entries_vendor'
+);
+SET @sql := IF(
+  @fk_exists = 0,
+  'ALTER TABLE stock_entries
+     ADD CONSTRAINT fk_stock_entries_vendor
+     FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE SET NULL',
+  'SELECT ''FK fk_stock_entries_vendor already present.'' AS note'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
 
 -- ───────────────────────────────────────────────────────────────────────────

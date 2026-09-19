@@ -336,6 +336,7 @@ export class StockService {
       totalPrice?: number;
       unitPrice?: number;
       supplier?: string;
+      vendorId?: number;
       invoiceNumber?: string;
       batchNumber?: string;
       expiryDate?: string;
@@ -399,6 +400,28 @@ export class StockService {
 
       const unitPrice = totalQuantity > 0 ? totalPrice / totalQuantity : 0;
 
+      // 2b. Resolve the vendor, when one was picked.
+      // supplier is kept as the name snapshot for this purchase: renaming or
+      // deleting a vendor later must not rewrite what this entry says it was
+      // bought from. A free-typed supplier with no vendor picked still works.
+      let vendorId: number | null = null;
+      let supplierName: string | null = data.supplier?.trim() || null;
+
+      if (data.vendorId) {
+        const vendor = await dbService.queryOne<{ id: number; name: string; status: string }>(
+          'SELECT id, name, status FROM vendors WHERE id = ?',
+          [data.vendorId]
+        );
+        if (!vendor) {
+          throw AppError.notFound('Vendor not found');
+        }
+        if (vendor.status === 'BLOCKED') {
+          throw AppError.badRequest(`Vendor ${vendor.name} is blocked and cannot be purchased from`);
+        }
+        vendorId = vendor.id;
+        supplierName = vendor.name;
+      }
+
       // 3. Generate Sequential Entry Number (e.g. STK-IN-00001)
       const countRes = await dbService.queryOne<{ count: number }>('SELECT COUNT(*) as count FROM stock_entries');
       const nextSeq = (countRes?.count || 0) + 1;
@@ -412,8 +435,8 @@ export class StockService {
         `INSERT INTO stock_entries (
           uuid, stock_item_id, entry_number, entry_date, quantity,
           multiplier, total_quantity, total_price, unit_price, status,
-          supplier, invoice_number, batch_number, expiry_date, notes, created_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'posted', ?, ?, ?, ?, ?, ?)`,
+          supplier, vendor_id, invoice_number, batch_number, expiry_date, notes, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'posted', ?, ?, ?, ?, ?, ?, ?)`,
         [
           entryUuid,
           stockItem.id,
@@ -424,7 +447,8 @@ export class StockService {
           totalQuantity,
           totalPrice,
           unitPrice,
-          data.supplier || null,
+          supplierName,
+          vendorId,
           data.invoiceNumber || null,
           data.batchNumber || null,
           data.expiryDate || null,
@@ -459,7 +483,7 @@ export class StockService {
           totalPrice,
           newQuantity,
           newValue,
-          data.notes || (data.supplier ? `Purchase from ${data.supplier}` : 'Stock Purchase Addition'),
+          data.notes || (supplierName ? `Purchase from ${supplierName}` : 'Stock Purchase Addition'),
           userId,
         ]
       );
@@ -563,7 +587,8 @@ export class StockService {
     search?: string,
     supplier?: string,
     dateFrom?: string,
-    dateTo?: string
+    dateTo?: string,
+    vendorId?: number
   ) {
     const offset = (page - 1) * limit;
     let where = 'WHERE 1=1';
@@ -575,13 +600,20 @@ export class StockService {
     }
 
     if (search) {
-      where += ' AND (se.entry_number LIKE ? OR si.name LIKE ? OR si.stock_code LIKE ? OR se.supplier LIKE ? OR se.invoice_number LIKE ?)';
-      params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+      where += ' AND (se.entry_number LIKE ? OR si.name LIKE ? OR si.stock_code LIKE ? OR se.supplier LIKE ? OR v.name LIKE ? OR se.invoice_number LIKE ?)';
+      params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
     }
 
     if (supplier) {
       where += ' AND se.supplier LIKE ?';
       params.push(`%${supplier}%`);
+    }
+
+    // Exact match, unlike the supplier text filter above: once entries are
+    // linked, "show me everything from this vendor" has one right answer.
+    if (vendorId) {
+      where += ' AND se.vendor_id = ?';
+      params.push(vendorId);
     }
 
     if (dateFrom) {
@@ -598,6 +630,7 @@ export class StockService {
       `SELECT COUNT(*) as total
        FROM stock_entries se
        JOIN stock_items si ON se.stock_item_id = si.id
+       LEFT JOIN vendors v ON se.vendor_id = v.id
        ${where}`,
       params
     );
@@ -608,9 +641,13 @@ export class StockService {
               si.name as stock_item_name,
               si.stock_code,
               si.unit_type,
+              v.name as vendor_name,
+              v.vendor_code,
+              v.status as vendor_status,
               u.name as created_by_name
        FROM stock_entries se
        JOIN stock_items si ON se.stock_item_id = si.id
+       LEFT JOIN vendors v ON se.vendor_id = v.id
        LEFT JOIN users u ON se.created_by = u.id
        ${where}
        ORDER BY se.entry_date DESC, se.id DESC

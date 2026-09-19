@@ -138,13 +138,17 @@ export const createSchema = async (): Promise<void> => {
       unit_price REAL NOT NULL,
       status TEXT NOT NULL DEFAULT 'posted' CHECK(status IN ('draft', 'posted', 'cancelled')),
       supplier TEXT,
+      vendor_id INTEGER,
       invoice_number TEXT,
       notes TEXT,
       created_by INTEGER,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (stock_item_id) REFERENCES stock_items(id) ON DELETE CASCADE,
-      FOREIGN KEY (created_by) REFERENCES users(id)
+      FOREIGN KEY (created_by) REFERENCES users(id),
+      -- vendors is declared further down this file; SQLite resolves the
+      -- reference at insert time, not at CREATE time, so the order is fine.
+      FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE SET NULL
     );
 
     -- Stock Movements (History / Audit Trail)
@@ -821,6 +825,7 @@ export const createSchema = async (): Promise<void> => {
     CREATE INDEX IF NOT EXISTS idx_mdi_product ON meal_deal_items(product_id);
 
     CREATE INDEX IF NOT EXISTS idx_stock_entries_expiry ON stock_entries(expiry_date);
+    CREATE INDEX IF NOT EXISTS idx_stock_entries_vendor ON stock_entries(vendor_id);
     CREATE INDEX IF NOT EXISTS idx_stock_items_reorder ON stock_items(reorder_level, current_quantity);
   `;
 
