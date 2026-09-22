@@ -1,7 +1,7 @@
 {
-  "name": "mandi-pos-api",
+  "name": "-pos-api",
   "version": "1.0.0",
-  "description": "Production-ready backend API for Mandi Shop POS & Management System",
+  "description": "Production-ready backend API for  Shop POS & Management System",
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",

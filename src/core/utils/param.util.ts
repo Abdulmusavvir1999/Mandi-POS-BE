@@ -1,4 +1,5 @@
 import { AppError } from '../errors/AppError';
+import { OrderType } from '../types';
 
 /**
  * Request parameter coercion.
@@ -61,6 +62,20 @@ export class ParamUtil {
   static like(term: string): string {
     const escaped = term.replace(/[\\%_]/g, (ch) => '\\' + ch);
     return `%${escaped}%`;
+  }
+
+  /**
+   * Coerces an incoming order type to one of the two the POS now has.
+   *
+   * order_type is a VARCHAR with no CHECK behind it, so whatever a client
+   * sends is what gets stored. A till still on an older build, or an offline
+   * cart replaying a sale queued before the changeover, will send WALK_IN,
+   * PICKUP or COUNTER - and a single such row is enough to go missing from
+   * the Takeaway tab and from every report grouped by order type. Anything
+   * that is not dine-in is takeaway, so that is what gets written.
+   */
+  static orderType(value: unknown): OrderType {
+    return String(value ?? '').toUpperCase() === 'DINING' ? 'DINING' : 'TAKEAWAY';
   }
 
   /** Accepts 'true'/'1' (and real booleans) as true; everything else is false. */

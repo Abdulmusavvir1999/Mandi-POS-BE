@@ -6,6 +6,8 @@ import { OrderType, PaymentMethod } from '../../core/types';
 import { SequenceUtil } from '../../core/utils/sequence.util';
 import { DocumentSequence, ORDER_DOCUMENT, BILL_DOCUMENT } from '../../core/utils/document-sequence.util';
 import { logger } from '../../config/logger';
+import { splitTax } from '../../core/utils/tax.util';
+import { ParamUtil } from '../../core/utils/param.util';
 
 export interface CheckoutPayload {
   customerId?: number | null;
@@ -211,14 +213,11 @@ export class CheckoutService {
       }
     }
 
-    // Default tax rate from settings
-    let defaultTaxRate = 5.0;
-    try {
-      const taxSetting = await SettingsService.getValue('TAX_PERCENTAGE');
-      if (taxSetting) {
-        defaultTaxRate = parseFloat(taxSetting) || 5.0;
-      }
-    } catch (_) {}
+    // The configured tax rule: the rate, whether tax is charged at all, and
+    // whether the menu price already contains it. The till works to the same
+    // three, so its grand total and this one agree — they have to, since the
+    // payment check below rejects anything under the total computed here.
+    const taxPolicy = await SettingsService.getTaxPolicy();
 
     return await dbService.transaction(async () => {
       // 1. Verify items & Stock availability
@@ -357,11 +356,16 @@ export class CheckoutService {
       const totalDiscounts = Math.min(subtotal, discountAmount + couponDiscount);
 
       // 4. Tax & Additional Charges (Service Charge & Surcharges)
+      //
+      // splitTax carries both rules: under EXCLUSIVE `taxedAmount` is the
+      // taxable base plus the tax, under INCLUSIVE it is the base itself with
+      // the tax already inside it. `subtotal` stays what the guest was
+      // quoted either way, and `taxAmount` is what the GST return needs.
       const taxableAmount = Math.max(0, subtotal - totalDiscounts);
-      const taxAmount = Math.round(((taxableAmount * defaultTaxRate) / 100) * 100) / 100;
+      const { tax: taxAmount, gross: taxedAmount } = splitTax(taxableAmount, taxPolicy);
       const serviceCharge = Math.max(0, Number(payload.serviceChargeAmount) || 0);
       const surcharge = Math.max(0, Number(payload.surchargeAmount) || 0);
-      const grandTotal = Math.round((taxableAmount + taxAmount + serviceCharge + surcharge) * 100) / 100;
+      const grandTotal = Math.round((taxedAmount + serviceCharge + surcharge) * 100) / 100;
 
       const paymentAmount = payload.paymentAmount !== undefined ? payload.paymentAmount : grandTotal;
       if (paymentAmount < grandTotal) {
@@ -416,7 +420,7 @@ export class CheckoutService {
             orderNumber,
             payload.customerId || null,
             payload.diningTableId || null,
-            payload.orderType,
+            ParamUtil.orderType(payload.orderType),
             subtotal,
             payload.discountType || 'FIXED',
             discountVal,
@@ -493,7 +497,7 @@ export class CheckoutService {
           payload.customerId || null,
           payload.diningTableId || null,
           cashierId,
-          payload.orderType,
+          ParamUtil.orderType(payload.orderType),
           subtotal,
           payload.discountType || 'FIXED',
           discountVal,
@@ -599,7 +603,7 @@ export class CheckoutService {
         newValues: {
           billNumber,
           orderNumber,
-          orderType: payload.orderType,
+          orderType: ParamUtil.orderType(payload.orderType),
           paymentMethod: payload.paymentMethod,
           grandTotal,
           itemCount: verifiedItems.length,

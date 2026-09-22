@@ -15,19 +15,11 @@ export interface CreateReservationInput {
   specialRequests?: string;
 }
 
-export interface CreateWaitlistInput {
-  customerName: string;
-  customerPhone?: string;
-  guestCount?: number;
-  preferredSection?: string;
-  estimatedWaitMinutes?: number;
-}
-
 export class DiningTablesService {
   private static schemaEnsured = false;
 
   /**
-   * Auto-ensures dining_tables columns, table_reservations, and table_waitlist exist.
+   * Auto-ensures dining_tables columns and table_reservations exist.
    */
   static async ensureSchema(): Promise<void> {
     if (this.schemaEnsured) return;
@@ -85,29 +77,7 @@ export class DiningTablesService {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
       `);
 
-      // 3. Create table_waitlist
-      await dbService.execute(`
-        CREATE TABLE IF NOT EXISTS table_waitlist (
-          id INT AUTO_INCREMENT PRIMARY KEY,
-          uuid VARCHAR(64) NOT NULL UNIQUE,
-          token_number VARCHAR(50) NOT NULL,
-          customer_name VARCHAR(100) NOT NULL,
-          customer_phone VARCHAR(30) NULL,
-          guest_count INT NOT NULL DEFAULT 2,
-          preferred_section VARCHAR(50) NULL,
-          estimated_wait_minutes INT NOT NULL DEFAULT 15,
-          status ENUM('WAITING', 'NOTIFIED', 'SEATED', 'CANCELLED') NOT NULL DEFAULT 'WAITING',
-          assigned_table_id INT NULL,
-          seated_at DATETIME NULL,
-          created_by INT NULL,
-          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-          INDEX idx_wl_status (status),
-          INDEX idx_wl_created (created_at)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-      `);
-
-      // Seed baseline reservations and waitlist if empty
+      // Seed baseline reservations if empty
       const rsvCount = await dbService.queryOne<{ total: number }>('SELECT COUNT(*) as total FROM table_reservations');
       if (!rsvCount || rsvCount.total === 0) {
         await dbService.execute(`
@@ -119,17 +89,6 @@ export class DiningTablesService {
         `, [uuidv4(), uuidv4()]);
       }
 
-      const wlCount = await dbService.queryOne<{ total: number }>('SELECT COUNT(*) as total FROM table_waitlist');
-      if (!wlCount || wlCount.total === 0) {
-        await dbService.execute(`
-          INSERT IGNORE INTO table_waitlist (
-            uuid, token_number, customer_name, customer_phone, guest_count, preferred_section, estimated_wait_minutes, status
-          ) VALUES 
-          (?, 'W001', 'Dr. Salman Al-Ghamdi', '+966 54 888 1122', 4, 'Main Hall', 10, 'WAITING'),
-          (?, 'W002', 'Khalid Al-Qurashi', '+966 56 123 9988', 2, 'Family Cabins', 15, 'WAITING'),
-          (?, 'W003', 'Rayan Bin Saeed', '+966 53 777 5544', 5, 'Majlis Floor Seating', 20, 'WAITING')
-        `, [uuidv4(), uuidv4(), uuidv4()]);
-      }
 
       this.schemaEnsured = true;
       logger.info('Dining and Table Management schema verified successfully.');
@@ -618,131 +577,5 @@ export class DiningTablesService {
     });
 
     return { success: true, message: 'Reservation cancelled successfully' };
-  }
-
-  /**
-   * =========================================================================
-   * WAITING LIST & QUEUE TOKENS
-   * =========================================================================
-   */
-  static async getWaitlist() {
-    await this.ensureSchema();
-
-    const list = await dbService.query(
-      `SELECT w.*, 
-              TIMESTAMPDIFF(MINUTE, w.created_at, NOW()) as elapsed_wait_minutes,
-              t.table_number, t.name as table_name
-       FROM table_waitlist w
-       LEFT JOIN dining_tables t ON w.assigned_table_id = t.id
-       WHERE w.status IN ('WAITING', 'NOTIFIED') AND DATE(w.created_at) = CURDATE()
-       ORDER BY w.id ASC`
-    );
-
-    return list;
-  }
-
-  static async addToWaitlist(data: CreateWaitlistInput, userId: number) {
-    await this.ensureSchema();
-
-    const countToday = await dbService.queryOne<{ count: number }>(
-      'SELECT COUNT(*) as count FROM table_waitlist WHERE DATE(created_at) = CURDATE()'
-    );
-    const nextSeq = ((countToday?.count || 0) + 1).toString().padStart(3, '0');
-    const tokenNumber = `W${nextSeq}`;
-    const uuid = uuidv4();
-
-    const res = await dbService.execute(`
-      INSERT INTO table_waitlist (
-        uuid, token_number, customer_name, customer_phone, guest_count,
-        preferred_section, estimated_wait_minutes, status, created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'WAITING', ?)
-    `, [
-      uuid,
-      tokenNumber,
-      data.customerName.trim(),
-      data.customerPhone?.trim() || null,
-      data.guestCount || 2,
-      data.preferredSection || 'Any Section',
-      data.estimatedWaitMinutes || 15,
-      userId,
-    ]);
-
-    const waitlistId = res.lastInsertRowid;
-
-    await AuditService.log({
-      userId,
-      action: 'WAITLIST_ENTRY_ADDED',
-      module: 'DINING',
-      recordId: waitlistId,
-      newValues: { tokenNumber, customer: data.customerName, guestCount: data.guestCount },
-    });
-
-    return await dbService.queryOne('SELECT * FROM table_waitlist WHERE id = ?', [waitlistId]);
-  }
-
-  static async seatWaitlistParty(waitlistId: number, tableId: number, userId: number) {
-    await this.ensureSchema();
-
-    const entry = await dbService.queryOne<{ id: number; guest_count: number; customer_name: string }>(
-      'SELECT * FROM table_waitlist WHERE id = ?',
-      [waitlistId]
-    );
-    if (!entry) throw AppError.notFound('Waitlist party not found');
-
-    const table = await this.getById(tableId);
-    if (table.status === 'OCCUPIED') {
-      throw AppError.badRequest('Selected table is already occupied');
-    }
-
-    return await dbService.transaction(async () => {
-      const seatedAt = new Date().toISOString().slice(0, 19).replace('T', ' ');
-
-      // 1. Mark waitlist entry SEATED
-      await dbService.execute(`
-        UPDATE table_waitlist 
-        SET status = 'SEATED', assigned_table_id = ?, seated_at = ?, updated_at = CURRENT_TIMESTAMP 
-        WHERE id = ?
-      `, [tableId, seatedAt, waitlistId]);
-
-      // 2. Seat table
-      await dbService.execute(`
-        UPDATE dining_tables 
-        SET status = 'OCCUPIED', 
-            active_guest_count = ?, 
-            seated_at = ?,
-            cleaning_started_at = NULL,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-      `, [entry.guest_count || 2, seatedAt, tableId]);
-
-      await AuditService.log({
-        userId,
-        action: 'WAITLIST_SEATED_AT_TABLE',
-        module: 'DINING',
-        recordId: waitlistId,
-        newValues: { tableId, party: entry.customer_name },
-      });
-
-      return await this.getById(tableId);
-    });
-  }
-
-  static async updateWaitlistStatus(waitlistId: number, status: 'WAITING' | 'NOTIFIED' | 'CANCELLED', userId: number) {
-    await this.ensureSchema();
-    await dbService.execute(`
-      UPDATE table_waitlist 
-      SET status = ?, updated_at = CURRENT_TIMESTAMP 
-      WHERE id = ?
-    `, [status, waitlistId]);
-
-    await AuditService.log({
-      userId,
-      action: 'WAITLIST_STATUS_UPDATED',
-      module: 'DINING',
-      recordId: waitlistId,
-      newValues: { status },
-    });
-
-    return { success: true, message: `Waitlist party status updated to ${status}` };
   }
 }

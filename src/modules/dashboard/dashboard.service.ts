@@ -31,7 +31,6 @@ export class DashboardService {
       cancelled_orders: number;
       dine_in_orders: number;
       takeaway_orders: number;
-      walk_in_orders: number;
       all_time_orders: number;
     }>(
       `SELECT
@@ -41,8 +40,10 @@ export class DashboardService {
          COALESCE(SUM(CASE WHEN status = 'COMPLETED' AND (DATE(created_at) = CURDATE()) THEN 1 ELSE 0 END), 0) as completed_orders,
          COALESCE(SUM(CASE WHEN status = 'CANCELLED' THEN 1 ELSE 0 END), 0) as cancelled_orders,
          COALESCE(SUM(CASE WHEN order_type = 'DINING' THEN 1 ELSE 0 END), 0) as dine_in_orders,
-         COALESCE(SUM(CASE WHEN order_type = 'TAKEAWAY' THEN 1 ELSE 0 END), 0) as takeaway_orders,
-         COALESCE(SUM(CASE WHEN order_type = 'WALK_IN' THEN 1 ELSE 0 END), 0) as walk_in_orders,
+         -- Anything not eaten at a table is takeaway. The <> keeps counting
+         -- rows in a database that has not had the order-type migration run
+         -- against it yet, where the value may still read WALK_IN.
+         COALESCE(SUM(CASE WHEN order_type <> 'DINING' THEN 1 ELSE 0 END), 0) as takeaway_orders,
          COUNT(id) as all_time_orders
        FROM orders
        WHERE is_deleted = 0`
@@ -177,7 +178,6 @@ export class DashboardService {
         cancelledOrders: orderStats?.cancelled_orders || 0,
         dineInOrders: orderStats?.dine_in_orders || 0,
         takeawayOrders: orderStats?.takeaway_orders || 0,
-        walkInOrders: orderStats?.walk_in_orders || 0,
         avgOrderValue: Math.round(avgOrderValue),
         occupiedTables,
         availableTables: tableStats?.available_tables || 0,

@@ -33,7 +33,7 @@ beforeAll(async () => {
   cashierToken = cashierRes.body.data?.token;
 });
 
-describe('Mandi Shop POS API Suite', () => {
+describe(' Shop POS API Suite', () => {
   describe('Authentication & Roles', () => {
     it('should return current user with permissions on /api/auth/me', async () => {
       const res = await request(app)
@@ -51,13 +51,13 @@ describe('Mandi Shop POS API Suite', () => {
         .set('Authorization', `Bearer ${adminToken}`)
         .send({
           name: 'System Administrator Updated',
-          email: 'admin.updated@mandipos.com',
+          email: 'admin.updated@pos.com',
           phone: '+919999988888',
         });
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
       expect(res.body.data.name).toBe('System Administrator Updated');
-      expect(res.body.data.email).toBe('admin.updated@mandipos.com');
+      expect(res.body.data.email).toBe('admin.updated@pos.com');
 
       // Revert name and email
       await request(app)
@@ -65,7 +65,7 @@ describe('Mandi Shop POS API Suite', () => {
         .set('Authorization', `Bearer ${adminToken}`)
         .send({
           name: 'System Administrator',
-          email: 'admin@mandipos.com',
+          email: 'admin@pos.com',
         });
     });
 
@@ -116,7 +116,7 @@ describe('Mandi Shop POS API Suite', () => {
 
     it('should create, update, and manage a custom dynamic role', async () => {
       const uniqueRoleName = `TEST_SUPERVISOR_${Date.now()}`;
-      
+
       // 1. Create custom role
       const createRes = await request(app)
         .post('/api/roles')
@@ -176,7 +176,7 @@ describe('Mandi Shop POS API Suite', () => {
         .set('Authorization', `Bearer ${adminToken}`)
         .send({
           categoryId: 1,
-          name: 'Test Gourmet Mandi Platter',
+          name: 'Test Gourmet  Platter',
           sku: uniqueSku,
           costPrice: 500,
           sellingPrice: 850,
@@ -184,7 +184,7 @@ describe('Mandi Shop POS API Suite', () => {
           lowStockThreshold: 5,
         });
       expect(res.status).toBe(201);
-      expect(res.body.data.name).toBe('Test Gourmet Mandi Platter');
+      expect(res.body.data.name).toBe('Test Gourmet  Platter');
       expect(Number(res.body.data.current_stock)).toBe(25);
     });
   });
@@ -330,7 +330,7 @@ describe('Mandi Shop POS API Suite', () => {
         .post('/api/checkout')
         .set('Authorization', `Bearer ${cashierToken}`)
         .send({
-          orderType: 'WALK_IN',
+          orderType: 'TAKEAWAY',
           paymentMethod: 'CASH',
           discountType: 'PERCENTAGE',
           discountValue: 10,
@@ -364,7 +364,7 @@ describe('Mandi Shop POS API Suite', () => {
         .post('/api/checkout')
         .set('Authorization', `Bearer ${cashierToken}`)
         .send({
-          orderType: 'WALK_IN',
+          orderType: 'TAKEAWAY',
           paymentMethod: 'CASH',
           items: [
             {
@@ -447,7 +447,7 @@ describe('Mandi Shop POS API Suite', () => {
         .post('/api/draft-bills')
         .set('Authorization', `Bearer ${cashierToken}`)
         .send({
-          orderType: 'WALK_IN',
+          orderType: 'TAKEAWAY',
           items: [{ productId: prod.id, quantity: 2 }],
         });
       expect(holdRes.status).toBe(201);

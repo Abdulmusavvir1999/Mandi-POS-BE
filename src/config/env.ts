@@ -6,11 +6,11 @@ dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 export const config = {
   port: parseInt(process.env.PORT || '5000', 10),
   nodeEnv: process.env.NODE_ENV || 'development',
-  jwtSecret: process.env.JWT_SECRET || 'default_jwt_secret_mandi_pos_2026',
+  jwtSecret: process.env.JWT_SECRET || 'default_jwt_secret__pos_2026',
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '8h',
-  jwtRefreshSecret: process.env.JWT_REFRESH_SECRET || 'default_jwt_refresh_secret_mandi_pos_2026',
+  jwtRefreshSecret: process.env.JWT_REFRESH_SECRET || 'default_jwt_refresh_secret__pos_2026',
   jwtRefreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
-  databasePath: process.env.DATABASE_PATH || './data/mandi_pos.db',
+  databasePath: process.env.DATABASE_PATH || './data/_pos.db',
   corsOrigins: (process.env.CORS_ORIGIN || 'http://localhost:4200,http://localhost:3000').split(','),
   db: {
     host: process.env.LOC_DB_HOST || '192.168.10.15',

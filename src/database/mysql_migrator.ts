@@ -41,7 +41,7 @@ export async function runMysqlMigration() {
     multipleStatements: true,
   });
 
-  console.log(`2. Creating all 22+ tables and indexes for Mandi POS in \`${DB_NAME}\`...`);
+  console.log(`2. Creating all 22+ tables and indexes for  POS in \`${DB_NAME}\`...`);
 
   const tablesSql = `
     SET FOREIGN_KEY_CHECKS = 0;
@@ -299,7 +299,7 @@ export async function runMysqlMigration() {
       order_number VARCHAR(50) NULL UNIQUE,
       customer_id INT NULL,
       dining_table_id INT NULL,
-      order_type ENUM('WALK_IN', 'TAKEAWAY', 'DINING') NOT NULL,
+      order_type VARCHAR(30) NOT NULL,
       status ENUM('PENDING', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED') DEFAULT 'PENDING',
       subtotal DECIMAL(10,2) NOT NULL DEFAULT 0.00,
       discount_type ENUM('FIXED', 'PERCENTAGE') DEFAULT 'FIXED',
@@ -357,7 +357,7 @@ export async function runMysqlMigration() {
       draft_number VARCHAR(50) NOT NULL UNIQUE,
       customer_id INT NULL,
       dining_table_id INT NULL,
-      order_type ENUM('WALK_IN', 'TAKEAWAY', 'DINING') NOT NULL DEFAULT 'WALK_IN',
+      order_type VARCHAR(30) NOT NULL DEFAULT 'TAKEAWAY',
       discount_type ENUM('FIXED', 'PERCENTAGE') DEFAULT 'FIXED',
       discount_value DECIMAL(10,2) DEFAULT 0.00,
       notes TEXT,
@@ -391,7 +391,7 @@ export async function runMysqlMigration() {
       customer_id INT NULL,
       dining_table_id INT NULL,
       cashier_id INT NOT NULL,
-      order_type ENUM('WALK_IN', 'TAKEAWAY', 'DINING') NOT NULL,
+      order_type VARCHAR(30) NOT NULL,
       subtotal DECIMAL(10,2) NOT NULL,
       discount_type ENUM('FIXED', 'PERCENTAGE') DEFAULT 'FIXED',
       discount_value DECIMAL(10,2) DEFAULT 0.00,
@@ -598,10 +598,10 @@ export async function runMysqlMigration() {
   });
 
   const users = [
-    { username: 'admin', email: 'admin@baitmandi.com', name: 'Al-Mandi Administrator', role: 'ADMIN', pass: 'Super@123', phone: '+966500112233' },
-    { username: 'cashier', email: 'cashier@baitmandi.com', name: 'Zaid Al-Harbi (Cashier 1)', role: 'CASHIER', pass: 'Cashier@123', phone: '+966500112244' },
-    { username: 'manager', email: 'manager@baitmandi.com', name: 'Tariq Al-Mansoor (Manager)', role: 'MANAGER', pass: 'Manager@123', phone: '+966500112255' },
-    { username: 'staff', email: 'staff@baitmandi.com', name: 'Omar Kitchen / Floor', role: 'STAFF', pass: 'Staff@123', phone: '+966500112266' },
+    { username: 'admin', email: 'admin@bait.com', name: 'Al- Administrator', role: 'ADMIN', pass: 'Super@123', phone: '+966500112233' },
+    { username: 'cashier', email: 'cashier@bait.com', name: 'Zaid Al-Harbi (Cashier 1)', role: 'CASHIER', pass: 'Cashier@123', phone: '+966500112244' },
+    { username: 'manager', email: 'manager@bait.com', name: 'Tariq Al-Mansoor (Manager)', role: 'MANAGER', pass: 'Manager@123', phone: '+966500112255' },
+    { username: 'staff', email: 'staff@bait.com', name: 'Omar Kitchen / Floor', role: 'STAFF', pass: 'Staff@123', phone: '+966500112266' },
   ];
 
   for (const u of users) {
@@ -615,8 +615,8 @@ export async function runMysqlMigration() {
 
   // Categories
   const categories = [
-    { name: 'Mutton Mandi', icon: '🍖', desc: 'Slow-cooked succulent tender lamb & rice', order: 1 },
-    { name: 'Chicken Mandi', icon: '🍗', desc: 'Traditional spiced roast chicken mandi', order: 2 },
+    { name: 'Mutton ', icon: '🍖', desc: 'Slow-cooked succulent tender lamb & rice', order: 1 },
+    { name: 'Chicken ', icon: '🍗', desc: 'Traditional spiced roast chicken ', order: 2 },
     { name: 'Madfoon & Madhbi', icon: '🔥', desc: 'Stone grilled & buried pot delicacies', order: 3 },
     { name: 'Appetizers & Salads', icon: '🥗', desc: 'Daqoos, fresh salads, tahini, soup', order: 4 },
     { name: 'Desserts & Sweets', icon: '🍯', desc: 'Kunafa, Baklava, Creamy Muhallabia', order: 5 },
@@ -638,11 +638,11 @@ export async function runMysqlMigration() {
   });
 
   const products = [
-    { name: 'Royal Mutton Mandi (Full)', sku: 'MM-ROYAL-F', cat: 'Mutton Mandi', cost: 110.0, price: 165.0, stock: 45 },
-    { name: 'Royal Mutton Mandi (Half)', sku: 'MM-ROYAL-H', cat: 'Mutton Mandi', cost: 60.0, price: 90.0, stock: 60 },
-    { name: 'Special Mutton Shoulder Mandi', sku: 'MM-SHLDR', cat: 'Mutton Mandi', cost: 130.0, price: 195.0, stock: 20 },
-    { name: 'Chicken Mandi (Full)', sku: 'CM-FULL', cat: 'Chicken Mandi', cost: 38.0, price: 58.0, stock: 80 },
-    { name: 'Chicken Mandi (Half)', sku: 'CM-HALF', cat: 'Chicken Mandi', cost: 20.0, price: 32.0, stock: 110 },
+    { name: 'Royal Mutton  (Full)', sku: 'MM-ROYAL-F', cat: 'Mutton ', cost: 110.0, price: 165.0, stock: 45 },
+    { name: 'Royal Mutton  (Half)', sku: 'MM-ROYAL-H', cat: 'Mutton ', cost: 60.0, price: 90.0, stock: 60 },
+    { name: 'Special Mutton Shoulder ', sku: 'MM-SHLDR', cat: 'Mutton ', cost: 130.0, price: 195.0, stock: 20 },
+    { name: 'Chicken  (Full)', sku: 'CM-FULL', cat: 'Chicken ', cost: 38.0, price: 58.0, stock: 80 },
+    { name: 'Chicken  (Half)', sku: 'CM-HALF', cat: 'Chicken ', cost: 20.0, price: 32.0, stock: 110 },
     { name: 'Chicken Madhbi On Charcoal (Full)', sku: 'CMD-FULL', cat: 'Madfoon & Madhbi', cost: 42.0, price: 62.0, stock: 55 },
     { name: 'Mutton Madfoon in Foil Wrap', sku: 'MMD-WRAP', cat: 'Madfoon & Madhbi', cost: 120.0, price: 180.0, stock: 30 },
     { name: 'Spicy Tomato Daqoos Sauce', sku: 'APP-DAQOOS', cat: 'Appetizers & Salads', cost: 2.0, price: 5.0, stock: 300 },
@@ -728,11 +728,11 @@ export async function runMysqlMigration() {
 
   // Settings
   const settings = [
-    { key: 'restaurant_name', value: 'Bait Al Mandi Restaurant & Grill', cat: 'GENERAL', desc: 'Brand restaurant display name' },
+    { key: 'restaurant_name', value: 'Bait Al  Restaurant & Grill', cat: 'GENERAL', desc: 'Brand restaurant display name' },
     { key: 'currency_symbol', value: 'SAR', cat: 'GENERAL', desc: 'Default currency symbol (e.g., SAR, USD, AED, ₹)' },
     { key: 'tax_rate_percentage', value: '5.0', cat: 'TAX', desc: 'Standard VAT/Tax percentage applied' },
     { key: 'tax_identification_number', value: '310998822400003', cat: 'TAX', desc: 'Official VAT / Tax Identification Number' },
-    { key: 'receipt_header_title', value: 'بيت المندي — BAIT AL MANDI', cat: 'RECEIPT', desc: 'Printed thermal header name' },
+    { key: 'receipt_header_title', value: 'بيت المندي — BAIT AL ', cat: 'RECEIPT', desc: 'Printed thermal header name' },
     { key: 'receipt_tagline', value: 'Authentic Yemeni & Gulf Charcoal Grills', cat: 'RECEIPT', desc: 'Receipt sub-header text' },
     { key: 'receipt_footer_note', value: 'Thank you for dining with us! Come again.', cat: 'RECEIPT', desc: 'Bottom thermal receipt message' },
     { key: 'receipt_phone', value: '+966 11 456 7890 / +966 50 123 4567', cat: 'RECEIPT', desc: 'Support & takeaway phone number' },

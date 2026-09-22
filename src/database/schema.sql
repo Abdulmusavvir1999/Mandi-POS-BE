@@ -354,33 +354,16 @@ CREATE TABLE IF NOT EXISTS table_reservations (
   FOREIGN KEY (table_id) REFERENCES dining_tables(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS table_waitlist (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  uuid VARCHAR(64) NOT NULL UNIQUE,
-  token_number VARCHAR(50) NOT NULL,
-  customer_name VARCHAR(100) NOT NULL,
-  customer_phone VARCHAR(30) NULL,
-  guest_count INT NOT NULL DEFAULT 2,
-  preferred_section VARCHAR(50) NULL,
-  estimated_wait_minutes INT NOT NULL DEFAULT 15,
-  status ENUM('WAITING', 'NOTIFIED', 'SEATED', 'CANCELLED') NOT NULL DEFAULT 'WAITING',
-  assigned_table_id INT NULL,
-  seated_at DATETIME NULL,
-  created_by INT NULL,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX idx_wl_status (status),
-  INDEX idx_wl_created (created_at),
-  FOREIGN KEY (assigned_table_id) REFERENCES dining_tables(id) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
 
 -- ───────────────────────────────────────────────────────────────────────────
 -- SECTION 6 — Orders
 -- ───────────────────────────────────────────────────────────────────────────
 
--- order_type is VARCHAR(30), not an ENUM: DELIVERY and other channels were
--- added after the original WALK_IN / TAKEAWAY / DINING set.
+-- order_type holds one of two values, DINING or TAKEAWAY. It stays
+-- VARCHAR(30) rather than an ENUM so the set can change again without a
+-- table rewrite - it already has once, when walk-in, pickup and counter
+-- were folded into TAKEAWAY. See section 15 of "for_existing system.sql"
+-- for the migration that folds them in an already-deployed database.
 CREATE TABLE IF NOT EXISTS orders (
   id INT AUTO_INCREMENT PRIMARY KEY,
   -- What a withdrawn document gave up: its id and the number it held,
@@ -463,7 +446,7 @@ CREATE TABLE IF NOT EXISTS draft_bills (
   draft_number VARCHAR(50) NOT NULL UNIQUE,
   customer_id INT NULL,
   dining_table_id INT NULL,
-  order_type VARCHAR(30) NOT NULL DEFAULT 'WALK_IN',
+  order_type VARCHAR(30) NOT NULL DEFAULT 'TAKEAWAY',
   discount_type ENUM('FIXED', 'PERCENTAGE') DEFAULT 'FIXED',
   discount_value DECIMAL(10,2) DEFAULT 0.00,
   notes TEXT,
@@ -991,7 +974,7 @@ WHERE table_schema = DATABASE()
     'stock_items', 'stock_entries', 'stock_movements',
     'stock', 'stock_transactions', 'stock_adjustments',
     'customers', 'customer_notes',
-    'dining_tables', 'table_reservations', 'table_waitlist',
+    'dining_tables', 'table_reservations',
     'orders', 'order_items', 'order_status_history',
     'draft_bills', 'draft_bill_items', 'bills', 'bill_items',
     'payments', 'pos_day_closings', 'queue',

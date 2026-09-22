@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- MANDI POS — CATCH-UP MIGRATION FOR AN ALREADY-DEPLOYED DATABASE
+--  POS — CATCH-UP MIGRATION FOR AN ALREADY-DEPLOYED DATABASE
 -- ═══════════════════════════════════════════════════════════════════════════
 --
 -- WHAT THIS IS
@@ -423,6 +423,49 @@ DROP TABLE IF EXISTS meal_deals;
 
 
 -- ───────────────────────────────────────────────────────────────────────────
+-- 10. ORDER TYPES — walk-in, pickup and counter fold into takeaway
+--
+-- The POS now offers two order types, Dine In and Takeaway. WALK_IN, PICKUP
+-- and COUNTER described how the customer arrived rather than how the order is
+-- served, and nothing downstream ever treated them differently, so they all
+-- become TAKEAWAY here.
+--
+-- This REWRITES ROWS and cannot be undone without a restore. After it runs,
+-- an order that was recorded as a walk-in is indistinguishable from one
+-- recorded as a takeaway. Nothing else in the file changes historical data;
+-- if that distinction still matters to you, take the backup seriously or
+-- skip this section and leave the old values in place - the application
+-- treats anything that is not DINING as takeaway either way.
+--
+-- DINING is deliberately untouched: it is the value already written to every
+-- dine-in row, and renaming it would buy nothing.
+--
+-- Re-runnable: the second run matches no rows.
+-- ───────────────────────────────────────────────────────────────────────────
+
+UPDATE orders
+   SET order_type = 'TAKEAWAY'
+ WHERE order_type IN ('WALK_IN', 'PICKUP', 'COUNTER');
+
+UPDATE bills
+   SET order_type = 'TAKEAWAY'
+ WHERE order_type IN ('WALK_IN', 'PICKUP', 'COUNTER');
+
+UPDATE draft_bills
+   SET order_type = 'TAKEAWAY'
+ WHERE order_type IN ('WALK_IN', 'PICKUP', 'COUNTER');
+
+-- The column default followed the same rule.
+CALL pos_modify_column('draft_bills', 'order_type', "VARCHAR(30) NOT NULL DEFAULT 'TAKEAWAY'");
+
+-- And the setting that seeds a fresh POS screen.
+UPDATE settings
+   SET `value` = 'TAKEAWAY'
+ WHERE `key` = 'POS_DEFAULT_ORDER_TYPE'
+   AND `value` NOT IN ('DINING', 'TAKEAWAY');
+
+
+-- ───────────────────────────────────────────────────────────────────────────
 -- CLEAN UP
 -- ───────────────────────────────────────────────────────────────────────────
 
@@ -529,3 +572,14 @@ FROM INFORMATION_SCHEMA.COLUMNS
 WHERE TABLE_SCHEMA = DATABASE()
   AND TABLE_NAME   = 'users'
   AND COLUMN_NAME  = 'role_id';
+
+-- Order types: every row should now read DINING or TAKEAWAY and nothing else.
+-- A non-zero count means section 10 did not run, or new rows arrived from an
+-- application build that still writes the old values.
+SELECT
+  'orders'       AS table_name, COUNT(*) AS legacy_order_type_rows
+  FROM orders      WHERE order_type NOT IN ('DINING', 'TAKEAWAY')
+UNION ALL
+SELECT 'bills',       COUNT(*) FROM bills       WHERE order_type NOT IN ('DINING', 'TAKEAWAY')
+UNION ALL
+SELECT 'draft_bills', COUNT(*) FROM draft_bills WHERE order_type NOT IN ('DINING', 'TAKEAWAY');

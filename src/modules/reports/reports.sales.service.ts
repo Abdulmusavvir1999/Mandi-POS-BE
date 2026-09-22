@@ -325,7 +325,7 @@ export class ReportsSalesService {
     };
   }
 
-  /** Sales split by order type (WALK_IN / TAKEAWAY / DINING / any later addition). */
+  /** Sales split by order type (DINING / TAKEAWAY, or any later addition). */
   static async byOrderType(options: SalesReportOptions) {
     await ReportsSchema.ensure();
     const { where, params } = ReportQuery.bills('b', options.range, options);

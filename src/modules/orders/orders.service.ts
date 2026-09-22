@@ -6,6 +6,7 @@ import { OrderStatus, OrderType } from '../../core/types';
 import { SequenceUtil } from '../../core/utils/sequence.util';
 import { DocumentSequence, ORDER_DOCUMENT, decorateDocument, decorateDocuments } from '../../core/utils/document-sequence.util';
 import { ParamUtil } from '../../core/utils/param.util';
+import { splitTax } from '../../core/utils/tax.util';
 
 export class OrdersService {
   static async getAll(
@@ -237,16 +238,13 @@ export class OrdersService {
         }
       }
 
-      // Calculate Tax based on settings
-      const taxEnabledValue = await SettingsService.getValue('TAX_ENABLED');
-      const taxRateValue = await SettingsService.getValue('TAX_PERCENTAGE');
-      const configuredTaxRate = parseFloat(taxRateValue || '5.0');
-      const isTaxEnabled = taxEnabledValue !== null ? taxEnabledValue === 'true' : configuredTaxRate > 0;
-      const taxRate = isTaxEnabled ? configuredTaxRate : 0.0;
+      // Calculate Tax based on settings. Under INCLUSIVE the menu price
+      // already contains the tax, so the order total is the taxable base
+      // itself and the tax is only recorded, never added.
+      const taxPolicy = await SettingsService.getTaxPolicy();
 
       const taxableAmount = Math.max(0, subtotal - discountAmount);
-      const taxAmount = (taxableAmount * taxRate) / 100;
-      const totalAmount = Math.round((taxableAmount + taxAmount) * 100) / 100;
+      const { tax: taxAmount, gross: totalAmount } = splitTax(taxableAmount, taxPolicy);
 
       // Insert Order
       const res = await dbService.execute(
@@ -259,7 +257,7 @@ export class OrdersService {
           orderNumber,
           data.customerId || null,
           data.diningTableId || null,
-          data.orderType,
+          ParamUtil.orderType(data.orderType),
           subtotal,
           data.discountType || 'FIXED',
           data.discountValue || 0.0,

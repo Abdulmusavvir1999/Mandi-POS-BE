@@ -166,7 +166,7 @@ export class AddonsCombosService {
           (3, 'Crispy Fried Caramelized Onions', 'Toppings', 4.00, 1.20, 1, 'ACTIVE'),
           (4, 'Golden Roasted Almonds & Raisins', 'Toppings', 8.00, 3.50, 1, 'ACTIVE'),
           (5, 'Extra Traditional Shurba (Soup Bowl)', 'Sides', 6.00, 2.00, 1, 'ACTIVE'),
-          (6, 'Extra Fragrant Mandi Rice Portion', 'Sides', 15.00, 5.00, 1, 'ACTIVE'),
+          (6, 'Extra Fragrant  Rice Portion', 'Sides', 15.00, 5.00, 1, 'ACTIVE'),
           (7, 'Melted Cheddar Cheese Drizzle', 'Toppings', 5.00, 2.00, 1, 'ACTIVE'),
           (8, 'Chilled Ayran Laban Bottle (330ml)', 'Beverages', 6.00, 2.50, 1, 'ACTIVE');
         `);
@@ -182,7 +182,7 @@ export class AddonsCombosService {
       if (!comboCount || comboCount.count === 0) {
         await dbService.execute(`
           INSERT IGNORE INTO combo_deals (id, combo_code, name, description, original_price, combo_price, savings_amount, is_available, status) VALUES
-          (1, 'CMB-ROYAL-DUO', 'Royal Mandi Duo Combo', '1 Half Mutton Mandi + 1 Half Chicken Mandi + 2 Daqoos + 2 Ayran Laban Bottles', 134.00, 115.00, 19.00, 1, 'ACTIVE'),
+          (1, 'CMB-ROYAL-DUO', 'Royal  Duo Combo', '1 Half Mutton  + 1 Half Chicken  + 2 Daqoos + 2 Ayran Laban Bottles', 134.00, 115.00, 19.00, 1, 'ACTIVE'),
           (2, 'CMB-CHARCOAL-SOLO', 'Single Charcoal Grill Meal', '1 Half Chicken Madhbi + Fresh Garden Salad + 1 Daqoos + Arabic Red Tea Pot', 58.00, 49.00, 9.00, 1, 'ACTIVE');
         `);
 

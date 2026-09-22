@@ -1,9 +1,10 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- Project X POS — Seed Data
+-- Project POS — Seed Data
 -- ═══════════════════════════════════════════════════════════════════════════
 --
--- The factory dataset: roles, permissions and their grants, the four demo
--- logins, the menu catalog with its opening stock ledger, the dining room,
+-- The factory dataset: roles, permissions and their grants, the super
+-- administrator and the four demo logins, the menu catalog with its opening
+-- stock ledger, the dining room,
 -- sample customers, expense categories, add-ons / combo deals, and every
 -- default row in the settings table.
 --
@@ -20,8 +21,9 @@
 -- rather than by hardcoded ids, so the file does not care what auto-increment
 -- values a database happens to be on.
 --
--- ⚠  DEMO CREDENTIALS. All four seeded logins share the password `Super@123`.
---    Change them before this database faces anything real.
+-- ⚠  DEMO CREDENTIALS. All five seeded logins share the password `Super@123`,
+--    including the super administrator. Change them before this database
+--    faces anything real.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 
@@ -123,177 +125,34 @@ WHERE r.name = 'STAFF'
 -- 4 — Users
 -- ───────────────────────────────────────────────────────────────────────────
 --
--- ⚠  All four share the password `Super@123`, stored as one bcrypt hash
+-- ⚠  All five share the password `Super@123`, stored as one bcrypt hash
 --    (cost 10). Change these before the database faces anything real.
 --
 -- To reset a password by hand, generate a fresh hash rather than copying this
 -- one:  node -e "console.log(require('bcryptjs').hashSync('NewPass', 10))"
+--
+-- The first row is the super administrator, and role_id NULL is what makes it
+-- one. There is deliberately no SUPER_ADMIN row in `roles`: the absence of a
+-- role is the identity, which is why the account cannot be created from the
+-- Users screen or handed out from the Roles screen. See
+-- core/utils/role.util.ts and src/scripts/create-super-admin.ts, which
+-- provisions the same account interactively and may still be used to reset
+-- its password.
+--
+-- This needs users.role_id to be nullable. schema.sql already declares it so;
+-- a database created before that must run section 1 of "for_existing
+-- system.sql" first, or this row is rejected.
+--
+-- back_office_password is deliberately left NULL. The second lock in front of
+-- /admin/back-office is set from My Profile once, by the person who owns the
+-- account, and seeding a shared one would defeat the point of it.
 
 INSERT IGNORE INTO users (username, email, password_hash, name, phone, role_id, status) VALUES
-  ('admin',   'admin@projectx.com',   '$2b$10$nJlibIwf3u1ODb8KPLfZ7uKIOZKaLckfJLwdnK/wOBU1JBhQZXh3q', 'System Administrator', '+91 98765 43210', (SELECT id FROM roles WHERE name = 'ADMIN'),   'ACTIVE'),
-  ('manager', 'manager@projectx.com', '$2b$10$nJlibIwf3u1ODb8KPLfZ7uKIOZKaLckfJLwdnK/wOBU1JBhQZXh3q', 'Operations Manager',   '+91 98765 43211', (SELECT id FROM roles WHERE name = 'MANAGER'), 'ACTIVE'),
-  ('cashier', 'cashier@projectx.com', '$2b$10$nJlibIwf3u1ODb8KPLfZ7uKIOZKaLckfJLwdnK/wOBU1JBhQZXh3q', 'Head Cashier',         '+91 98765 43212', (SELECT id FROM roles WHERE name = 'CASHIER'), 'ACTIVE'),
-  ('staff',   'staff@projectx.com',   '$2b$10$nJlibIwf3u1ODb8KPLfZ7uKIOZKaLckfJLwdnK/wOBU1JBhQZXh3q', 'Service Staff',        '+91 98765 43213', (SELECT id FROM roles WHERE name = 'STAFF'),   'ACTIVE');
-
-
--- ───────────────────────────────────────────────────────────────────────────
--- 5 — Menu categories
--- ───────────────────────────────────────────────────────────────────────────
-
-INSERT IGNORE INTO categories (name, description, icon, display_order, status) VALUES
-  ('Mandi Specials',        'Authentic Yemeni slow-cooked fragrant Mandi rice dishes',   'utensils',   1, 'ACTIVE'),
-  ('Biryani & Rice',        'Dum-cooked royal biryanis and specialty rice platters',     'flame',      2, 'ACTIVE'),
-  ('Starters & Grills',     'Al Faham, Kebabs, Hummus and hot Arabian appetizers',       'drumstick',  3, 'ACTIVE'),
-  ('Beverages & Mocktails', 'Refreshing Saudi Champagne, fresh juices and mint coolers', 'glass-water', 4, 'ACTIVE'),
-  ('Desserts & Sweets',     'Fresh Kunafa, Baklava and traditional sweets',              'cake',       5, 'ACTIVE'),
-  ('Accompaniments',        'Extra Toum garlic paste, Maraq soup and salads',            'bowl-food',  6, 'ACTIVE');
-
-
--- ───────────────────────────────────────────────────────────────────────────
--- 6 — Products
--- ───────────────────────────────────────────────────────────────────────────
---
--- sku is UNIQUE, which is what makes this block re-runnable.
-
-INSERT IGNORE INTO products (category_id, name, sku, description, cost_price, selling_price, tax_rate, stock_quantity, low_stock_threshold, is_available, status) VALUES
-  ((SELECT id FROM categories WHERE name = 'Mandi Specials'), 'Special Chicken Mandi (Full)',    'MND-CHK-F',  'Full fragrant Mandi rice served with tender roasted whole chicken and soup',        420.00,  680.00, 5.00, 45, 10, 1, 'ACTIVE'),
-  ((SELECT id FROM categories WHERE name = 'Mandi Specials'), 'Special Chicken Mandi (Half)',    'MND-CHK-H',  'Half portion Mandi rice with half roasted chicken and side sauces',                 230.00,  380.00, 5.00, 60, 15, 1, 'ACTIVE'),
-  ((SELECT id FROM categories WHERE name = 'Mandi Specials'), 'Special Chicken Mandi (Quarter)', 'MND-CHK-Q',  'Single serving chicken mandi with aromatic rice and spicy dakous',                  130.00,  220.00, 5.00, 80, 20, 1, 'ACTIVE'),
-  ((SELECT id FROM categories WHERE name = 'Mandi Specials'), 'Royal Mutton Mandi (Full)',       'MND-MUT-F',  'Tender melt-in-mouth slow-braised mutton shanks on premium basmati mandi rice',     680.00, 1050.00, 5.00, 30,  8, 1, 'ACTIVE'),
-  ((SELECT id FROM categories WHERE name = 'Mandi Specials'), 'Royal Mutton Mandi (Half)',       'MND-MUT-H',  'Succulent mutton portion served over rich spiced mandi rice with fried nuts',       360.00,  580.00, 5.00, 40, 10, 1, 'ACTIVE'),
-  ((SELECT id FROM categories WHERE name = 'Mandi Specials'), 'Al Faham Chicken Mandi',          'MND-ALF-F',  'Charcoal grilled spicy Al Faham chicken paired with long-grain mandi rice',         460.00,  740.00, 5.00, 35, 10, 1, 'ACTIVE'),
-  ((SELECT id FROM categories WHERE name = 'Mandi Specials'), 'Peri Peri Fish Mandi',            'MND-FSH-F',  'Fresh marinated King Fish steak charcoal grilled over spiced rice',                 480.00,  790.00, 5.00, 25,  5, 1, 'ACTIVE'),
-
-  ((SELECT id FROM categories WHERE name = 'Biryani & Rice'), 'Hyderabadi Mutton Dum Biryani',   'BRY-MUT-D',  'Traditional sealed pot dum biryani with marinated mutton and saffron aroma',        240.00,  390.00, 5.00, 50, 12, 1, 'ACTIVE'),
-  ((SELECT id FROM categories WHERE name = 'Biryani & Rice'), 'Chicken Dum Biryani Pot',         'BRY-CHK-D',  'Rich spiced layered basmati rice with juicy chicken cuts and raita',                160.00,  280.00, 5.00, 70, 15, 1, 'ACTIVE'),
-
-  ((SELECT id FROM categories WHERE name = 'Starters & Grills'), 'Arabian Al Faham Dajaj (Full)',   'STR-ALF-F', 'Full charcoal grilled marinated Arabian chicken with toum garlic sauce',         300.00,  490.00, 5.00, 40, 10, 1, 'ACTIVE'),
-  ((SELECT id FROM categories WHERE name = 'Starters & Grills'), 'Creamy Hummus with Pita (2 Pcs)', 'STR-HUM-P', 'Velvety chickpea hummus dip topped with extra virgin olive oil and sumac',        80.00,  160.00, 5.00, 60, 15, 1, 'ACTIVE'),
-  ((SELECT id FROM categories WHERE name = 'Starters & Grills'), 'Mutton Maraq Soup (Bowl)',        'STR-MAR-B', 'Rich aromatic mutton bone broth infused with cardamom and black pepper',          40.00,   90.00, 5.00, 100, 25, 1, 'ACTIVE'),
-
-  ((SELECT id FROM categories WHERE name = 'Beverages & Mocktails'), 'Saudi Champagne (Pitcher 1.5L)', 'BEV-SAU-P',  'Sparkling apple cider cocktail infused with fresh mint, orange and lemon slices', 90.00, 220.00, 5.00, 50, 10, 1, 'ACTIVE'),
-  ((SELECT id FROM categories WHERE name = 'Beverages & Mocktails'), 'Fresh Mint Lemonade',            'BEV-MNT-L',  'Zesty chilled lemonade blended with fresh mountain mint',                         30.00,  80.00, 5.00, 120, 20, 1, 'ACTIVE'),
-  ((SELECT id FROM categories WHERE name = 'Beverages & Mocktails'), 'Mineral Water (1L)',             'BEV-WAT-1L', 'Packaged premium drinking water',                                                 12.00,  30.00, 5.00, 200, 40, 1, 'ACTIVE'),
-
-  ((SELECT id FROM categories WHERE name = 'Desserts & Sweets'), 'Hot Cheese Kunafa (Large)',  'DST-KNF-L', 'Crispy golden kataifi pastry layered with melted sweet cheese and crushed pistachios', 160.00, 320.00, 5.00, 30, 8, 1, 'ACTIVE'),
-  ((SELECT id FROM categories WHERE name = 'Desserts & Sweets'), 'Classic Umali Pudding',      'DST-UML-P', 'Warm Egyptian puff pastry pudding with condensed milk, raisins and roasted nuts',       90.00, 190.00, 5.00, 35, 8, 1, 'ACTIVE'),
-
-  ((SELECT id FROM categories WHERE name = 'Accompaniments'), 'Extra Toum Garlic Paste',       'SID-TOU-X', 'Traditional fluffy whipped garlic toum dip',                        15.00, 40.00, 5.00, 150, 30, 1, 'ACTIVE'),
-  ((SELECT id FROM categories WHERE name = 'Accompaniments'), 'Spicy Yemeni Dakous Chutney',   'SID-DAK-X', 'Fresh crushed tomato, green chili, garlic and coriander sauce',     10.00, 30.00, 5.00, 150, 30, 1, 'ACTIVE');
-
-
--- ───────────────────────────────────────────────────────────────────────────
--- 7 — Opening stock
--- ───────────────────────────────────────────────────────────────────────────
---
--- Derived from the products above rather than repeated by hand, so the counters
--- and the ledger can never disagree with the catalog. Every generated uuid,
--- stock_code and entry_number is a deterministic function of the row id, which
--- is what makes re-running these four statements a no-op.
-
--- Legacy per-product counters.
-INSERT IGNORE INTO stock (product_id, current_stock, reserved_stock, min_stock_alert)
-SELECT p.id, p.stock_quantity, 0, p.low_stock_threshold
-FROM products p;
-
--- Stock master. unit_type is inferred from the dish name the same way the
--- TypeScript seeder infers it.
-INSERT IGNORE INTO stock_items
-  (uuid, stock_code, name, unit_type, current_quantity, current_value, average_unit_price, status, min_stock_alert, product_id)
-SELECT
-  CONCAT('item-', p.id, '-seed'),
-  CONCAT('STK-', LPAD(p.id, 4, '0')),
-  p.name,
-  CASE
-    WHEN p.name LIKE '%Water%' OR p.name LIKE '%Lemonade%' OR p.name LIKE '%Champagne%' THEN 'liter'
-    WHEN p.name LIKE '%Soup%'  OR p.name LIKE '%Chutney%'  OR p.name LIKE '%Paste%'     THEN 'portion'
-    ELSE 'piece'
-  END,
-  p.stock_quantity,
-  p.stock_quantity * p.cost_price,
-  p.cost_price,
-  'active',
-  p.low_stock_threshold,
-  p.id
-FROM products p;
-
--- The opening purchase entry behind each stock item.
-INSERT IGNORE INTO stock_entries
-  (uuid, stock_item_id, entry_number, quantity, multiplier, total_quantity, total_price, unit_price, status, supplier, notes, created_by)
-SELECT
-  CONCAT('entry-', si.id, '-seed'),
-  si.id,
-  CONCAT('ENT-', LPAD(si.product_id, 4, '0'), '-INIT'),
-  si.current_quantity,
-  1.000,
-  si.current_quantity,
-  si.current_value,
-  si.average_unit_price,
-  'posted',
-  'Primary Wholesale Supplier',
-  'Initial opening stock ledger entry',
-  (SELECT id FROM users WHERE username = 'admin')
-FROM stock_items si
-WHERE si.product_id IS NOT NULL;
-
--- The matching movement, so the history starts where the counters do.
-INSERT IGNORE INTO stock_movements
-  (uuid, stock_item_id, movement_type, reference_type, reference_id, quantity, unit_price, total_value, balance_quantity, balance_value, notes, created_by)
-SELECT
-  CONCAT('move-', si.id, '-seed'),
-  si.id,
-  'in',
-  'PURCHASE_ENTRY',
-  CONCAT('ENT-', LPAD(si.product_id, 4, '0'), '-INIT'),
-  si.current_quantity,
-  si.average_unit_price,
-  si.current_value,
-  si.current_quantity,
-  si.current_value,
-  'Initial inventory stock addition',
-  (SELECT id FROM users WHERE username = 'admin')
-FROM stock_items si
-WHERE si.product_id IS NOT NULL;
-
-
--- ───────────────────────────────────────────────────────────────────────────
--- 8 — Dining room
--- ───────────────────────────────────────────────────────────────────────────
-
-INSERT IGNORE INTO dining_tables (table_number, name, section, capacity, status, display_order) VALUES
-  ('T-01', 'Table 1',               'Main AC Hall',         4, 'AVAILABLE',  1),
-  ('T-02', 'Table 2',               'Main AC Hall',         4, 'AVAILABLE',  2),
-  ('T-03', 'Table 3',               'Main AC Hall',         6, 'AVAILABLE',  3),
-  ('T-04', 'Table 4',               'Main AC Hall',         6, 'AVAILABLE',  4),
-  ('T-05', 'Table 5',               'Main AC Hall',         8, 'AVAILABLE',  5),
-  ('T-06', 'Table 6',               'Main AC Hall',         2, 'AVAILABLE',  6),
-  ('M-01', 'Majlis Al-Noor',        'Majlis Carpet Floor',  8, 'AVAILABLE',  7),
-  ('M-02', 'Majlis Al-Barakah',     'Majlis Carpet Floor',  8, 'AVAILABLE',  8),
-  ('M-03', 'Majlis Al-Sultan (VIP)', 'Majlis Carpet Floor', 12, 'AVAILABLE',  9),
-  ('F-01', 'Family Cabin 1',        'Family Enclosure',     6, 'AVAILABLE', 10),
-  ('F-02', 'Family Cabin 2',        'Family Enclosure',     6, 'AVAILABLE', 11),
-  ('F-03', 'Family Royal Suite',    'Family Enclosure',    10, 'AVAILABLE', 12);
-
-
--- ───────────────────────────────────────────────────────────────────────────
--- 9 — Sample customers
--- ───────────────────────────────────────────────────────────────────────────
-
-INSERT IGNORE INTO customers (name, phone, email, address, status, total_visits, total_spent) VALUES
-  ('Dr. Farooq Siddiqui', '9845012345', 'farooq@example.com',   'Banjara Hills, Hyderabad',  'ACTIVE', 3, 2450.00),
-  ('Rashid Khan',         '9988776655', 'rashid.k@example.com', 'Jubilee Hills, Hyderabad',  'ACTIVE', 3, 2450.00),
-  ('Zoya Fatima',         '9123456780', 'zoya@example.com',     'Tolichowki, Hyderabad',     'ACTIVE', 3, 2450.00),
-  ('Mohammed Irfan',      '9871122334', 'irfan.m@example.com',  'Mehdipatnam, Hyderabad',    'ACTIVE', 3, 2450.00);
-
--- Give every customer a display code, and promote the big spenders. Both are
--- no-ops once they have run.
-UPDATE customers
-SET customer_code = CONCAT('CUST-', LPAD(id, 4, '0'))
-WHERE customer_code IS NULL OR customer_code = '';
-
-UPDATE customers
-SET tier = 'VIP'
-WHERE total_spent >= 5000 AND (tier IS NULL OR tier = 'REGULAR');
+  ('superadmin', 'superadmin@project.com', '$2b$10$nJlibIwf3u1ODb8KPLfZ7uKIOZKaLckfJLwdnK/wOBU1JBhQZXh3q', 'Super Administrator',  '+91 98765 43209', NULL,                                          'ACTIVE'),
+  ('admin',      'admin@project.com',      '$2b$10$nJlibIwf3u1ODb8KPLfZ7uKIOZKaLckfJLwdnK/wOBU1JBhQZXh3q', 'System Administrator', '+91 98765 43210', (SELECT id FROM roles WHERE name = 'ADMIN'),   'ACTIVE'),
+  ('manager',    'manager@project.com',    '$2b$10$nJlibIwf3u1ODb8KPLfZ7uKIOZKaLckfJLwdnK/wOBU1JBhQZXh3q', 'Operations Manager',   '+91 98765 43211', (SELECT id FROM roles WHERE name = 'MANAGER'), 'ACTIVE'),
+  ('cashier',    'cashier@project.com',    '$2b$10$nJlibIwf3u1ODb8KPLfZ7uKIOZKaLckfJLwdnK/wOBU1JBhQZXh3q', 'Head Cashier',         '+91 98765 43212', (SELECT id FROM roles WHERE name = 'CASHIER'), 'ACTIVE'),
+  ('staff',      'staff@project.com',      '$2b$10$nJlibIwf3u1ODb8KPLfZ7uKIOZKaLckfJLwdnK/wOBU1JBhQZXh3q', 'Service Staff',        '+91 98765 43213', (SELECT id FROM roles WHERE name = 'STAFF'),   'ACTIVE');
 
 
 -- ───────────────────────────────────────────────────────────────────────────
@@ -316,31 +175,6 @@ INSERT IGNORE INTO expense_categories (name, description, is_fixed_cost, is_syst
   ('Cleaning',           'Housekeeping supplies and pest control',          0, 1, 10),
   ('Miscellaneous',      'Uncategorised operational spend',                 0, 1, 99);
 
-
--- ───────────────────────────────────────────────────────────────────────────
--- 11 — Add-ons & combo deals
--- ───────────────────────────────────────────────────────────────────────────
-
-INSERT IGNORE INTO product_addons (id, name, category, price, cost_price, is_available, status) VALUES
-  (1, 'Extra Spicy Daqoos Sauce',            'Sauces',    3.00, 1.00, 1, 'ACTIVE'),
-  (2, 'Creamy Garlic Tahini Dip',            'Sauces',    4.00, 1.50, 1, 'ACTIVE'),
-  (3, 'Crispy Fried Caramelized Onions',     'Toppings',  4.00, 1.20, 1, 'ACTIVE'),
-  (4, 'Golden Roasted Almonds & Raisins',    'Toppings',  8.00, 3.50, 1, 'ACTIVE'),
-  (5, 'Extra Traditional Shurba (Soup Bowl)', 'Sides',    6.00, 2.00, 1, 'ACTIVE'),
-  (6, 'Extra Fragrant Mandi Rice Portion',   'Sides',    15.00, 5.00, 1, 'ACTIVE'),
-  (7, 'Melted Cheddar Cheese Drizzle',       'Toppings',  5.00, 2.00, 1, 'ACTIVE'),
-  (8, 'Chilled Ayran Laban Bottle (330ml)',  'Beverages', 6.00, 2.50, 1, 'ACTIVE');
-
--- All eight are global: offered against every dish rather than pinned to one.
-INSERT IGNORE INTO product_addon_mappings (id, addon_id, is_global) VALUES
-  (1, 1, 1), (2, 2, 1), (3, 3, 1), (4, 4, 1),
-  (5, 5, 1), (6, 6, 1), (7, 7, 1), (8, 8, 1);
-
-INSERT IGNORE INTO combo_deals (id, combo_code, name, description, original_price, combo_price, savings_amount, is_available, status) VALUES
-  (1, 'CMB-ROYAL-DUO',      'Royal Mandi Duo Combo',     '1 Half Mutton Mandi + 1 Half Chicken Mandi + 2 Daqoos + 2 Ayran Laban Bottles', 134.00, 115.00, 19.00, 1, 'ACTIVE'),
-  (2, 'CMB-CHARCOAL-SOLO',  'Single Charcoal Grill Meal', '1 Half Chicken Madhbi + Fresh Garden Salad + 1 Daqoos + Arabic Red Tea Pot',    58.00,  49.00,  9.00, 1, 'ACTIVE');
-
-
 -- ───────────────────────────────────────────────────────────────────────────
 -- 12 — Settings
 -- ───────────────────────────────────────────────────────────────────────────
@@ -356,9 +190,9 @@ INSERT IGNORE INTO combo_deals (id, combo_code, name, description, original_pric
 
 -- ── General ────────────────────────────────────────────────────────────────
 INSERT IGNORE INTO settings (`key`, `value`, category, description, is_system) VALUES
-  ('BUSINESS_NAME',    'Project X — POS & Management System',                        'GENERAL', 'Official registered trade name',   1),
+  ('BUSINESS_NAME',    'Project — POS & Management System',                        'GENERAL', 'Official registered trade name',   1),
   ('BUSINESS_PHONE',   '+91 40 2355 8900 / +91 98765 43210',                         'GENERAL', 'Contact phone numbers',           1),
-  ('BUSINESS_EMAIL',   'contact@projectx.com',                                       'GENERAL', 'Official email address',          1),
+  ('BUSINESS_EMAIL',   'contact@project.com',                                       'GENERAL', 'Official email address',          1),
   ('BUSINESS_ADDRESS', 'Plot 42, Gachibowli Main Road, Hyderabad, Telangana 500032', 'GENERAL', 'Store physical address',          1),
   ('BUSINESS_GSTIN',   '36AAAAA0000A1Z5',                                            'GENERAL', 'GST / Tax identification number', 1),
   ('CURRENCY_SYMBOL',  '₹',                                                          'GENERAL', 'Primary currency symbol',         1);
@@ -374,7 +208,7 @@ INSERT IGNORE INTO settings (`key`, `value`, category, description, is_system) V
 -- The \n sequences below are interpreted by MySQL as real newlines, which is
 -- what the thermal printer expects.
 INSERT IGNORE INTO settings (`key`, `value`, category, description, is_system) VALUES
-  ('RECEIPT_HEADER',        '*** PROJECT X POS ***\nOfficial Store Terminal',                                'RECEIPT', 'Top header printed on receipts',        1),
+  ('RECEIPT_HEADER',        '*** Project POS ***\nOfficial Store Terminal',                                'RECEIPT', 'Top header printed on receipts',        1),
   ('RECEIPT_FOOTER',        'Thank you for your visit!\nPlease rate our service.\nFor Support: +91 98765 43210', 'RECEIPT', 'Bottom message printed on receipt',  1),
   ('RECEIPT_SHOW_LOGO',     'true',                                                                          'RECEIPT', 'Show restaurant emblem on print',       1),
   ('RECEIPT_SHOW_TAX',      'true',                                                                          'RECEIPT', 'Display tax breakdown line',            1),
@@ -383,7 +217,7 @@ INSERT IGNORE INTO settings (`key`, `value`, category, description, is_system) V
 
 -- ── POS behaviour ──────────────────────────────────────────────────────────
 INSERT IGNORE INTO settings (`key`, `value`, category, description, is_system) VALUES
-  ('POS_DEFAULT_ORDER_TYPE',   'WALK_IN', 'POS', 'Default order type on fresh POS load',            1),
+  ('POS_DEFAULT_ORDER_TYPE',   'TAKEAWAY', 'POS', 'Default order type on fresh POS load',           1),
   ('POS_ALLOW_NEGATIVE_STOCK', 'false',   'POS', 'Permit billing when stock reaches zero',          1),
   ('POS_ENABLE_DISCOUNTS',     'true',    'POS', 'Allow cashier to input discounts',                1),
   ('POS_SOUND_EFFECTS',        'true',    'POS', 'Play audible chimes on add to cart & checkout',   1);

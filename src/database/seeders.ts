@@ -122,7 +122,7 @@ export const seedDatabase = async (): Promise<void> => {
 
     // 4. Categories
     const categories = [
-      { name: 'Mandi Specials', description: 'Authentic Yemeni slow-cooked fragrant Mandi rice dishes', icon: 'utensils', order: 1 },
+      { name: ' Specials', description: 'Authentic Yemeni slow-cooked fragrant  rice dishes', icon: 'utensils', order: 1 },
       { name: 'Biryani & Rice', description: 'Dum-cooked royal biryanis and specialty rice platters', icon: 'flame', order: 2 },
       { name: 'Starters & Grills', description: 'Al Faham, Kebabs, Hummus and hot Arabian appetizers', icon: 'drumstick', order: 3 },
       { name: 'Beverages & Mocktails', description: 'Refreshing Saudi Champagne, fresh juices and mint coolers', icon: 'glass-water', order: 4 },
@@ -140,7 +140,7 @@ export const seedDatabase = async (): Promise<void> => {
       ]);
     }
 
-    const catMandi = (await dbService.queryOne<{ id: number }>("SELECT id FROM categories WHERE name = 'Mandi Specials'"))!.id;
+    const cat = (await dbService.queryOne<{ id: number }>("SELECT id FROM categories WHERE name = ' Specials'"))!.id;
     const catBiryani = (await dbService.queryOne<{ id: number }>("SELECT id FROM categories WHERE name = 'Biryani & Rice'"))!.id;
     const catStarters = (await dbService.queryOne<{ id: number }>("SELECT id FROM categories WHERE name = 'Starters & Grills'"))!.id;
     const catDrinks = (await dbService.queryOne<{ id: number }>("SELECT id FROM categories WHERE name = 'Beverages & Mocktails'"))!.id;
@@ -149,24 +149,24 @@ export const seedDatabase = async (): Promise<void> => {
 
     // 5. Products & Initial Stock
     const products = [
-      // Mandi
-      { catId: catMandi, name: 'Special Chicken Mandi (Full)', sku: 'MND-CHK-F', cost: 420, price: 680, tax: 5, stock: 45, alert: 10, desc: 'Full fragrant Mandi rice served with tender roasted whole chicken and soup' },
-      { catId: catMandi, name: 'Special Chicken Mandi (Half)', sku: 'MND-CHK-H', cost: 230, price: 380, tax: 5, stock: 60, alert: 15, desc: 'Half portion Mandi rice with half roasted chicken and side sauces' },
-      { catId: catMandi, name: 'Special Chicken Mandi (Quarter)', sku: 'MND-CHK-Q', cost: 130, price: 220, tax: 5, stock: 80, alert: 20, desc: 'Single serving chicken mandi with aromatic rice and spicy dakous' },
-      { catId: catMandi, name: 'Royal Mutton Mandi (Full)', sku: 'MND-MUT-F', cost: 680, price: 1050, tax: 5, stock: 30, alert: 8, desc: 'Tender melt-in-mouth slow-braised mutton shanks on premium basmati mandi rice' },
-      { catId: catMandi, name: 'Royal Mutton Mandi (Half)', sku: 'MND-MUT-H', cost: 360, price: 580, tax: 5, stock: 40, alert: 10, desc: 'Succulent mutton portion served over rich spiced mandi rice with fried nuts' },
-      { catId: catMandi, name: 'Al Faham Chicken Mandi', sku: 'MND-ALF-F', cost: 460, price: 740, tax: 5, stock: 35, alert: 10, desc: 'Charcoal grilled spicy Al Faham chicken paired with long-grain mandi rice' },
-      { catId: catMandi, name: 'Peri Peri Fish Mandi', sku: 'MND-FSH-F', cost: 480, price: 790, tax: 5, stock: 25, alert: 5, desc: 'Fresh marinated King Fish steak charcoal grilled over spiced rice' },
-      
+      // 
+      { catId: cat, name: 'Special Chicken  (Full)', sku: 'MND-CHK-F', cost: 420, price: 680, tax: 5, stock: 45, alert: 10, desc: 'Full fragrant  rice served with tender roasted whole chicken and soup' },
+      { catId: cat, name: 'Special Chicken  (Half)', sku: 'MND-CHK-H', cost: 230, price: 380, tax: 5, stock: 60, alert: 15, desc: 'Half portion  rice with half roasted chicken and side sauces' },
+      { catId: cat, name: 'Special Chicken  (Quarter)', sku: 'MND-CHK-Q', cost: 130, price: 220, tax: 5, stock: 80, alert: 20, desc: 'Single serving chicken  with aromatic rice and spicy dakous' },
+      { catId: cat, name: 'Royal Mutton  (Full)', sku: 'MND-MUT-F', cost: 680, price: 1050, tax: 5, stock: 30, alert: 8, desc: 'Tender melt-in-mouth slow-braised mutton shanks on premium basmati  rice' },
+      { catId: cat, name: 'Royal Mutton  (Half)', sku: 'MND-MUT-H', cost: 360, price: 580, tax: 5, stock: 40, alert: 10, desc: 'Succulent mutton portion served over rich spiced  rice with fried nuts' },
+      { catId: cat, name: 'Al Faham Chicken ', sku: 'MND-ALF-F', cost: 460, price: 740, tax: 5, stock: 35, alert: 10, desc: 'Charcoal grilled spicy Al Faham chicken paired with long-grain  rice' },
+      { catId: cat, name: 'Peri Peri Fish ', sku: 'MND-FSH-F', cost: 480, price: 790, tax: 5, stock: 25, alert: 5, desc: 'Fresh marinated King Fish steak charcoal grilled over spiced rice' },
+
       // Biryani
       { catId: catBiryani, name: 'Hyderabadi Mutton Dum Biryani', sku: 'BRY-MUT-D', cost: 240, price: 390, tax: 5, stock: 50, alert: 12, desc: 'Traditional sealed pot dum biryani with marinated mutton and saffron aroma' },
       { catId: catBiryani, name: 'Chicken Dum Biryani Pot', sku: 'BRY-CHK-D', cost: 160, price: 280, tax: 5, stock: 70, alert: 15, desc: 'Rich spiced layered basmati rice with juicy chicken cuts and raita' },
-      
+
       // Starters
       { catId: catStarters, name: 'Arabian Al Faham Dajaj (Full)', sku: 'STR-ALF-F', cost: 300, price: 490, tax: 5, stock: 40, alert: 10, desc: 'Full charcoal grilled marinated Arabian chicken with toum garlic sauce' },
       { catId: catStarters, name: 'Creamy Hummus with Pita (2 Pcs)', sku: 'STR-HUM-P', cost: 80, price: 160, tax: 5, stock: 60, alert: 15, desc: 'Velvety chickpea hummus dip topped with extra virgin olive oil and sumac' },
       { catId: catStarters, name: 'Mutton Maraq Soup (Bowl)', sku: 'STR-MAR-B', cost: 40, price: 90, tax: 5, stock: 100, alert: 25, desc: 'Rich aromatic mutton bone broth infused with cardamom and black pepper' },
-      
+
       // Beverages
       { catId: catDrinks, name: 'Saudi Champagne (Pitcher 1.5L)', sku: 'BEV-SAU-P', cost: 90, price: 220, tax: 5, stock: 50, alert: 10, desc: 'Sparkling apple cider cocktail infused with fresh mint, orange and lemon slices' },
       { catId: catDrinks, name: 'Fresh Mint Lemonade', sku: 'BEV-MNT-L', cost: 30, price: 80, tax: 5, stock: 120, alert: 20, desc: 'Zesty chilled lemonade blended with fresh mountain mint' },
@@ -235,12 +235,12 @@ export const seedDatabase = async (): Promise<void> => {
       { num: 'T-04', name: 'Table 4', section: 'Main AC Hall', cap: 6, order: 4 },
       { num: 'T-05', name: 'Table 5', section: 'Main AC Hall', cap: 8, order: 5 },
       { num: 'T-06', name: 'Table 6', section: 'Main AC Hall', cap: 2, order: 6 },
-      
+
       // Majlis Floor Seating
       { num: 'M-01', name: 'Majlis Al-Noor', section: 'Majlis Carpet Floor', cap: 8, order: 7 },
       { num: 'M-02', name: 'Majlis Al-Barakah', section: 'Majlis Carpet Floor', cap: 8, order: 8 },
       { num: 'M-03', name: 'Majlis Al-Sultan (VIP)', section: 'Majlis Carpet Floor', cap: 12, order: 9 },
-      
+
       // Family Cabins
       { num: 'F-01', name: 'Family Cabin 1', section: 'Family Enclosure', cap: 6, order: 10 },
       { num: 'F-02', name: 'Family Cabin 2', section: 'Family Enclosure', cap: 6, order: 11 },
@@ -296,7 +296,7 @@ export const seedDatabase = async (): Promise<void> => {
       { key: 'RECEIPT_PAPER_WIDTH', value: '80mm', cat: 'RECEIPT', desc: 'Receipt printer thermal paper width' },
 
       // POS
-      { key: 'POS_DEFAULT_ORDER_TYPE', value: 'WALK_IN', cat: 'POS', desc: 'Default order type on fresh POS load' },
+      { key: 'POS_DEFAULT_ORDER_TYPE', value: 'TAKEAWAY', cat: 'POS', desc: 'Default order type on fresh POS load' },
       { key: 'POS_ALLOW_NEGATIVE_STOCK', value: 'false', cat: 'POS', desc: 'Permit billing when stock reaches zero' },
       { key: 'POS_ENABLE_DISCOUNTS', value: 'true', cat: 'POS', desc: 'Allow cashier to input discounts' },
       { key: 'POS_SOUND_EFFECTS', value: 'true', cat: 'POS', desc: 'Play audible chimes on add to cart & checkout' },

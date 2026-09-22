@@ -725,9 +725,9 @@ export class BackupService {
       logger.error('Database backup failed part-way through:', err);
       await write(
         `\n-- ==========================================================\n` +
-          `-- BACKUP FAILED AND IS INCOMPLETE. DO NOT RESTORE FROM THIS FILE.\n` +
-          `-- ${String((err as Error)?.message ?? err).replace(/\r?\n/g, ' ')}\n` +
-          `-- ==========================================================\n`
+        `-- BACKUP FAILED AND IS INCOMPLETE. DO NOT RESTORE FROM THIS FILE.\n` +
+        `-- ${String((err as Error)?.message ?? err).replace(/\r?\n/g, ' ')}\n` +
+        `-- ==========================================================\n`
       );
       throw err;
     }
@@ -826,7 +826,7 @@ export class BackupService {
   private static header(database: string, serverVersion: string): string {
     return [
       `-- ============================================================`,
-      `-- Mandi POS database backup`,
+      `--  POS database backup`,
       `--`,
       `-- Database : ${database}`,
       `-- Server   : ${serverVersion}`,

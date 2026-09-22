@@ -2,7 +2,16 @@
 // resolves to. See core/utils/role.util.ts.
 export type RoleName = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'CASHIER' | 'STAFF';
 
-export type OrderType = 'WALK_IN' | 'TAKEAWAY' | 'DINING' | 'PICKUP' | 'COUNTER';
+/**
+ * The two ways an order leaves the counter.
+ *
+ * Walk-in, pickup and counter were separate values once. They described how
+ * the customer arrived rather than how the order is served, and nothing in
+ * the kitchen, the receipt or the reports ever treated them differently, so
+ * they are all TAKEAWAY now. DINING keeps its original spelling because it is
+ * the value already written to every dine-in row in every deployed database.
+ */
+export type OrderType = 'DINING' | 'TAKEAWAY';
 
 export type OrderStatus = 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
 

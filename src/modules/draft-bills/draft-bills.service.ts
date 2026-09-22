@@ -2,6 +2,7 @@ import { dbService } from '../../database/db';
 import { AppError } from '../../core/errors/AppError';
 import { AuditService } from '../audit/audit.service';
 import { OrderType } from '../../core/types';
+import { ParamUtil } from '../../core/utils/param.util';
 
 export class DraftBillsService {
   static async getAll() {
@@ -81,7 +82,7 @@ export class DraftBillsService {
           draftNumber,
           data.customerId || null,
           data.diningTableId || null,
-          data.orderType || 'WALK_IN',
+          ParamUtil.orderType(data.orderType),
           data.discountType || 'FIXED',
           data.discountValue || 0.0,
           data.notes || null,

@@ -1,5 +1,6 @@
 import { dbService } from '../../database/db';
 import { AuditService } from '../audit/audit.service';
+import { TaxPolicy, DEFAULT_TAX_POLICY } from '../../core/utils/tax.util';
 
 /**
  * Older databases (provisioned by src/database/mysql_migrator.ts) store the same
@@ -106,6 +107,39 @@ export class SettingsService {
     // Canonical key wins when both are present.
     const exact = rows.find((r) => r.key === canonicalKey);
     return (exact ?? rows[0])?.value ?? null;
+  }
+
+  /**
+   * The tax rule every total in the system has to agree on.
+   *
+   * Reading the TAX_* rows with getValue is not enough. Saving the Business
+   * tab writes one system_business JSON document and purges the flat TAX_%
+   * rows, so on any database whose settings have been saved once those reads
+   * come back null — which is how the configured rate and the enabled switch
+   * quietly stopped reaching the server and every bill went out at the 5%
+   * fallback. getPublicSettings unpacks the JSON, so the answer is resolved
+   * through that instead.
+   */
+  static async getTaxPolicy(): Promise<TaxPolicy> {
+    let map: Record<string, string> = {};
+    try {
+      map = await this.getPublicSettings();
+    } catch (_) {
+      return { ...DEFAULT_TAX_POLICY };
+    }
+
+    const parsedRate = parseFloat(map['TAX_PERCENTAGE'] ?? '');
+    const rate = Number.isFinite(parsedRate) ? parsedRate : DEFAULT_TAX_POLICY.rate;
+    // No switch stored at all: a rate above zero is taken as tax being on,
+    // which is what the till assumes for the same map.
+    const enabledRaw = map['TAX_ENABLED'];
+    const enabled = enabledRaw === undefined ? rate > 0 : String(enabledRaw) === 'true';
+
+    return {
+      enabled,
+      rate: enabled ? rate : 0,
+      inclusive: String(map['TAX_INCLUSIVE']) === 'true',
+    };
   }
 
   /** Adds canonical aliases onto a settings map so lookups find either spelling. */
@@ -258,6 +292,7 @@ export class SettingsService {
           }
           if (b.taxEnabled !== undefined) settingsMap['TAX_ENABLED'] = String(b.taxEnabled);
           if (b.taxName) settingsMap['TAX_NAME'] = b.taxName;
+          if (b.taxInclusive !== undefined) settingsMap['TAX_INCLUSIVE'] = String(b.taxInclusive);
           if (b.allowNegativeStock !== undefined) settingsMap['POS_ALLOW_NEGATIVE_STOCK'] = String(b.allowNegativeStock);
           if (b.defaultOrderType) settingsMap['POS_DEFAULT_ORDER_TYPE'] = b.defaultOrderType;
         }

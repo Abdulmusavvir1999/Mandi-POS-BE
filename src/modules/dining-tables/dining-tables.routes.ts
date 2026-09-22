@@ -16,12 +16,6 @@ router.post('/reservations', authenticate, requirePermission('dining.manage'), D
 router.put('/reservations/:id/seat', authenticate, requirePermission('dining.manage'), DiningTablesController.seatReservation);
 router.delete('/reservations/:id', authenticate, requirePermission('dining.manage'), DiningTablesController.cancelReservation);
 
-// Waitlist & Queue Tokens (must come before /:id)
-router.get('/waitlist', authenticate, DiningTablesController.getWaitlist);
-router.post('/waitlist', authenticate, requirePermission('dining.manage'), DiningTablesController.addToWaitlist);
-router.put('/waitlist/:id/seat', authenticate, requirePermission('dining.manage'), DiningTablesController.seatWaitlistParty);
-router.patch('/waitlist/:id/status', authenticate, requirePermission('dining.manage'), DiningTablesController.updateWaitlistStatus);
-
 // Table Specific Handlers
 router.get('/:id', authenticate, DiningTablesController.getById);
 router.get('/:id/history', authenticate, DiningTablesController.getTableHistory);

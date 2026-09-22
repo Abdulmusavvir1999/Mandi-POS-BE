@@ -13,7 +13,7 @@ const startServer = async () => {
     const app = createApp();
     const server = app.listen(config.port, () => {
       logger.info(`=======================================================`);
-      logger.info(` Mandi Shop POS & Management API Server Running `);
+      logger.info(`  Shop POS & Management API Server Running `);
       logger.info(` Port: http://localhost:${config.port}`);
       logger.info(` Health check: http://localhost:${config.port}/api/health`);
       logger.info(` Environment: ${config.nodeEnv}`);

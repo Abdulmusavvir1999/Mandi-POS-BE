@@ -156,45 +156,4 @@ export class DiningTablesController {
       next(err);
     }
   }
-
-  // Waiting List & Queue Tokens
-  static async getWaitlist(req: Request, res: Response, next: NextFunction) {
-    try {
-      const waitlist = await DiningTablesService.getWaitlist();
-      ResponseUtil.success(res, waitlist, 'Waitlist retrieved successfully');
-    } catch (err) {
-      next(err);
-    }
-  }
-
-  static async addToWaitlist(req: Request, res: Response, next: NextFunction) {
-    try {
-      const entry = await DiningTablesService.addToWaitlist(req.body, req.user!.id);
-      ResponseUtil.created(res, entry, 'Guest party added to waitlist queue');
-    } catch (err) {
-      next(err);
-    }
-  }
-
-  static async seatWaitlistParty(req: Request, res: Response, next: NextFunction) {
-    try {
-      const id = ParamUtil.id(req.params.id, 'id');
-      const { tableId } = req.body;
-      const table = await DiningTablesService.seatWaitlistParty(id, tableId, req.user!.id);
-      ResponseUtil.success(res, table, 'Waitlist party seated at table');
-    } catch (err) {
-      next(err);
-    }
-  }
-
-  static async updateWaitlistStatus(req: Request, res: Response, next: NextFunction) {
-    try {
-      const id = ParamUtil.id(req.params.id, 'id');
-      const { status } = req.body;
-      const result = await DiningTablesService.updateWaitlistStatus(id, status, req.user!.id);
-      ResponseUtil.success(res, result, 'Waitlist status updated');
-    } catch (err) {
-      next(err);
-    }
-  }
 }

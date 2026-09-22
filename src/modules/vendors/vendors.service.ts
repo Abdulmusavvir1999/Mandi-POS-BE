@@ -267,7 +267,7 @@ export class VendorsService {
         quality_score: 99.20,
         fulfillment_rate: 97.80,
         performance_notes: 'Premium Grade-A fresh chicken, mutton cuts, and camel meat. Extremely reliable cold-chain delivery.',
-        notes: 'Primary contractor for Mandi chicken and lamb portions.',
+        notes: 'Primary contractor for  chicken and lamb portions.',
       },
       {
         uuid: uuidv4(),
@@ -347,7 +347,7 @@ export class VendorsService {
         quality_score: 100.00,
         fulfillment_rate: 99.00,
         performance_notes: 'Supplies authentic Hawayej, saffron threads, whole cardamom, cloves, dried black limes, and cinnamon barks.',
-        notes: 'Exclusive artisan spice blend for signature Mandi seasoning.',
+        notes: 'Exclusive artisan spice blend for signature  seasoning.',
       },
       {
         uuid: uuidv4(),
@@ -426,7 +426,7 @@ export class VendorsService {
         on_time_delivery_rate: 97.00,
         quality_score: 98.00,
         fulfillment_rate: 98.00,
-        performance_notes: 'Mandi heavy-duty thermal foil sheets, large banquet round trays, takeaway paper bags, cutlery sets, and napkins.',
+        performance_notes: ' heavy-duty thermal foil sheets, large banquet round trays, takeaway paper bags, cutlery sets, and napkins.',
         notes: 'Stocked on 2-month buffer quantities.',
       },
     ];

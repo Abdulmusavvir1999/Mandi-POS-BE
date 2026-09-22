@@ -158,7 +158,7 @@ export class PosClosingService {
     return {
       closing: record,
       receiptSettings: {
-        businessName: settingsMap['BUSINESS_NAME'] || settingsMap['restaurant_name'] || 'Mandi Restaurant',
+        businessName: settingsMap['BUSINESS_NAME'] || settingsMap['restaurant_name'] || ' Restaurant',
         address: settingsMap['BUSINESS_ADDRESS'] || '',
         phone: settingsMap['BUSINESS_PHONE'] || '',
         gstin: settingsMap['BUSINESS_GSTIN'] || '',

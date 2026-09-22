@@ -23,7 +23,7 @@ import { dbService } from '../database/db';
  */
 
 const USERNAME = process.env.SUPER_ADMIN_USERNAME || 'superadmin';
-const EMAIL = process.env.SUPER_ADMIN_EMAIL || 'superadmin@mandipos.com';
+const EMAIL = process.env.SUPER_ADMIN_EMAIL || 'superadmin@pos.com';
 const NAME = process.env.SUPER_ADMIN_NAME || 'Super Administrator';
 
 const ask = (question: string): Promise<string> => {

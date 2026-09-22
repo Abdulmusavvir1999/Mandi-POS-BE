@@ -29,7 +29,7 @@ const router = Router();
 router.get('/health', (req, res) => {
   res.json({
     status: 'UP',
-    system: 'Mandi Shop POS & Management API',
+    system: ' Shop POS & Management API',
     timestamp: new Date().toISOString(),
   });
 });

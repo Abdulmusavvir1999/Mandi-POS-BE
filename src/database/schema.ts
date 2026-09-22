@@ -376,26 +376,6 @@ export const createSchema = async (): Promise<void> => {
       FOREIGN KEY (created_by) REFERENCES users(id)
     );
 
-    -- Table Waitlist & Queue Tokens
-    CREATE TABLE IF NOT EXISTS table_waitlist (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      uuid TEXT UNIQUE NOT NULL,
-      token_number TEXT NOT NULL,
-      customer_name TEXT NOT NULL,
-      customer_phone TEXT,
-      guest_count INTEGER NOT NULL DEFAULT 2,
-      preferred_section TEXT,
-      estimated_wait_minutes INTEGER NOT NULL DEFAULT 15,
-      status TEXT NOT NULL DEFAULT 'WAITING' CHECK(status IN ('WAITING', 'NOTIFIED', 'SEATED', 'CANCELLED')),
-      assigned_table_id INTEGER,
-      seated_at DATETIME,
-      created_by INTEGER,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (assigned_table_id) REFERENCES dining_tables(id) ON DELETE SET NULL,
-      FOREIGN KEY (created_by) REFERENCES users(id)
-    );
-
     -- Orders table
     CREATE TABLE IF NOT EXISTS orders (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -465,7 +445,7 @@ export const createSchema = async (): Promise<void> => {
       draft_number TEXT UNIQUE NOT NULL,
       customer_id INTEGER,
       dining_table_id INTEGER,
-      order_type TEXT NOT NULL DEFAULT 'WALK_IN',
+      order_type TEXT NOT NULL DEFAULT 'TAKEAWAY',
       discount_type TEXT DEFAULT 'FIXED' CHECK(discount_type IN ('FIXED', 'PERCENTAGE')),
       discount_value REAL DEFAULT 0.0,
       notes TEXT,
@@ -758,9 +738,6 @@ export const createSchema = async (): Promise<void> => {
     CREATE INDEX IF NOT EXISTS idx_tr_time ON table_reservations(reservation_time);
     CREATE INDEX IF NOT EXISTS idx_tr_table ON table_reservations(table_id);
     CREATE INDEX IF NOT EXISTS idx_tr_status ON table_reservations(status);
-
-    CREATE INDEX IF NOT EXISTS idx_wl_status ON table_waitlist(status);
-    CREATE INDEX IF NOT EXISTS idx_wl_created ON table_waitlist(created_at);
 
     CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone);
     CREATE INDEX IF NOT EXISTS idx_customers_name ON customers(name);

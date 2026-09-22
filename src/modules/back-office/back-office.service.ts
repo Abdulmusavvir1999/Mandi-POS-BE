@@ -9,6 +9,7 @@ import { CheckoutService, CheckoutPayload } from '../checkout/checkout.service';
 import { OrderStatus, OrderType, PaymentMethod } from '../../core/types';
 import { logger } from '../../config/logger';
 import { ParamUtil } from '../../core/utils/param.util';
+import { DEFAULT_TAX_POLICY, effectiveTaxShare, wasTaxIncludedInTotal } from '../../core/utils/tax.util';
 
 /** Per-record outcome for every bulk operation, so partial failures stay visible. */
 export interface BulkOutcome {
@@ -251,7 +252,7 @@ export class BackOfficeService {
       }
     }
 
-    const orderType: OrderType = body.orderType || 'WALK_IN';
+    const orderType: OrderType = ParamUtil.orderType(body.orderType);
     if (orderType === 'DINING' && !body.diningTableId) {
       throw AppError.badRequest('A dining order needs a table to be selected.');
     }
@@ -818,6 +819,12 @@ export class BackOfficeService {
    * rather than from current settings, so re-pricing a historical order does
    * not quietly move it onto today's tax percentage. Only when the old taxable
    * base was zero does it fall back to the configured rate.
+   *
+   * What that ratio means depends on the rule the record was written under: an
+   * EXCLUSIVE record's tax is a share of a net base, an INCLUSIVE record's is a
+   * share of a base that already contains it. Either way the ratio re-applies
+   * correctly to the new base — only whether the tax is then *added* to the
+   * total differs, which is what wasTaxIncludedInTotal settles per record.
    */
   private static effectiveTaxRate(
     oldTaxableAmount: number,
@@ -850,12 +857,15 @@ export class BackOfficeService {
       throw AppError.badRequest('A percentage discount cannot exceed 100%.');
     }
 
+    // Only reached for a record carrying no tax of its own; everything else
+    // re-prices on its own ratio. `inclusive` additionally decides those
+    // zero-tax records' totals, where adding nothing and containing nothing
+    // come to the same number anyway.
     let fallbackTaxRate = 5.0;
+    let taxPolicy = { ...DEFAULT_TAX_POLICY };
     try {
-      const taxEnabled = await SettingsService.getValue('TAX_ENABLED');
-      const configured = parseFloat((await SettingsService.getValue('TAX_PERCENTAGE')) || '5.0');
-      const rate = Number.isFinite(configured) ? configured : 5.0;
-      fallbackTaxRate = taxEnabled !== null && taxEnabled !== 'true' ? 0 : rate;
+      taxPolicy = await SettingsService.getTaxPolicy();
+      fallbackTaxRate = effectiveTaxShare(taxPolicy);
     } catch (_) {
       // Settings unavailable: the per-record rate below still covers every
       // order that already carries tax, which is the normal case.
@@ -928,9 +938,17 @@ export class BackOfficeService {
             fallbackTaxRate
           );
 
+          const orderTaxWasInside = wasTaxIncludedInTotal(
+            oldOrderTaxable,
+            Number(order.tax_amount) || 0,
+            0,
+            Number(order.total_amount) || 0,
+            taxPolicy.inclusive
+          );
+
           const orderTaxable = Math.max(0, orderSubtotal - orderDiscount);
           const orderTax = round2((orderTaxable * orderTaxRate) / 100);
-          const orderTotal = round2(orderTaxable + orderTax);
+          const orderTotal = round2(orderTaxWasInside ? orderTaxable : orderTaxable + orderTax);
 
           await dbService.execute(
             `UPDATE orders
@@ -964,9 +982,19 @@ export class BackOfficeService {
                 fallbackTaxRate
               );
 
+              const billTaxWasInside = wasTaxIncludedInTotal(
+                oldBillTaxable,
+                Number(bill.tax_amount) || 0,
+                serviceCharge + surcharge,
+                Number(bill.total_amount) || 0,
+                taxPolicy.inclusive
+              );
+
               const billTaxable = Math.max(0, billSubtotal - Math.min(billSubtotal, billDiscount + coupon));
               const billTax = round2((billTaxable * billTaxRate) / 100);
-              const billTotal = round2(billTaxable + billTax + serviceCharge + surcharge);
+              const billTotal = round2(
+                (billTaxWasInside ? billTaxable : billTaxable + billTax) + serviceCharge + surcharge
+              );
               const previousTotal = Number(bill.total_amount) || 0;
 
               await dbService.execute(
