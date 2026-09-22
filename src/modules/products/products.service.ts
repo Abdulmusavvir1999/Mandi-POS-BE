@@ -2,6 +2,7 @@ import { dbService } from '../../database/db';
 import { AppError } from '../../core/errors/AppError';
 import { AuditService } from '../audit/audit.service';
 import { ProductImageService } from './product-image.service';
+import { ParamUtil } from '../../core/utils/param.util';
 
 export interface ProductVariantInput {
   id?: number;
@@ -93,7 +94,8 @@ export class ProductsService {
 
     if (search) {
       where += ' AND (p.name LIKE ? OR p.sku LIKE ? OR p.description LIKE ?)';
-      params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+      const term = ParamUtil.like(search);
+      params.push(term, term, term);
     }
 
     if (categoryId) {

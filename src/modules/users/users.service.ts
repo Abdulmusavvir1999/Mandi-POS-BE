@@ -3,6 +3,7 @@ import { dbService } from '../../database/db';
 import { AppError } from '../../core/errors/AppError';
 import { AuditService } from '../audit/audit.service';
 import { UserImageService } from './user-image.service';
+import { ParamUtil } from '../../core/utils/param.util';
 
 export class UsersService {
   static async getAll(page = 1, limit = 20, search?: string, roleId?: number, status?: string) {
@@ -12,7 +13,8 @@ export class UsersService {
 
     if (search) {
       where += ' AND (u.name LIKE ? OR u.username LIKE ? OR u.email LIKE ? OR u.phone LIKE ?)';
-      params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+      const term = ParamUtil.like(search);
+      params.push(term, term, term, term);
     }
 
     if (roleId) {

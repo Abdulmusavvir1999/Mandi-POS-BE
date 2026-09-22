@@ -3,6 +3,8 @@ import { AppError } from '../../core/errors/AppError';
 import { AuditService } from '../audit/audit.service';
 import { SettingsService } from '../settings/settings.service';
 import { PaymentMethod, OrderType } from '../../core/types';
+import { decorateDocument, decorateDocuments } from '../../core/utils/document-sequence.util';
+import { ParamUtil } from '../../core/utils/param.util';
 
 export class BillsService {
   static async getAll(
@@ -13,15 +15,25 @@ export class BillsService {
     orderType?: OrderType,
     dateFrom?: string,
     dateTo?: string,
-    cashierId?: number
+    cashierId?: number,
+    /**
+     * Newest-first by insertion order rather than by timestamp. The Back-Office
+     * asks for this; the Bills register keeps the timestamp ordering it has
+     * always had.
+     */
+    sortBy: 'created_at' | 'id' = 'created_at'
   ) {
     const offset = (page - 1) * limit;
-    let where = 'WHERE 1=1';
+    // Withdrawn invoices drop out of the register. They are not gone — the row
+    // and its items, payments and refunds are intact — but they are out of the
+    // books, so nothing that totals or prints them should see them.
+    let where = 'WHERE b.is_deleted = 0';
     const params: any[] = [];
 
     if (search) {
       where += ' AND (b.bill_number LIKE ? OR o.order_number LIKE ? OR c.name LIKE ? OR c.phone LIKE ?)';
-      params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+      const term = ParamUtil.like(search);
+      params.push(term, term, term, term);
     }
 
     if (paymentMethod) {
@@ -60,7 +72,7 @@ export class BillsService {
     const total = countRes?.total || 0;
 
     const bills = await dbService.query(
-      `SELECT b.*, o.order_number, c.name as customer_name, c.phone as customer_phone,
+      `SELECT b.*, o.order_number, o.display_seq as order_display_seq, c.name as customer_name, c.phone as customer_phone,
               t.table_number, t.name as table_name,
               u.name as cashier_name
        FROM bills b
@@ -69,13 +81,19 @@ export class BillsService {
        LEFT JOIN dining_tables t ON b.dining_table_id = t.id
        LEFT JOIN users u ON b.cashier_id = u.id
        ${where}
-       ORDER BY b.created_at DESC
+       -- The id DESC on the timestamp branch is a tiebreaker, not a
+       -- reordering: several invoices routinely share a created_at to the
+       -- second, and without it MySQL is free to order those rows differently
+       -- on each query, so paging could show one twice and skip another.
+       ${sortBy === 'id' ? 'ORDER BY b.id DESC' : 'ORDER BY b.created_at DESC, b.id DESC'}
        LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );
 
     return {
-      data: bills,
+      // `display_number` is the gapless per-day number an operator reads;
+      // `bill_number` beside it is the permanent one on the customer's copy.
+      data: decorateDocuments(bills as any[], 'bill'),
       pagination: {
         page,
         limit,
@@ -87,7 +105,7 @@ export class BillsService {
 
   static async getById(id: number) {
     const bill = await dbService.queryOne(
-      `SELECT b.*, o.order_number, c.name as customer_name, c.phone as customer_phone, c.address as customer_address,
+      `SELECT b.*, o.order_number, o.display_seq as order_display_seq, c.name as customer_name, c.phone as customer_phone, c.address as customer_address,
               t.table_number, t.name as table_name,
               u.name as cashier_name
        FROM bills b
@@ -95,7 +113,7 @@ export class BillsService {
        LEFT JOIN customers c ON b.customer_id = c.id
        LEFT JOIN dining_tables t ON b.dining_table_id = t.id
        LEFT JOIN users u ON b.cashier_id = u.id
-       WHERE b.id = ?`,
+       WHERE b.id = ? AND b.is_deleted = 0`,
       [id]
     );
 
@@ -117,11 +135,11 @@ export class BillsService {
       [id]
     );
 
-    return {
-      ...bill,
+    return decorateDocument({
+      ...(bill as any),
       items,
       payments,
-    };
+    }, 'bill');
   }
 
   static async getPrintData(id: number, userId?: number) {

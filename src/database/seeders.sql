@@ -4,7 +4,7 @@
 --
 -- The factory dataset: roles, permissions and their grants, the four demo
 -- logins, the menu catalog with its opening stock ledger, the dining room,
--- sample customers, expense categories, add-ons / combos / deals, and every
+-- sample customers, expense categories, add-ons / combo deals, and every
 -- default row in the settings table.
 --
 -- Run schema.sql first, then this file.
@@ -318,7 +318,7 @@ INSERT IGNORE INTO expense_categories (name, description, is_fixed_cost, is_syst
 
 
 -- ───────────────────────────────────────────────────────────────────────────
--- 11 — Add-ons, combos & meal deals
+-- 11 — Add-ons & combo deals
 -- ───────────────────────────────────────────────────────────────────────────
 
 INSERT IGNORE INTO product_addons (id, name, category, price, cost_price, is_available, status) VALUES
@@ -336,13 +336,9 @@ INSERT IGNORE INTO product_addon_mappings (id, addon_id, is_global) VALUES
   (1, 1, 1), (2, 2, 1), (3, 3, 1), (4, 4, 1),
   (5, 5, 1), (6, 6, 1), (7, 7, 1), (8, 8, 1);
 
-INSERT IGNORE INTO combo_meals (id, combo_code, name, description, original_price, combo_price, savings_amount, is_available, status) VALUES
+INSERT IGNORE INTO combo_deals (id, combo_code, name, description, original_price, combo_price, savings_amount, is_available, status) VALUES
   (1, 'CMB-ROYAL-DUO',      'Royal Mandi Duo Combo',     '1 Half Mutton Mandi + 1 Half Chicken Mandi + 2 Daqoos + 2 Ayran Laban Bottles', 134.00, 115.00, 19.00, 1, 'ACTIVE'),
   (2, 'CMB-CHARCOAL-SOLO',  'Single Charcoal Grill Meal', '1 Half Chicken Madhbi + Fresh Garden Salad + 1 Daqoos + Arabic Red Tea Pot',    58.00,  49.00,  9.00, 1, 'ACTIVE');
-
-INSERT IGNORE INTO meal_deals (id, deal_code, title, badge_text, description, original_price, deal_price, savings_amount, days_of_week, start_time, end_time, is_active) VALUES
-  (1, 'DEAL-FAMILY-FEAST',   'Royal Family Weekend Feast',   'FAMILY PACK',    '2 Full Royal Mutton Mandis + 4 Shurba Soups + 1 Kunafa Plate + 4 Ayran Labans', 380.00, 329.00, 51.00, 'FRI,SAT,SUN',             '12:00', '23:30', 1),
-  (2, 'DEAL-LUNCH-EXPRESS',  'Executive Lunch Express Deal', 'LUNCH SPECIAL',  '1 Half Chicken Mandi + 1 Fresh Salad + 1 Daqoos + 1 Mint Lemonade Juice',        62.00,  45.00, 17.00, 'SUN,MON,TUE,WED,THU',     '11:30', '16:30', 1);
 
 
 -- ───────────────────────────────────────────────────────────────────────────
@@ -453,8 +449,7 @@ UNION ALL SELECT 'dining_tables',     COUNT(*) FROM dining_tables
 UNION ALL SELECT 'customers',         COUNT(*) FROM customers
 UNION ALL SELECT 'expense_categories', COUNT(*) FROM expense_categories
 UNION ALL SELECT 'product_addons',    COUNT(*) FROM product_addons
-UNION ALL SELECT 'combo_meals',       COUNT(*) FROM combo_meals
-UNION ALL SELECT 'meal_deals',        COUNT(*) FROM meal_deals
+UNION ALL SELECT 'combo_deals',       COUNT(*) FROM combo_deals
 UNION ALL SELECT 'settings',          COUNT(*) FROM settings;
 
 -- The three settings screens added alongside the original tabs.

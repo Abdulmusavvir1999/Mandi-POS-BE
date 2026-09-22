@@ -15,6 +15,7 @@ import queueRoutes from '../modules/queue/queue.routes';
 import dashboardRoutes from '../modules/dashboard/dashboard.routes';
 import reportsRoutes from '../modules/reports/reports.routes';
 import settingsRoutes from '../modules/settings/settings.routes';
+import backupRoutes from '../modules/backup/backup.routes';
 import auditRoutes from '../modules/audit/audit.routes';
 import staffTrackRoutes from '../modules/staff-track/staff-track.routes';
 import vendorsRoutes from '../modules/vendors/vendors.routes';
@@ -53,6 +54,7 @@ router.use('/reports', reportsRoutes);
 router.use('/expenses', expensesRoutes);
 router.use('/refunds', refundsRoutes);
 router.use('/settings', settingsRoutes);
+router.use('/backup', backupRoutes);
 router.use('/audit', auditRoutes);
 router.use('/staff-track', staffTrackRoutes);
 

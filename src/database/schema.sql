@@ -64,10 +64,16 @@ CREATE TABLE IF NOT EXISTS users (
   username VARCHAR(50) NOT NULL UNIQUE,
   email VARCHAR(100) NOT NULL UNIQUE,
   password_hash VARCHAR(255) NOT NULL,
+  -- Second lock in front of /admin/back-office, deliberately separate from the
+  -- login credential above. bcrypt hash; NULL = not configured yet.
+  -- See back_office_password_migration.sql.
+  back_office_password VARCHAR(255) NULL,
   name VARCHAR(100) NOT NULL,
   phone VARCHAR(20),
   image_url VARCHAR(255),
-  role_id INT NOT NULL,
+  -- NULL identifies the super administrator: the one account with no role.
+  -- See back_office_password_migration.sql and core/utils/role.util.ts.
+  role_id INT NULL,
   status ENUM('ACTIVE', 'INACTIVE', 'SUSPENDED') DEFAULT 'ACTIVE',
   last_login_at DATETIME NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -156,12 +162,14 @@ CREATE TABLE IF NOT EXISTS stock_items (
   max_stock_threshold DECIMAL(12,3) NOT NULL DEFAULT 100.000,
   shelf_life_days INT NULL,
   product_id INT NULL,
+  default_vendor_id INT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL,
   INDEX idx_stock_items_code (stock_code),
   INDEX idx_stock_items_status (status),
   INDEX idx_stock_items_product (product_id),
+  INDEX idx_stock_items_default_vendor (default_vendor_id),
   INDEX idx_stock_items_reorder (reorder_level, current_quantity)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -375,7 +383,12 @@ CREATE TABLE IF NOT EXISTS table_waitlist (
 -- added after the original WALK_IN / TAKEAWAY / DINING set.
 CREATE TABLE IF NOT EXISTS orders (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  order_number VARCHAR(50) NOT NULL UNIQUE,
+  -- What a withdrawn document gave up: its id and the number it held,
+  -- captured at the moment the number is released to NULL.
+  delete_json JSON NULL,
+  -- NULL once withdrawn: the number is released and the day renumbers.
+  -- See back_office_document_renumber_migration.sql.
+  order_number VARCHAR(50) NULL UNIQUE,
   customer_id INT NULL,
   dining_table_id INT NULL,
   order_type VARCHAR(30) NOT NULL,
@@ -417,6 +430,8 @@ CREATE TABLE IF NOT EXISTS order_items (
   addons_data TEXT NULL,
   item_type VARCHAR(30) DEFAULT 'PRODUCT',
   combo_id INT NULL,
+  -- Legacy. Meal Deals were withdrawn and nothing writes this any more, but
+  -- sales settled while they existed still carry the id they were sold under.
   deal_id INT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
@@ -477,7 +492,11 @@ CREATE TABLE IF NOT EXISTS draft_bill_items (
 -- it replaced through reopened_from_bill_id.
 CREATE TABLE IF NOT EXISTS bills (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  bill_number VARCHAR(50) NOT NULL UNIQUE,
+  -- What a withdrawn document gave up: its id and the number it held,
+  -- captured at the moment the number is released to NULL.
+  delete_json JSON NULL,
+  -- NULL once withdrawn (see back_office_document_renumber_migration.sql).
+  bill_number VARCHAR(50) NULL UNIQUE,
   order_id INT NOT NULL UNIQUE,
   customer_id INT NULL,
   dining_table_id INT NULL,
@@ -541,6 +560,8 @@ CREATE TABLE IF NOT EXISTS bill_items (
   addons_data TEXT NULL,
   item_type VARCHAR(30) DEFAULT 'PRODUCT',
   combo_id INT NULL,
+  -- Legacy. Meal Deals were withdrawn and nothing writes this any more, but
+  -- sales settled while they existed still carry the id they were sold under.
   deal_id INT NULL,
   total_amount DECIMAL(10,2) NOT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -619,7 +640,7 @@ CREATE TABLE IF NOT EXISTS queue (
 
 
 -- ───────────────────────────────────────────────────────────────────────────
--- SECTION 9 — Add-ons, Combo Meals & Meal Deals
+-- SECTION 9 — Add-ons & Combo Deals
 -- ───────────────────────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS product_addons (
@@ -628,6 +649,7 @@ CREATE TABLE IF NOT EXISTS product_addons (
   category VARCHAR(50) NOT NULL DEFAULT 'Sides',
   price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
   cost_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+  image_url VARCHAR(255) NULL,
   is_available BOOLEAN DEFAULT TRUE,
   stock_item_id INT NULL,
   status ENUM('ACTIVE', 'INACTIVE') DEFAULT 'ACTIVE',
@@ -655,7 +677,7 @@ CREATE TABLE IF NOT EXISTS product_addon_mappings (
   FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS combo_meals (
+CREATE TABLE IF NOT EXISTS combo_deals (
   id INT AUTO_INCREMENT PRIMARY KEY,
   combo_code VARCHAR(50) UNIQUE NOT NULL,
   name VARCHAR(150) NOT NULL,
@@ -669,62 +691,23 @@ CREATE TABLE IF NOT EXISTS combo_meals (
   status ENUM('ACTIVE', 'INACTIVE') DEFAULT 'ACTIVE',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX idx_combo_code (combo_code),
-  INDEX idx_combo_status (status)
+  INDEX idx_combo_deal_code (combo_code),
+  INDEX idx_combo_deal_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS combo_meal_items (
+CREATE TABLE IF NOT EXISTS combo_deal_items (
   id INT AUTO_INCREMENT PRIMARY KEY,
   combo_id INT NOT NULL,
   product_id INT NOT NULL,
   variant_id INT NULL,
   quantity INT NOT NULL DEFAULT 1,
   display_order INT DEFAULT 0,
-  INDEX idx_cmi_combo (combo_id),
-  INDEX idx_cmi_product (product_id),
-  FOREIGN KEY (combo_id) REFERENCES combo_meals(id) ON DELETE CASCADE,
+  INDEX idx_cdi_combo (combo_id),
+  INDEX idx_cdi_product (product_id),
+  FOREIGN KEY (combo_id) REFERENCES combo_deals(id) ON DELETE CASCADE,
   FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
   FOREIGN KEY (variant_id) REFERENCES product_variants(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- days_of_week is a comma-separated day list ('FRI,SAT,SUN') or the literal
--- 'ALL'; start_time / end_time are 'HH:MM' strings compared as text.
-CREATE TABLE IF NOT EXISTS meal_deals (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  deal_code VARCHAR(50) UNIQUE NOT NULL,
-  title VARCHAR(150) NOT NULL,
-  badge_text VARCHAR(50) DEFAULT 'VALUE DEAL',
-  description TEXT NULL,
-  image_url VARCHAR(255) NULL,
-  original_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
-  deal_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
-  savings_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
-  start_date DATE NULL,
-  end_date DATE NULL,
-  start_time VARCHAR(10) NULL,
-  end_time VARCHAR(10) NULL,
-  days_of_week VARCHAR(100) DEFAULT 'ALL',
-  is_active BOOLEAN DEFAULT TRUE,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX idx_deal_code (deal_code),
-  INDEX idx_deal_active (is_active)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS meal_deal_items (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  deal_id INT NOT NULL,
-  product_id INT NOT NULL,
-  variant_id INT NULL,
-  quantity INT NOT NULL DEFAULT 1,
-  notes VARCHAR(255) NULL,
-  INDEX idx_mdi_deal (deal_id),
-  INDEX idx_mdi_product (product_id),
-  FOREIGN KEY (deal_id) REFERENCES meal_deals(id) ON DELETE CASCADE,
-  FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
-  FOREIGN KEY (variant_id) REFERENCES product_variants(id) ON DELETE SET NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
 
 -- ───────────────────────────────────────────────────────────────────────────
 -- SECTION 10 — Vendors & Purchasing
@@ -1013,7 +996,7 @@ WHERE table_schema = DATABASE()
     'draft_bills', 'draft_bill_items', 'bills', 'bill_items',
     'payments', 'pos_day_closings', 'queue',
     'product_addons', 'product_addon_mappings',
-    'combo_meals', 'combo_meal_items', 'meal_deals', 'meal_deal_items',
+    'combo_deals', 'combo_deal_items',
     'vendors', 'vendor_purchases', 'vendor_payments',
     'expense_categories', 'expenses', 'refunds', 'refund_items',
     'settings', 'audit_logs'

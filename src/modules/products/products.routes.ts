@@ -13,19 +13,12 @@ router.post('/addons', authenticate, requirePermission('product.manage'), Produc
 router.put('/addons/:id', authenticate, requirePermission('product.manage'), ProductsController.updateAddon);
 router.delete('/addons/:id', authenticate, requirePermission('product.manage'), ProductsController.deleteAddon);
 
-// Combos
-router.get('/combos', authenticate, ProductsController.getCombos);
-router.get('/combos/:id', authenticate, ProductsController.getComboById);
-router.post('/combos', authenticate, requirePermission('product.manage'), ProductsController.createCombo);
-router.put('/combos/:id', authenticate, requirePermission('product.manage'), ProductsController.updateCombo);
-router.delete('/combos/:id', authenticate, requirePermission('product.manage'), ProductsController.deleteCombo);
-
-// Deals
-router.get('/deals', authenticate, ProductsController.getDeals);
-router.get('/deals/:id', authenticate, ProductsController.getDealById);
-router.post('/deals', authenticate, requirePermission('product.manage'), ProductsController.createDeal);
-router.put('/deals/:id', authenticate, requirePermission('product.manage'), ProductsController.updateDeal);
-router.delete('/deals/:id', authenticate, requirePermission('product.manage'), ProductsController.deleteDeal);
+// Combo Deals — the one bundle type. Meal Deals were withdrawn.
+router.get('/combo-deals', authenticate, ProductsController.getComboDeals);
+router.get('/combo-deals/:id', authenticate, ProductsController.getComboDealById);
+router.post('/combo-deals', authenticate, requirePermission('product.manage'), ProductsController.createComboDeal);
+router.put('/combo-deals/:id', authenticate, requirePermission('product.manage'), ProductsController.updateComboDeal);
+router.delete('/combo-deals/:id', authenticate, requirePermission('product.manage'), ProductsController.deleteComboDeal);
 
 // Products
 router.get('/', authenticate, ProductsController.getAll);

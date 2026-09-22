@@ -1,4 +1,6 @@
-export type RoleName = 'ADMIN' | 'MANAGER' | 'CASHIER' | 'STAFF';
+// SUPER_ADMIN is not a row in `roles` — it is what a user with no `role_id`
+// resolves to. See core/utils/role.util.ts.
+export type RoleName = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'CASHIER' | 'STAFF';
 
 export type OrderType = 'WALK_IN' | 'TAKEAWAY' | 'DINING' | 'PICKUP' | 'COUNTER';
 

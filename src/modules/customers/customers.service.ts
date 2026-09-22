@@ -3,6 +3,7 @@ import { AppError } from '../../core/errors/AppError';
 import { AuditService } from '../audit/audit.service';
 import { CustomerImageService } from './customer-image.service';
 import { logger } from '../../config/logger';
+import { ParamUtil } from '../../core/utils/param.util';
 
 export class CustomersService {
   private static schemaEnsured = false;
@@ -71,7 +72,7 @@ export class CustomersService {
         await dbService.execute(`
           UPDATE customers 
           SET last_visit_at = COALESCE(
-            (SELECT MAX(created_at) FROM bills WHERE bills.customer_id = customers.id),
+            (SELECT MAX(created_at) FROM bills WHERE bills.customer_id = customers.id AND bills.is_deleted = 0),
             created_at
           ) 
           WHERE last_visit_at IS NULL
@@ -92,7 +93,8 @@ export class CustomersService {
 
     if (search) {
       where += ' AND (name LIKE ? OR phone LIKE ? OR email LIKE ? OR customer_code LIKE ?)';
-      params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+      const term = ParamUtil.like(search);
+      params.push(term, term, term, term);
     }
 
     if (segment) {
@@ -350,7 +352,7 @@ export class CustomersService {
       `SELECT b.*, u.name as cashier_name
        FROM bills b
        LEFT JOIN users u ON b.cashier_id = u.id
-       WHERE b.customer_id = ?
+       WHERE b.customer_id = ? AND b.is_deleted = 0
        ORDER BY b.created_at DESC`,
       [id]
     );
@@ -391,7 +393,7 @@ export class CustomersService {
               MIN(created_at) as first_bill_date,
               MAX(created_at) as last_bill_date
        FROM bills
-       WHERE customer_id = ?`,
+       WHERE customer_id = ? AND is_deleted = 0`,
       [id]
     );
 
@@ -434,7 +436,7 @@ export class CustomersService {
               MAX(b.created_at) as last_ordered_at
        FROM bill_items bi
        JOIN bills b ON b.id = bi.bill_id
-       WHERE b.customer_id = ?
+       WHERE b.customer_id = ? AND b.is_deleted = 0
        GROUP BY bi.product_name, bi.product_id
        ORDER BY total_qty DESC, total_spent DESC
        LIMIT 6`,
@@ -451,7 +453,7 @@ export class CustomersService {
               COUNT(*) as order_count,
               SUM(total_amount) as total_spent
        FROM bills
-       WHERE customer_id = ?
+       WHERE customer_id = ? AND is_deleted = 0
        GROUP BY DATE_FORMAT(created_at, '%Y-%m')
        ORDER BY month_key DESC
        LIMIT 6`,
@@ -468,7 +470,7 @@ export class CustomersService {
               COUNT(*) as count,
               SUM(total_amount) as total_amount
        FROM bills
-       WHERE customer_id = ?
+       WHERE customer_id = ? AND is_deleted = 0
        GROUP BY order_type`,
       [id]
     );
@@ -477,7 +479,7 @@ export class CustomersService {
     const recentBills = await dbService.query(
       `SELECT id, bill_number, order_type, payment_method, payment_status, total_amount, created_at
        FROM bills
-       WHERE customer_id = ?
+       WHERE customer_id = ? AND is_deleted = 0
        ORDER BY created_at DESC
        LIMIT 5`,
       [id]

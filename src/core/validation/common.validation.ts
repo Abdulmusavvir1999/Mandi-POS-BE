@@ -60,6 +60,10 @@ export const createStockItemSchema = z
     maxStockThreshold: z.coerce.number().nonnegative().optional(),
     shelfLifeDays: z.coerce.number().int().nonnegative().optional(),
     productId: z.coerce.number().int().positive().optional().nullable(),
+    // Optional: a stock master item may be created without naming a supplier,
+    // and default_vendor_id then stays NULL, as it already does for the rows
+    // a purchase entry auto-provisions.
+    vendorId: z.coerce.number().int().positive().optional().nullable(),
     initialQuantity: z.coerce.number().nonnegative().optional(),
     multiplier: z.coerce.number().positive().optional(),
     initialTotalPrice: z.coerce.number().nonnegative().optional(),
@@ -77,6 +81,7 @@ export const updateStockItemSchema = z
     maxStockThreshold: z.coerce.number().nonnegative().optional(),
     shelfLifeDays: z.coerce.number().int().nonnegative().optional(),
     status: z.enum(['active', 'inactive']).optional(),
+    vendorId: z.coerce.number().int().positive('Vendor is invalid').optional(),
   })
   .passthrough();
 
@@ -164,3 +169,4 @@ export const createRefundSchema = z
       .optional(),
   })
   .passthrough();
+

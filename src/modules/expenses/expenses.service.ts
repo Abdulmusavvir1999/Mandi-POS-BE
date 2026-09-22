@@ -3,6 +3,7 @@ import { dbService } from '../../database/db';
 import { AppError } from '../../core/errors/AppError';
 import { AuditService } from '../audit/audit.service';
 import { ReportsSchema } from '../reports/reports.schema';
+import { ParamUtil } from '../../core/utils/param.util';
 
 export interface CreateExpenseInput {
   category: string;
@@ -68,7 +69,7 @@ export class ExpensesService {
     if (query.search) {
       where +=
         ' AND (e.expense_number LIKE ? OR e.description LIKE ? OR e.reference_number LIKE ? OR e.vendor_name LIKE ? OR e.category LIKE ?)';
-      const term = `%${query.search}%`;
+      const term = ParamUtil.like(query.search);
       params.push(term, term, term, term, term);
     }
     if (query.category) {

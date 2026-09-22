@@ -50,6 +50,7 @@ export class PosClosingService {
              COALESCE(SUM(CASE WHEN is_voided = 1 THEN total_amount ELSE 0 END), 0) as void_bills_amount
       FROM bills
       WHERE created_at >= ?
+        AND is_deleted = 0
     `, [startTime]);
 
     const user = await dbService.queryOne<{ name: string }>('SELECT name FROM users WHERE id = ?', [userId]);

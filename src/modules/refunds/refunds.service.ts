@@ -5,6 +5,7 @@ import { AuditService } from '../audit/audit.service';
 import { logger } from '../../config/logger';
 import { ReportsSchema } from '../reports/reports.schema';
 import { StockService } from '../stock/stock.service';
+import { ParamUtil } from '../../core/utils/param.util';
 
 export interface RefundLineInput {
   billItemId: number;
@@ -62,12 +63,19 @@ export class RefundsService {
 
     return dbService.transaction(async () => {
       const bill = await dbService.queryOne<any>(
-        `SELECT id, bill_number, customer_id, order_id, total_amount, subtotal, tax_amount, is_voided, payment_status
+        `SELECT id, bill_number, customer_id, order_id, total_amount, subtotal, tax_amount,
+                is_voided, is_deleted, payment_status
          FROM bills WHERE id = ? FOR UPDATE`,
         [input.billId]
       );
       if (!bill) {
         throw AppError.notFound(`Bill ${input.billId} not found`);
+      }
+      if (bill.is_deleted) {
+        throw AppError.badRequest(
+          `Bill ${bill.bill_number} has been deleted and is out of the books; it cannot be refunded.`,
+          'BILL_DELETED'
+        );
       }
       if (bill.is_voided) {
         throw AppError.badRequest(
@@ -248,7 +256,7 @@ export class RefundsService {
 
     if (query.search) {
       where += ' AND (rf.refund_number LIKE ? OR rf.bill_number LIKE ? OR rf.reason LIKE ? OR rf.reference_number LIKE ?)';
-      const term = `%${query.search}%`;
+      const term = ParamUtil.like(query.search);
       params.push(term, term, term, term);
     }
     if (query.billId) {
@@ -335,7 +343,7 @@ export class RefundsService {
     await ReportsSchema.ensure();
 
     const bill = await dbService.queryOne<any>(
-      'SELECT id, bill_number, total_amount, is_voided, payment_status FROM bills WHERE id = ?',
+      'SELECT id, bill_number, total_amount, is_voided, payment_status FROM bills WHERE id = ? AND is_deleted = 0',
       [billId]
     );
     if (!bill) {

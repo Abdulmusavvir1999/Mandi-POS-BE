@@ -180,6 +180,10 @@ export class ReportQuery {
     const params: any[] = [range.startAt, range.endAt];
     let where = `WHERE ${alias}.${column} >= ? AND ${alias}.${column} < ?`;
 
+    // A withdrawn invoice is out of the books entirely, so unlike a void it is
+    // excluded unconditionally — `includeVoided` does not bring it back.
+    where += ` AND ${alias}.is_deleted = 0`;
+
     if (!scope.includeVoided) {
       where += ` AND ${alias}.is_voided = 0`;
     }

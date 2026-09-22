@@ -4,6 +4,8 @@ import { AuditService } from '../audit/audit.service';
 import { SettingsService } from '../settings/settings.service';
 import { OrderStatus, OrderType } from '../../core/types';
 import { SequenceUtil } from '../../core/utils/sequence.util';
+import { DocumentSequence, ORDER_DOCUMENT, decorateDocument, decorateDocuments } from '../../core/utils/document-sequence.util';
+import { ParamUtil } from '../../core/utils/param.util';
 
 export class OrdersService {
   static async getAll(
@@ -17,7 +19,9 @@ export class OrdersService {
     dateTo?: string
   ) {
     const offset = (page - 1) * limit;
-    let where = 'WHERE 1=1';
+    // Withdrawn orders drop off the board and out of every list, while their
+    // items and status history stay on the record.
+    let where = 'WHERE o.is_deleted = 0';
     const params: any[] = [];
 
     if (status) {
@@ -37,7 +41,8 @@ export class OrdersService {
 
     if (search) {
       where += ' AND (o.order_number LIKE ? OR c.name LIKE ? OR c.phone LIKE ?)';
-      params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+      const term = ParamUtil.like(search);
+      params.push(term, term, term);
     }
 
     if (dateFrom) {
@@ -94,7 +99,9 @@ export class OrdersService {
     }
 
     return {
-      data: orders,
+      // `display_number` is the gapless per-day number an operator reads;
+      // `order_number` beside it is the permanent one on the receipt.
+      data: decorateDocuments(orders as any[]),
       pagination: {
         page,
         limit,
@@ -109,13 +116,13 @@ export class OrdersService {
       `SELECT o.*, c.name as customer_name, c.phone as customer_phone,
               t.table_number, t.name as table_name,
               u.name as created_by_name,
-              b.bill_number, b.id as bill_id, b.payment_status, b.payment_method
+              b.bill_number, b.display_seq as bill_display_seq, b.id as bill_id, b.payment_status, b.payment_method
        FROM orders o
        LEFT JOIN customers c ON o.customer_id = c.id
        LEFT JOIN dining_tables t ON o.dining_table_id = t.id
        LEFT JOIN users u ON o.created_by = u.id
-       LEFT JOIN bills b ON b.order_id = o.id
-       WHERE o.id = ?`,
+       LEFT JOIN bills b ON b.order_id = o.id AND b.is_deleted = 0
+       WHERE o.id = ? AND o.is_deleted = 0`,
       [id]
     );
 
@@ -140,11 +147,11 @@ export class OrdersService {
       [id]
     );
 
-    return {
-      ...order,
+    return decorateDocument({
+      ...(order as any),
       items,
       history,
-    };
+    });
   }
 
   static async create(data: {
@@ -265,6 +272,10 @@ export class OrdersService {
       );
 
       const orderId = res.lastInsertRowid;
+
+      // Gapless position within the day, so a list never shows a hole left by
+      // a withdrawn order. Separate from `order_number`, which stays permanent.
+      await DocumentSequence.assignForNew(ORDER_DOCUMENT, orderId);
 
       // Insert Order Items
       for (const item of calculatedItems) {

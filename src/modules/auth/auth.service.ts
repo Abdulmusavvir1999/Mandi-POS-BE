@@ -4,6 +4,7 @@ import { dbService } from '../../database/db';
 import { config } from '../../config/env';
 import { AppError } from '../../core/errors/AppError';
 import { AuditService } from '../audit/audit.service';
+import { resolveRoleName } from '../../core/utils/role.util';
 
 export class AuthService {
   static async login(identifier: string, passwordPlain: string, ipAddress?: string, userAgent?: string) {
@@ -15,12 +16,14 @@ export class AuthService {
       name: string;
       phone: string;
       status: string;
-      role_id: number;
-      role_name: string;
+      role_id: number | null;
+      role_name: string | null;
     }>(
+      // LEFT JOIN so the super administrator, which holds no `role_id`, is not
+      // dropped from the result and reported back as a bad username.
       `SELECT u.id, u.username, u.email, u.password_hash, u.name, u.phone, u.status, u.role_id, r.name as role_name
        FROM users u
-       JOIN roles r ON u.role_id = r.id
+       LEFT JOIN roles r ON u.role_id = r.id
        WHERE u.username = ? OR u.email = ?`,
       [identifier, identifier]
     );
@@ -41,14 +44,19 @@ export class AuthService {
     // Update last login
     await dbService.execute('UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?', [user.id]);
 
-    // Fetch permissions
-    const perms = await dbService.query<{ code: string }>(
-      `SELECT p.code
-       FROM permissions p
-       JOIN role_permissions rp ON p.id = rp.permission_id
-       WHERE rp.role_id = ?`,
-      [user.role_id]
-    );
+    const role = resolveRoleName(user.role_id, user.role_name);
+
+    // Fetch permissions. A super administrator has no `role_id` and so no rows
+    // here; the blanket access it gets is granted by role, not by permission.
+    const perms = user.role_id
+      ? await dbService.query<{ code: string }>(
+          `SELECT p.code
+           FROM permissions p
+           JOIN role_permissions rp ON p.id = rp.permission_id
+           WHERE rp.role_id = ?`,
+          [user.role_id]
+        )
+      : [];
 
     const permissions = perms.map((p) => p.code);
 
@@ -58,7 +66,7 @@ export class AuthService {
       username: user.username,
       email: user.email,
       name: user.name,
-      role: user.role_name,
+      role,
     };
 
     const token = jwt.sign(payload, config.jwtSecret, { expiresIn: '8h' });
@@ -80,7 +88,7 @@ export class AuthService {
         email: user.email,
         name: user.name,
         phone: user.phone,
-        role: user.role_name,
+        role,
         permissions,
       },
       token,
@@ -91,10 +99,10 @@ export class AuthService {
   static async refreshToken(refreshToken: string) {
     try {
       const decoded = jwt.verify(refreshToken, config.jwtRefreshSecret) as any;
-      const user = await dbService.queryOne<{ id: number; username: string; email: string; name: string; status: string; role_name: string; role_id: number }>(
+      const user = await dbService.queryOne<{ id: number; username: string; email: string; name: string; status: string; role_name: string | null; role_id: number | null }>(
         `SELECT u.id, u.username, u.email, u.name, u.status, r.name as role_name, u.role_id
          FROM users u
-         JOIN roles r ON u.role_id = r.id
+         LEFT JOIN roles r ON u.role_id = r.id
          WHERE u.id = ?`,
         [decoded.id]
       );
@@ -103,16 +111,20 @@ export class AuthService {
         throw AppError.unauthorized('Invalid session');
       }
 
-      const perms = await dbService.query<{ code: string }>(
-        `SELECT p.code
-         FROM permissions p
-         JOIN role_permissions rp ON p.id = rp.permission_id
-         WHERE rp.role_id = ?`,
-        [user.role_id]
-      );
+      const role = resolveRoleName(user.role_id, user.role_name);
+
+      const perms = user.role_id
+        ? await dbService.query<{ code: string }>(
+            `SELECT p.code
+             FROM permissions p
+             JOIN role_permissions rp ON p.id = rp.permission_id
+             WHERE rp.role_id = ?`,
+            [user.role_id]
+          )
+        : [];
 
       const token = jwt.sign(
-        { id: user.id, username: user.username, email: user.email, name: user.name, role: user.role_name },
+        { id: user.id, username: user.username, email: user.email, name: user.name, role },
         config.jwtSecret,
         { expiresIn: '8h' }
       );
@@ -124,7 +136,7 @@ export class AuthService {
           username: user.username,
           email: user.email,
           name: user.name,
-          role: user.role_name,
+          role,
           permissions: perms.map((p) => p.code),
         },
       };
@@ -180,13 +192,13 @@ export class AuthService {
       name: string;
       phone: string;
       status: string;
-      role_id: number;
-      role_name: string;
+      role_id: number | null;
+      role_name: string | null;
       last_login_at: string;
     }>(
       `SELECT u.id, u.username, u.email, u.name, u.phone, u.status, u.role_id, r.name as role_name, u.last_login_at
        FROM users u
-       JOIN roles r ON u.role_id = r.id
+       LEFT JOIN roles r ON u.role_id = r.id
        WHERE u.id = ?`,
       [userId]
     );
@@ -195,13 +207,15 @@ export class AuthService {
       throw AppError.notFound('User not found');
     }
 
-    const perms = await dbService.query<{ code: string }>(
-      `SELECT p.code
-       FROM permissions p
-       JOIN role_permissions rp ON p.id = rp.permission_id
-       WHERE rp.role_id = ?`,
-      [user.role_id]
-    );
+    const perms = user.role_id
+      ? await dbService.query<{ code: string }>(
+          `SELECT p.code
+           FROM permissions p
+           JOIN role_permissions rp ON p.id = rp.permission_id
+           WHERE rp.role_id = ?`,
+          [user.role_id]
+        )
+      : [];
 
     return {
       id: user.id,
@@ -210,7 +224,7 @@ export class AuthService {
       name: user.name,
       phone: user.phone,
       status: user.status,
-      role: user.role_name,
+      role: resolveRoleName(user.role_id, user.role_name),
       lastLoginAt: user.last_login_at,
       permissions: perms.map((p) => p.code),
     };

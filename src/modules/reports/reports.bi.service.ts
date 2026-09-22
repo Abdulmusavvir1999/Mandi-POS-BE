@@ -84,6 +84,7 @@ export class ReportsBiService {
                AND b.created_at >= ?
                AND b.created_at < ?
                AND b.is_voided = 0
+               AND b.is_deleted = 0
            )
          ORDER BY p.name ASC`,
         [options.range.startAt, options.range.endAt]
@@ -274,12 +275,13 @@ export class ReportsBiService {
            MAX(b.created_at)                      AS last_visit_at,
            DATEDIFF(?, MAX(b.created_at))         AS days_since_last_visit
          FROM customers cu
-         JOIN bills b ON b.customer_id = cu.id AND b.is_voided = 0
+         JOIN bills b ON b.customer_id = cu.id AND b.is_voided = 0 AND b.is_deleted = 0
          WHERE b.created_at < ?
            AND NOT EXISTS (
              SELECT 1 FROM bills b2
              WHERE b2.customer_id = cu.id
                AND b2.is_voided = 0
+               AND b2.is_deleted = 0
                AND b2.created_at >= ?
                AND b2.created_at < ?
            )
@@ -677,7 +679,7 @@ export class ReportsBiService {
          LEFT JOIN (
            SELECT customer_id, COUNT(*) AS bills_before
            FROM bills
-           WHERE is_voided = 0 AND created_at < ?
+           WHERE is_voided = 0 AND is_deleted = 0 AND created_at < ?
            GROUP BY customer_id
          ) prior ON prior.customer_id = b.customer_id
          ${where} AND b.customer_id IS NOT NULL`,

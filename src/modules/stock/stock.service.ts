@@ -3,8 +3,67 @@ import { AppError } from '../../core/errors/AppError';
 import { AuditService } from '../audit/audit.service';
 import { SettingsService } from '../settings/settings.service';
 import { StockUnitType, StockMovementType } from '../../core/types';
+import { logger } from '../../config/logger';
+import { ParamUtil } from '../../core/utils/param.util';
 
 export class StockService {
+  private static schemaEnsured = false;
+
+  /**
+   * Adds stock_items.default_vendor_id when an older database is missing it.
+   *
+   * Schema here is managed out-of-band by stock_item_default_vendor.sql, but
+   * createStockItem writes this column on every call, so a database the script
+   * has not been run against would fail every create. This makes the column
+   * self-healing on the first stock request after a deploy.
+   *
+   * The foreign key is deliberately NOT added here: it belongs with the
+   * back-fill in the SQL script, and a half-applied constraint is worse than
+   * none. A failure is logged and swallowed for the same reason the other
+   * modules do it, a missing column must not take the stock screens down.
+   */
+  static async ensureSchema(): Promise<void> {
+    if (this.schemaEnsured) return;
+
+    try {
+      const colCheck = await dbService.queryOne<{ count: number }>(
+        `SELECT COUNT(*) as count
+         FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE()
+           AND TABLE_NAME = 'stock_items'
+           AND COLUMN_NAME = 'default_vendor_id'`
+      );
+
+      if (!colCheck || colCheck.count === 0) {
+        await dbService.execute('ALTER TABLE stock_items ADD COLUMN default_vendor_id INT NULL AFTER product_id');
+        await dbService.execute('CREATE INDEX idx_stock_items_default_vendor ON stock_items(default_vendor_id)');
+      }
+    } catch (e) {
+      logger.warn('Could not ensure stock_items.default_vendor_id:', e);
+    }
+
+    this.schemaEnsured = true;
+  }
+
+  /**
+   * Resolves a vendor id to a usable vendor, or explains why it is not one.
+   *
+   * Shared by createStockItem and createStockEntry so a blocked vendor is
+   * refused identically whichever door the purchase comes through.
+   */
+  private static async resolveVendor(vendorId: number) {
+    const vendor = await dbService.queryOne<{ id: number; name: string; status: string }>(
+      'SELECT id, name, status FROM vendors WHERE id = ?',
+      [vendorId]
+    );
+    if (!vendor) {
+      throw AppError.notFound('Vendor not found');
+    }
+    if (vendor.status === 'BLOCKED') {
+      throw AppError.badRequest(`Vendor ${vendor.name} is blocked and cannot be purchased from`);
+    }
+    return vendor;
+  }
   /**
    * 1. Get Stock Items (Master balance list)
    */
@@ -17,6 +76,8 @@ export class StockService {
     status = 'active',
     unitType?: string
   ) {
+    await this.ensureSchema();
+
     const offset = (page - 1) * limit;
     let where = 'WHERE 1=1';
     const params: any[] = [];
@@ -33,7 +94,8 @@ export class StockService {
 
     if (search) {
       where += ' AND (si.name LIKE ? OR si.stock_code LIKE ? OR p.sku LIKE ? OR p.name LIKE ?)';
-      params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+      const term = ParamUtil.like(search);
+      params.push(term, term, term, term);
     }
 
     if (categoryId) {
@@ -80,11 +142,15 @@ export class StockService {
               p.selling_price,
               p.cost_price as product_cost_price,
               c.name as category_name,
+              v.name as default_vendor_name,
+              v.vendor_code as default_vendor_code,
+              v.status as default_vendor_status,
               (si.current_quantity <= si.min_stock_alert) as is_low_stock,
               si.current_quantity as current_stock
        FROM stock_items si
        LEFT JOIN products p ON si.product_id = p.id
        LEFT JOIN categories c ON p.category_id = c.id
+       LEFT JOIN vendors v ON si.default_vendor_id = v.id
        ${where}
        ORDER BY (si.current_quantity <= si.min_stock_alert) DESC, si.name ASC
        LIMIT ? OFFSET ?`,
@@ -112,15 +178,21 @@ export class StockService {
    * 2. Get Single Stock Item Details
    */
   static async getStockItemById(id: number) {
+    await this.ensureSchema();
+
     const item = await dbService.queryOne(
       `SELECT si.*,
               p.name as product_name,
               p.sku,
               p.selling_price,
-              c.name as category_name
+              c.name as category_name,
+              v.name as default_vendor_name,
+              v.vendor_code as default_vendor_code,
+              v.status as default_vendor_status
        FROM stock_items si
        LEFT JOIN products p ON si.product_id = p.id
        LEFT JOIN categories c ON p.category_id = c.id
+       LEFT JOIN vendors v ON si.default_vendor_id = v.id
        WHERE si.id = ?`,
       [id]
     );
@@ -172,6 +244,7 @@ export class StockService {
       maxStockThreshold?: number;
       shelfLifeDays?: number;
       productId?: number | null;
+      vendorId?: number | null;
       initialQuantity?: number;
       multiplier?: number;
       initialTotalPrice?: number;
@@ -179,6 +252,13 @@ export class StockService {
     },
     userId: number
   ) {
+    await this.ensureSchema();
+
+    // A default vendor is optional. When none is named, default_vendor_id
+    // stays NULL and the opening balance entry is stamped "Initial Setup" -
+    // the same shape the auto-provision path below has always produced.
+    const vendor = data.vendorId ? await this.resolveVendor(data.vendorId) : null;
+
     return await dbService.transaction(async () => {
       let code = data.stockCode;
       if (!code) {
@@ -221,9 +301,10 @@ export class StockService {
         `INSERT INTO stock_items (
           uuid, stock_code, name, unit_type, current_quantity,
           current_value, average_unit_price, status, min_stock_alert,
-          reorder_level, reorder_quantity, max_stock_threshold, shelf_life_days, product_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`,
-        [uuid, code, data.name, unitType, totalQty, totalPrice, unitPrice, minAlert, reorderLevel, reorderQty, maxThreshold, shelfLife, data.productId || null]
+          reorder_level, reorder_quantity, max_stock_threshold, shelf_life_days, product_id,
+          default_vendor_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
+        [uuid, code, data.name, unitType, totalQty, totalPrice, unitPrice, minAlert, reorderLevel, reorderQty, maxThreshold, shelfLife, data.productId || null, vendor?.id ?? null]
       );
 
       const stockItemId = res.lastInsertRowid;
@@ -234,12 +315,15 @@ export class StockService {
         const moveUuid = `move-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`;
         const entryNumber = `STK-IN-${String(stockItemId).padStart(5, '0')}`;
 
+        // supplier carries the vendor's name as it reads today, matching how
+        // createStockEntry snapshots it: renaming the vendor later must not
+        // rewrite what this opening entry says the stock was bought from.
         await dbService.execute(
           `INSERT INTO stock_entries (
             uuid, stock_item_id, entry_number, quantity, multiplier,
-            total_quantity, total_price, unit_price, status, supplier, notes, created_by
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'posted', 'Initial Setup', 'Opening inventory entry', ?)`,
-          [entryUuid, stockItemId, entryNumber, baseQty, multiplier, totalQty, totalPrice, unitPrice, userId]
+            total_quantity, total_price, unit_price, status, supplier, vendor_id, notes, created_by
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'posted', ?, ?, 'Opening inventory entry', ?)`,
+          [entryUuid, stockItemId, entryNumber, baseQty, multiplier, totalQty, totalPrice, unitPrice, vendor?.name ?? 'Initial Setup', vendor?.id ?? null, userId]
         );
 
         await dbService.execute(
@@ -256,7 +340,7 @@ export class StockService {
         action: 'STOCK_ITEM_CREATED',
         module: 'STOCK',
         recordId: stockItemId,
-        newValues: { name: data.name, stockCode: code, unitType, baseQty, multiplier, totalQty, totalPrice, unitPrice },
+        newValues: { name: data.name, stockCode: code, unitType, baseQty, multiplier, totalQty, totalPrice, unitPrice, vendorId: vendor?.id ?? null, vendorName: vendor?.name ?? null },
       });
 
       return await this.getStockItemById(stockItemId);
@@ -277,10 +361,17 @@ export class StockService {
       maxStockThreshold?: number;
       shelfLifeDays?: number;
       status?: 'active' | 'inactive';
+      vendorId?: number;
     },
     userId: number
   ) {
+    await this.ensureSchema();
+
     const current = await this.getStockItemById(id);
+
+    // COALESCE leaves the column alone when nothing is sent, so an edit that
+    // does not touch the supplier cannot blank it.
+    const vendor = data.vendorId ? await this.resolveVendor(data.vendorId) : null;
 
     await dbService.execute(
       `UPDATE stock_items
@@ -292,6 +383,7 @@ export class StockService {
            max_stock_threshold = COALESCE(?, max_stock_threshold),
            shelf_life_days = COALESCE(?, shelf_life_days),
            status = COALESCE(?, status),
+           default_vendor_id = COALESCE(?, default_vendor_id),
            updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
       [
@@ -303,6 +395,7 @@ export class StockService {
         data.maxStockThreshold,
         data.shelfLifeDays,
         data.status,
+        vendor?.id ?? null,
         id,
       ]
     );
@@ -373,6 +466,7 @@ export class StockService {
               productId: product.id,
               initialQuantity: product.stock_quantity || 0,
               initialPrice: product.cost_price || 0,
+              vendorId: data.vendorId,
             },
             userId
           );
@@ -408,16 +502,7 @@ export class StockService {
       let supplierName: string | null = data.supplier?.trim() || null;
 
       if (data.vendorId) {
-        const vendor = await dbService.queryOne<{ id: number; name: string; status: string }>(
-          'SELECT id, name, status FROM vendors WHERE id = ?',
-          [data.vendorId]
-        );
-        if (!vendor) {
-          throw AppError.notFound('Vendor not found');
-        }
-        if (vendor.status === 'BLOCKED') {
-          throw AppError.badRequest(`Vendor ${vendor.name} is blocked and cannot be purchased from`);
-        }
+        const vendor = await StockService.resolveVendor(data.vendorId);
         vendorId = vendor.id;
         supplierName = vendor.name;
       }
@@ -601,12 +686,13 @@ export class StockService {
 
     if (search) {
       where += ' AND (se.entry_number LIKE ? OR si.name LIKE ? OR si.stock_code LIKE ? OR se.supplier LIKE ? OR v.name LIKE ? OR se.invoice_number LIKE ?)';
-      params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+      const term = ParamUtil.like(search);
+      params.push(term, term, term, term, term, term);
     }
 
     if (supplier) {
       where += ' AND se.supplier LIKE ?';
-      params.push(`%${supplier}%`);
+      params.push(ParamUtil.like(supplier));
     }
 
     // Exact match, unlike the supplier text filter above: once entries are
@@ -869,7 +955,8 @@ export class StockService {
 
     if (search) {
       where += ' AND (si.name LIKE ? OR si.stock_code LIKE ? OR sm.reference_id LIKE ? OR sm.notes LIKE ?)';
-      params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+      const term = ParamUtil.like(search);
+      params.push(term, term, term, term);
     }
 
     if (dateFrom) {

@@ -68,7 +68,7 @@ export class BackOfficeController {
   static async deleteOrder(req: Request, res: Response, next: NextFunction) {
     try {
       const id = ParamUtil.id(req.params.id, 'id');
-      const result = await BackOfficeService.deleteOrders([id], req.user!.id);
+      const result = await BackOfficeService.deleteOrders([id], req.user!.id, ParamUtil.text(req.body?.reason));
 
       if (result.failed.length > 0) {
         ResponseUtil.error(res, result.failed[0].reason, 'ORDER_DELETE_REJECTED', 409, result);
@@ -83,8 +83,47 @@ export class BackOfficeController {
 
   static async deleteOrders(req: Request, res: Response, next: NextFunction) {
     try {
-      const result = await BackOfficeService.deleteOrders(req.body?.orderIds, req.user!.id);
+      const result = await BackOfficeService.deleteOrders(req.body?.orderIds, req.user!.id, ParamUtil.text(req.body?.reason));
       ResponseUtil.success(res, result, summarise(result, 'orders', 'deleted'));
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  /** The withdrawn orders available to undo. */
+  static async listDeletedOrders(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await BackOfficeService.listDeletedOrders({
+        page: ParamUtil.page(req.query.page),
+        limit: ParamUtil.limit(req.query.limit, 20),
+        search: ParamUtil.text(req.query.search),
+      });
+      ResponseUtil.paginated(res, result, 'Deleted orders fetched successfully');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async restoreOrder(req: Request, res: Response, next: NextFunction) {
+    try {
+      const id = ParamUtil.id(req.params.id, 'id');
+      const result = await BackOfficeService.restoreOrders([id], req.user!.id);
+
+      if (result.failed.length > 0) {
+        ResponseUtil.error(res, result.failed[0].reason, 'ORDER_RESTORE_REJECTED', 409, result);
+        return;
+      }
+
+      ResponseUtil.success(res, result, `Order ${result.succeeded[0].reference} restored.`);
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async restoreOrders(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await BackOfficeService.restoreOrders(req.body?.orderIds, req.user!.id);
+      ResponseUtil.success(res, result, summarise(result, 'orders', 'restored'));
     } catch (err) {
       next(err);
     }
@@ -131,7 +170,7 @@ export class BackOfficeController {
   static async deleteInvoice(req: Request, res: Response, next: NextFunction) {
     try {
       const id = ParamUtil.id(req.params.id, 'id');
-      const result = await BackOfficeService.deleteInvoices([id], req.user!.id);
+      const result = await BackOfficeService.deleteInvoices([id], req.user!.id, ParamUtil.text(req.body?.reason));
 
       if (result.failed.length > 0) {
         ResponseUtil.error(res, result.failed[0].reason, 'INVOICE_DELETE_REJECTED', 409, result);
@@ -146,8 +185,47 @@ export class BackOfficeController {
 
   static async deleteInvoices(req: Request, res: Response, next: NextFunction) {
     try {
-      const result = await BackOfficeService.deleteInvoices(req.body?.invoiceIds, req.user!.id);
+      const result = await BackOfficeService.deleteInvoices(req.body?.invoiceIds, req.user!.id, ParamUtil.text(req.body?.reason));
       ResponseUtil.success(res, result, summarise(result, 'invoices', 'deleted'));
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  /** The withdrawn invoices available to undo. */
+  static async listDeletedInvoices(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await BackOfficeService.listDeletedInvoices({
+        page: ParamUtil.page(req.query.page),
+        limit: ParamUtil.limit(req.query.limit, 20),
+        search: ParamUtil.text(req.query.search),
+      });
+      ResponseUtil.paginated(res, result, 'Deleted invoices fetched successfully');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async restoreInvoice(req: Request, res: Response, next: NextFunction) {
+    try {
+      const id = ParamUtil.id(req.params.id, 'id');
+      const result = await BackOfficeService.restoreInvoices([id], req.user!.id);
+
+      if (result.failed.length > 0) {
+        ResponseUtil.error(res, result.failed[0].reason, 'INVOICE_RESTORE_REJECTED', 409, result);
+        return;
+      }
+
+      ResponseUtil.success(res, result, `Invoice ${result.succeeded[0].reference} restored.`);
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async restoreInvoices(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await BackOfficeService.restoreInvoices(req.body?.invoiceIds, req.user!.id);
+      ResponseUtil.success(res, result, summarise(result, 'invoices', 'restored'));
     } catch (err) {
       next(err);
     }

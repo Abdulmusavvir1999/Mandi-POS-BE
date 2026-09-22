@@ -80,10 +80,13 @@ export async function runMysqlMigration() {
       username VARCHAR(50) NOT NULL UNIQUE,
       email VARCHAR(100) NOT NULL UNIQUE,
       password_hash VARCHAR(255) NOT NULL,
+      -- Back-Office unlock credential, separate from the login password.
+      back_office_password VARCHAR(255) NULL,
       name VARCHAR(100) NOT NULL,
       phone VARCHAR(20),
       image_url VARCHAR(255),
-      role_id INT NOT NULL,
+      -- NULL identifies the super administrator (see role.util.ts).
+      role_id INT NULL,
       status ENUM('ACTIVE', 'INACTIVE', 'SUSPENDED') DEFAULT 'ACTIVE',
       last_login_at DATETIME NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -158,12 +161,14 @@ export async function runMysqlMigration() {
       status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
       min_stock_alert DECIMAL(12,3) NOT NULL DEFAULT 10.000,
       product_id INT NULL,
+      default_vendor_id INT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL,
       INDEX idx_stock_items_code (stock_code),
       INDEX idx_stock_items_status (status),
-      INDEX idx_stock_items_product (product_id)
+      INDEX idx_stock_items_product (product_id),
+      INDEX idx_stock_items_default_vendor (default_vendor_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
     -- 8. Stock Entries (Purchase / Addition Ledger)
@@ -290,7 +295,8 @@ export async function runMysqlMigration() {
     -- 12. Orders table
     CREATE TABLE IF NOT EXISTS orders (
       id INT AUTO_INCREMENT PRIMARY KEY,
-      order_number VARCHAR(50) NOT NULL UNIQUE,
+      delete_json JSON NULL,
+      order_number VARCHAR(50) NULL UNIQUE,
       customer_id INT NULL,
       dining_table_id INT NULL,
       order_type ENUM('WALK_IN', 'TAKEAWAY', 'DINING') NOT NULL,
@@ -379,7 +385,8 @@ export async function runMysqlMigration() {
     -- 17. Bills table
     CREATE TABLE IF NOT EXISTS bills (
       id INT AUTO_INCREMENT PRIMARY KEY,
-      bill_number VARCHAR(50) NOT NULL UNIQUE,
+      delete_json JSON NULL,
+      bill_number VARCHAR(50) NULL UNIQUE,
       order_id INT NOT NULL UNIQUE,
       customer_id INT NULL,
       dining_table_id INT NULL,

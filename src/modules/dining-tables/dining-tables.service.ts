@@ -175,7 +175,7 @@ export class DiningTablesService {
                 ELSE 0 
               END as cleaning_minutes
        FROM dining_tables t
-       LEFT JOIN orders o ON t.current_order_id = o.id
+       LEFT JOIN orders o ON t.current_order_id = o.id AND o.is_deleted = 0
        LEFT JOIN customers c ON o.customer_id = c.id
        LEFT JOIN table_reservations tr ON t.id = tr.table_id AND tr.status = 'CONFIRMED' AND DATE(tr.reservation_time) = CURDATE()
        ${where}
@@ -215,7 +215,7 @@ export class DiningTablesService {
                 ELSE 0 
               END as cleaning_minutes
        FROM dining_tables t
-       LEFT JOIN orders o ON t.current_order_id = o.id
+       LEFT JOIN orders o ON t.current_order_id = o.id AND o.is_deleted = 0
        LEFT JOIN customers c ON o.customer_id = c.id
        LEFT JOIN table_reservations tr ON t.id = tr.table_id AND tr.status = 'CONFIRMED' AND DATE(tr.reservation_time) = CURDATE()
        WHERE t.id = ?`,
@@ -424,10 +424,10 @@ export class DiningTablesService {
               c.phone as customer_phone,
               TIMESTAMPDIFF(MINUTE, o.created_at, o.updated_at) as duration_minutes
        FROM orders o
-       LEFT JOIN bills b ON o.id = b.order_id
+       LEFT JOIN bills b ON o.id = b.order_id AND b.is_deleted = 0
        LEFT JOIN users u ON o.created_by = u.id
        LEFT JOIN customers c ON o.customer_id = c.id
-       WHERE o.dining_table_id = ?
+       WHERE o.dining_table_id = ? AND o.is_deleted = 0
        ORDER BY o.created_at DESC
        LIMIT 30`,
       [tableId]

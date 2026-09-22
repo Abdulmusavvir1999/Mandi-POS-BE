@@ -2,7 +2,8 @@ import { dbService } from '../../database/db';
 
 export class ReportsService {
   static async getSalesReport(dateFrom?: string, dateTo?: string, paymentMethod?: string, orderType?: string, cashierId?: number) {
-    let where = 'WHERE 1=1';
+    // Withdrawn invoices are out of the books and out of every report.
+    let where = 'WHERE b.is_deleted = 0';
     const params: any[] = [];
 
     if (dateFrom) {
@@ -65,8 +66,15 @@ export class ReportsService {
     };
   }
 
-  static async getProductSalesReport(dateFrom?: string, dateTo?: string, categoryId?: number) {
-    let where = 'WHERE 1=1';
+  static async getProductSalesReport(
+    dateFrom?: string,
+    dateTo?: string,
+    categoryId?: number,
+    paymentMethod?: string,
+    orderType?: string
+  ) {
+    // Withdrawn invoices are out of the books and out of every report.
+    let where = 'WHERE b.is_deleted = 0';
     const params: any[] = [];
 
     if (dateFrom) {
@@ -80,6 +88,16 @@ export class ReportsService {
     if (categoryId) {
       where += ' AND p.category_id = ?';
       params.push(categoryId);
+    }
+    // The toolbar offers these on every sales tab, so the per-dish figures
+    // have to narrow the same way the consolidated sales report does.
+    if (paymentMethod) {
+      where += ' AND b.payment_method = ?';
+      params.push(paymentMethod);
+    }
+    if (orderType) {
+      where += ' AND b.order_type = ?';
+      params.push(orderType);
     }
 
     const products = await dbService.query(
@@ -105,8 +123,14 @@ export class ReportsService {
     return products;
   }
 
-  static async getCategorySalesReport(dateFrom?: string, dateTo?: string) {
-    let where = 'WHERE 1=1';
+  static async getCategorySalesReport(
+    dateFrom?: string,
+    dateTo?: string,
+    paymentMethod?: string,
+    orderType?: string
+  ) {
+    // Withdrawn invoices are out of the books and out of every report.
+    let where = 'WHERE b.is_deleted = 0';
     const params: any[] = [];
 
     if (dateFrom) {
@@ -116,6 +140,15 @@ export class ReportsService {
     if (dateTo) {
       where += ' AND DATE(b.created_at) <= DATE(?)';
       params.push(dateTo);
+    }
+    // Same toolbar, same narrowing as the per-dish report above.
+    if (paymentMethod) {
+      where += ' AND b.payment_method = ?';
+      params.push(paymentMethod);
+    }
+    if (orderType) {
+      where += ' AND b.order_type = ?';
+      params.push(orderType);
     }
 
     const categories = await dbService.query(

@@ -1,5 +1,6 @@
 import { dbService } from '../../database/db';
 import { logger } from '../../config/logger';
+import { ParamUtil } from '../../core/utils/param.util';
 
 export interface AuditLogEntry {
   userId?: number | null;
@@ -46,7 +47,7 @@ export class AuditService {
 
     if (actionFilter) {
       where += ' AND a.action LIKE ?';
-      params.push(`%${actionFilter}%`);
+      params.push(ParamUtil.like(actionFilter));
     }
 
     const countRes = await dbService.queryOne<{ total: number }>(

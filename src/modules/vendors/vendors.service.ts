@@ -3,6 +3,7 @@ import { dbService } from '../../database/db';
 import { AppError } from '../../core/errors/AppError';
 import { AuditService } from '../audit/audit.service';
 import { logger } from '../../config/logger';
+import { ParamUtil } from '../../core/utils/param.util';
 
 export interface CreateVendorInput {
   vendor_code?: string;
@@ -491,7 +492,7 @@ export class VendorsService {
 
     if (options.search) {
       where += ' AND (name LIKE ? OR vendor_code LIKE ? OR contact_person LIKE ? OR phone LIKE ? OR tax_id LIKE ? OR email LIKE ?)';
-      const term = `%${options.search}%`;
+      const term = ParamUtil.like(options.search);
       params.push(term, term, term, term, term, term);
     }
 

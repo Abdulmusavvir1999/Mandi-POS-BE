@@ -133,101 +133,51 @@ export class ProductsController {
     }
   }
 
-  // ── Combo Meals ──
-  static async getCombos(req: Request, res: Response, next: NextFunction) {
+  // ── Combo Deals ──
+  static async getComboDeals(req: Request, res: Response, next: NextFunction) {
     try {
       const status = req.query.status as string | undefined;
-      const combos = await AddonsCombosService.getCombos(status);
-      ResponseUtil.success(res, combos, 'Combo meals retrieved successfully');
+      const combos = await AddonsCombosService.getComboDeals(status);
+      ResponseUtil.success(res, combos, 'Combo deals retrieved successfully');
     } catch (err) {
       next(err);
     }
   }
 
-  static async getComboById(req: Request, res: Response, next: NextFunction) {
+  static async getComboDealById(req: Request, res: Response, next: NextFunction) {
     try {
       const id = ParamUtil.id(req.params.id, 'id');
-      const combo = await AddonsCombosService.getComboById(id);
-      ResponseUtil.success(res, combo, 'Combo meal retrieved successfully');
+      const combo = await AddonsCombosService.getComboDealById(id);
+      ResponseUtil.success(res, combo, 'Combo deal retrieved successfully');
     } catch (err) {
       next(err);
     }
   }
 
-  static async createCombo(req: Request, res: Response, next: NextFunction) {
+  static async createComboDeal(req: Request, res: Response, next: NextFunction) {
     try {
-      const combo = await AddonsCombosService.createCombo(req.body, req.user!.id);
-      ResponseUtil.created(res, combo, 'Combo meal created successfully');
+      const combo = await AddonsCombosService.createComboDeal(req.body, req.user!.id);
+      ResponseUtil.created(res, combo, 'Combo deal created successfully');
     } catch (err) {
       next(err);
     }
   }
 
-  static async updateCombo(req: Request, res: Response, next: NextFunction) {
-    try {
-      const id = ParamUtil.id(req.params.id, 'id');
-      const combo = await AddonsCombosService.updateCombo(id, req.body, req.user!.id);
-      ResponseUtil.success(res, combo, 'Combo meal updated successfully');
-    } catch (err) {
-      next(err);
-    }
-  }
-
-  static async deleteCombo(req: Request, res: Response, next: NextFunction) {
+  static async updateComboDeal(req: Request, res: Response, next: NextFunction) {
     try {
       const id = ParamUtil.id(req.params.id, 'id');
-      const result = await AddonsCombosService.deleteCombo(id, req.user!.id);
-      ResponseUtil.success(res, result, 'Combo meal deleted successfully');
+      const combo = await AddonsCombosService.updateComboDeal(id, req.body, req.user!.id);
+      ResponseUtil.success(res, combo, 'Combo deal updated successfully');
     } catch (err) {
       next(err);
     }
   }
 
-  // ── Meal Deals ──
-  static async getDeals(req: Request, res: Response, next: NextFunction) {
-    try {
-      const activeOnly = req.query.activeOnly === 'true';
-      const deals = await AddonsCombosService.getDeals(activeOnly);
-      ResponseUtil.success(res, deals, 'Meal deals retrieved successfully');
-    } catch (err) {
-      next(err);
-    }
-  }
-
-  static async getDealById(req: Request, res: Response, next: NextFunction) {
+  static async deleteComboDeal(req: Request, res: Response, next: NextFunction) {
     try {
       const id = ParamUtil.id(req.params.id, 'id');
-      const deal = await AddonsCombosService.getDealById(id);
-      ResponseUtil.success(res, deal, 'Meal deal retrieved successfully');
-    } catch (err) {
-      next(err);
-    }
-  }
-
-  static async createDeal(req: Request, res: Response, next: NextFunction) {
-    try {
-      const deal = await AddonsCombosService.createDeal(req.body, req.user!.id);
-      ResponseUtil.created(res, deal, 'Meal deal created successfully');
-    } catch (err) {
-      next(err);
-    }
-  }
-
-  static async updateDeal(req: Request, res: Response, next: NextFunction) {
-    try {
-      const id = ParamUtil.id(req.params.id, 'id');
-      const deal = await AddonsCombosService.updateDeal(id, req.body, req.user!.id);
-      ResponseUtil.success(res, deal, 'Meal deal updated successfully');
-    } catch (err) {
-      next(err);
-    }
-  }
-
-  static async deleteDeal(req: Request, res: Response, next: NextFunction) {
-    try {
-      const id = ParamUtil.id(req.params.id, 'id');
-      const result = await AddonsCombosService.deleteDeal(id, req.user!.id);
-      ResponseUtil.success(res, result, 'Meal deal deleted successfully');
+      const result = await AddonsCombosService.deleteComboDeal(id, req.user!.id);
+      ResponseUtil.success(res, result, 'Combo deal deleted successfully');
     } catch (err) {
       next(err);
     }

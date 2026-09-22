@@ -18,7 +18,8 @@ export class DashboardService {
          COALESCE(SUM(CASE WHEN DATE(created_at) = CURDATE() THEN discount_amount ELSE 0 END), 0) as today_discount,
          COALESCE(SUM(total_amount), 0) as all_time_sales,
          COUNT(id) as all_time_bills_count
-       FROM bills`
+       FROM bills
+       WHERE is_deleted = 0`
     );
 
     // 2. Order Statistics (Today + All-time)
@@ -43,7 +44,8 @@ export class DashboardService {
          COALESCE(SUM(CASE WHEN order_type = 'TAKEAWAY' THEN 1 ELSE 0 END), 0) as takeaway_orders,
          COALESCE(SUM(CASE WHEN order_type = 'WALK_IN' THEN 1 ELSE 0 END), 0) as walk_in_orders,
          COUNT(id) as all_time_orders
-       FROM orders`
+       FROM orders
+       WHERE is_deleted = 0`
     );
 
     // 3. Table Occupancy
@@ -94,6 +96,7 @@ export class DashboardService {
        FROM categories c
        LEFT JOIN products p ON c.id = p.category_id
        LEFT JOIN bill_items bi ON p.id = bi.product_id
+         AND EXISTS (SELECT 1 FROM bills b WHERE b.id = bi.bill_id AND b.is_deleted = 0)
        GROUP BY c.id
        ORDER BY total_revenue DESC`
     );
@@ -105,6 +108,7 @@ export class DashboardService {
               COALESCE(SUM(bi.total_amount), 0) as total_revenue
        FROM products p
        JOIN bill_items bi ON p.id = bi.product_id
+       JOIN bills b ON bi.bill_id = b.id AND b.is_deleted = 0
        JOIN categories c ON p.category_id = c.id
        GROUP BY p.id
        ORDER BY total_sold DESC, total_revenue DESC
@@ -112,21 +116,26 @@ export class DashboardService {
     );
 
     // 9. Payment Method Breakdown (Today + All-Time fallback)
+    // Payment rows survive a withdrawal — they are the record of money taken —
+    // so the bill join is what keeps a withdrawn invoice out of the tender
+    // split rather than the payment row's own absence.
     let paymentBreakdown = await dbService.query(
-      `SELECT payment_method,
-              COUNT(id) as transaction_count,
-              COALESCE(SUM(amount), 0) as total_amount
-       FROM payments
-       WHERE DATE(created_at) = CURDATE()
-       GROUP BY payment_method`
+      `SELECT p.payment_method,
+              COUNT(p.id) as transaction_count,
+              COALESCE(SUM(p.amount), 0) as total_amount
+       FROM payments p
+       JOIN bills b ON p.bill_id = b.id AND b.is_deleted = 0
+       WHERE DATE(p.created_at) = CURDATE()
+       GROUP BY p.payment_method`
     );
     if (!paymentBreakdown || paymentBreakdown.length === 0) {
       paymentBreakdown = await dbService.query(
-        `SELECT payment_method,
-                COUNT(id) as transaction_count,
-                COALESCE(SUM(amount), 0) as total_amount
-         FROM payments
-         GROUP BY payment_method`
+        `SELECT p.payment_method,
+                COUNT(p.id) as transaction_count,
+                COALESCE(SUM(p.amount), 0) as total_amount
+         FROM payments p
+         JOIN bills b ON p.bill_id = b.id AND b.is_deleted = 0
+         GROUP BY p.payment_method`
       );
     }
 
@@ -138,6 +147,7 @@ export class DashboardService {
        FROM orders o
        LEFT JOIN customers c ON o.customer_id = c.id
        LEFT JOIN dining_tables t ON o.dining_table_id = t.id
+       WHERE o.is_deleted = 0
        ORDER BY o.created_at DESC
        LIMIT 8`
     );

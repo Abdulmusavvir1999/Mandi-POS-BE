@@ -23,7 +23,7 @@ export class QueueService {
     const items = await dbService.query(
       `SELECT q.*, o.order_number, o.total_amount, o.order_type
        FROM queue q
-       LEFT JOIN orders o ON q.order_id = o.id
+       LEFT JOIN orders o ON q.order_id = o.id AND o.is_deleted = 0
        ${where}
        ORDER BY q.id ASC`,
       params
@@ -36,7 +36,7 @@ export class QueueService {
     return await dbService.query(
       `SELECT q.*, o.order_number, o.total_amount, o.order_type
        FROM queue q
-       LEFT JOIN orders o ON q.order_id = o.id
+       LEFT JOIN orders o ON q.order_id = o.id AND o.is_deleted = 0
        WHERE q.status IN ('PENDING', 'IN_PROGRESS') AND DATE(q.created_at) = CURDATE()
        ORDER BY CASE q.status WHEN 'IN_PROGRESS' THEN 1 ELSE 2 END, q.id ASC`
     );
@@ -46,7 +46,7 @@ export class QueueService {
     const item = await dbService.queryOne(
       `SELECT q.*, o.order_number, o.total_amount, o.order_type
        FROM queue q
-       LEFT JOIN orders o ON q.order_id = o.id
+       LEFT JOIN orders o ON q.order_id = o.id AND o.is_deleted = 0
        WHERE q.id = ?`,
       [id]
     );

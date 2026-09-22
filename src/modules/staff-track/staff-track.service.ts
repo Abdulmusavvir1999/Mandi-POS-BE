@@ -9,6 +9,7 @@ import {
   StaffTrackRow,
 } from './staff-track.types';
 import { StaffTrackScope, scopeClause } from './staff-track.scope';
+import { ParamUtil } from '../../core/utils/param.util';
 
 /**
  * Staff Track query layer.
@@ -125,7 +126,7 @@ export class StaffTrackService {
          COUNT(DISTINCT o.dining_table_id) AS tables_served,
          COALESCE(SUM(o.total_amount), 0) AS order_value
        FROM orders o
-       WHERE 1=1${orderDate.sql}${ordersScope.sql}`,
+       WHERE o.is_deleted = 0${orderDate.sql}${ordersScope.sql}`,
       [...orderDate.params, ...ordersScope.params]
     );
 
@@ -143,7 +144,7 @@ export class StaffTrackService {
          COALESCE(SUM(b.discount_amount), 0) AS discount_amount,
          COALESCE(SUM(b.tax_amount), 0) AS tax_amount
        FROM bills b
-       WHERE 1=1${billDate.sql}${billsScope.sql}`,
+       WHERE b.is_deleted = 0${billDate.sql}${billsScope.sql}`,
       [...billDate.params, ...billsScope.params]
     );
 
@@ -160,7 +161,7 @@ export class StaffTrackService {
              COALESCE(SUM(t.status = 'OCCUPIED' AND o.created_by = ?), 0) AS active_tables,
              COUNT(*) AS total_tables
            FROM dining_tables t
-           LEFT JOIN orders o ON t.current_order_id = o.id`,
+           LEFT JOIN orders o ON t.current_order_id = o.id AND o.is_deleted = 0`,
       scope.kind === 'ALL' ? [] : [scope.userId]
     );
 
@@ -218,7 +219,8 @@ export class StaffTrackService {
     }
     if (filters.search) {
       outer.push('(u.name LIKE ? OR u.username LIKE ? OR u.email LIKE ?)');
-      outerParams.push(`%${filters.search}%`, `%${filters.search}%`, `%${filters.search}%`);
+      const term = ParamUtil.like(filters.search);
+      outerParams.push(term, term, term);
     }
     const outerWhere = outer.length ? `WHERE ${outer.join(' AND ')}` : '';
 
@@ -276,7 +278,7 @@ export class StaffTrackService {
                 SUM(o.total_amount)           AS order_value,
                 COUNT(DISTINCT o.dining_table_id) AS tables_attended
          FROM orders o
-         WHERE o.created_by IS NOT NULL${od.sql}
+         WHERE o.created_by IS NOT NULL AND o.is_deleted = 0${od.sql}
          GROUP BY o.created_by
        ) ord ON ord.uid = u.id
 
@@ -288,14 +290,14 @@ export class StaffTrackService {
                 SUM(b.discount_amount)     AS discount_amount,
                 SUM(b.tax_amount)          AS tax_amount
          FROM bills b
-         WHERE 1=1${bd.sql}
+         WHERE b.is_deleted = 0${bd.sql}
          GROUP BY b.cashier_id
        ) bil ON bil.uid = u.id
 
        LEFT JOIN (
          SELECT o2.created_by AS uid, SUM(oi.quantity) AS items_handled
          FROM order_items oi
-         JOIN orders o2 ON oi.order_id = o2.id
+         JOIN orders o2 ON oi.order_id = o2.id AND o2.is_deleted = 0
          WHERE o2.created_by IS NOT NULL${id2.sql}
          GROUP BY o2.created_by
        ) itm ON itm.uid = u.id
@@ -310,14 +312,14 @@ export class StaffTrackService {
            WHERE new_status = 'COMPLETED'
            GROUP BY order_id
          ) h ON h.order_id = o3.id
-         WHERE o3.created_by IS NOT NULL${sd.sql}
+         WHERE o3.created_by IS NOT NULL AND o3.is_deleted = 0${sd.sql}
          GROUP BY o3.created_by
        ) svc ON svc.uid = u.id
 
        LEFT JOIN (
          SELECT ao.created_by AS uid, COUNT(*) AS active_tables
          FROM dining_tables dt
-         JOIN orders ao ON dt.current_order_id = ao.id
+         JOIN orders ao ON dt.current_order_id = ao.id AND ao.is_deleted = 0
          WHERE dt.status = 'OCCUPIED' AND ao.created_by IS NOT NULL
          GROUP BY ao.created_by
        ) cur ON cur.uid = u.id
@@ -454,8 +456,8 @@ export class StaffTrackService {
        LEFT JOIN customers c     ON o.customer_id = c.id
        LEFT JOIN users u         ON o.created_by = u.id
        LEFT JOIN roles ru        ON u.role_id = ru.id
-       LEFT JOIN bills b         ON b.order_id = o.id
-       WHERE o.status IN ('PENDING', 'IN_PROGRESS')${liveOrders.sql}
+       LEFT JOIN bills b         ON b.order_id = o.id AND b.is_deleted = 0
+       WHERE o.status IN ('PENDING', 'IN_PROGRESS') AND o.is_deleted = 0${liveOrders.sql}
        ORDER BY o.created_at ASC`,
       liveOrders.params
     );
@@ -468,7 +470,7 @@ export class StaffTrackService {
               u.id AS staff_id, u.name AS staff_name, u.username AS staff_username,
               u.image_url AS staff_image_url, ru.name AS staff_role
        FROM dining_tables t
-       LEFT JOIN orders o ON t.current_order_id = o.id
+       LEFT JOIN orders o ON t.current_order_id = o.id AND o.is_deleted = 0
        LEFT JOIN users u  ON o.created_by = u.id
        LEFT JOIN roles ru ON u.role_id = ru.id
        WHERE t.status = 'OCCUPIED'${liveTables.sql}
@@ -498,14 +500,14 @@ export class StaffTrackService {
        LEFT JOIN (
          SELECT ao.created_by AS uid, COUNT(*) AS active_tables
          FROM dining_tables dt
-         JOIN orders ao ON dt.current_order_id = ao.id
+         JOIN orders ao ON dt.current_order_id = ao.id AND ao.is_deleted = 0
          WHERE dt.status = 'OCCUPIED' AND ao.created_by IS NOT NULL
          GROUP BY ao.created_by
        ) cur ON cur.uid = u.id
        LEFT JOIN (
          SELECT oo.created_by AS uid, COUNT(*) AS open_orders
          FROM orders oo
-         WHERE oo.status IN ('PENDING', 'IN_PROGRESS') AND oo.created_by IS NOT NULL
+         WHERE oo.status IN ('PENDING', 'IN_PROGRESS') AND oo.created_by IS NOT NULL AND oo.is_deleted = 0
          GROUP BY oo.created_by
        ) opn ON opn.uid = u.id
        WHERE act.created_at >= DATE_SUB(NOW(), INTERVAL ? MINUTE)${liveStaff.sql}
@@ -588,7 +590,7 @@ export class StaffTrackService {
     limit = 25
   ) {
     const offset = (page - 1) * limit;
-    const conditions: string[] = ['1=1'];
+    const conditions: string[] = ['o.is_deleted = 0'];
     const condParams: any[] = [];
     if (filters.dateFrom) {
       conditions.push('DATE(o.created_at) >= DATE(?)');
@@ -624,7 +626,8 @@ export class StaffTrackService {
     }
     if (filters.search) {
       conditions.push('(o.order_number LIKE ? OR u.name LIKE ?)');
-      condParams.push(`%${filters.search}%`, `%${filters.search}%`);
+      const term = ParamUtil.like(filters.search);
+      condParams.push(term, term);
     }
 
     const whereSql = `WHERE ${conditions.join(' AND ')}`;
@@ -634,7 +637,7 @@ export class StaffTrackService {
       LEFT JOIN users u          ON o.created_by = u.id
       LEFT JOIN dining_tables t  ON o.dining_table_id = t.id
       LEFT JOIN customers c      ON o.customer_id = c.id
-      LEFT JOIN bills b          ON b.order_id = o.id
+      LEFT JOIN bills b          ON b.order_id = o.id AND b.is_deleted = 0
     `;
 
     const countRes = await dbService.queryOne<{ total: number }>(
@@ -712,9 +715,9 @@ export class StaffTrackService {
     if (scope.kind === 'SELF') {
       const involved = await dbService.queryOne<{ involved: number }>(
         `SELECT EXISTS (
-           SELECT 1 FROM orders o            WHERE o.id = ? AND o.created_by = ?
+           SELECT 1 FROM orders o            WHERE o.id = ? AND o.is_deleted = 0 AND o.created_by = ?
            UNION ALL
-           SELECT 1 FROM bills b             WHERE b.order_id = ? AND b.cashier_id = ?
+           SELECT 1 FROM bills b             WHERE b.order_id = ? AND b.is_deleted = 0 AND b.cashier_id = ?
            UNION ALL
            SELECT 1 FROM order_status_history h WHERE h.order_id = ? AND h.changed_by = ?
            UNION ALL
@@ -739,7 +742,7 @@ export class StaffTrackService {
        LEFT JOIN roles ru        ON u.role_id = ru.id
        LEFT JOIN dining_tables t ON o.dining_table_id = t.id
        LEFT JOIN customers c     ON o.customer_id = c.id
-       WHERE o.id = ?`,
+       WHERE o.id = ? AND o.is_deleted = 0`,
       [orderId]
     );
     if (!order) {
@@ -766,7 +769,7 @@ export class StaffTrackService {
        FROM bills b
        LEFT JOIN users u ON b.cashier_id = u.id
        LEFT JOIN roles r ON u.role_id = r.id
-       WHERE b.order_id = ?`,
+       WHERE b.order_id = ? AND b.is_deleted = 0`,
       [orderId]
     );
 
@@ -905,7 +908,7 @@ export class StaffTrackService {
    * against takings.
    */
   static async getRevenue(filters: StaffTrackFilters) {
-    const conditions: string[] = ['1=1'];
+    const conditions: string[] = ['b.is_deleted = 0'];
     const params: any[] = [];
     if (filters.dateFrom) {
       conditions.push('DATE(b.created_at) >= DATE(?)');
@@ -945,7 +948,7 @@ export class StaffTrackService {
     );
 
     // Cancelled value is an orders-side figure; it never becomes revenue.
-    const cancelConditions: string[] = ["o.status = 'CANCELLED'"];
+    const cancelConditions: string[] = ["o.status = 'CANCELLED'", "o.is_deleted = 0"];
     const cancelParams: any[] = [];
     if (filters.dateFrom) {
       cancelConditions.push('DATE(o.created_at) >= DATE(?)');
@@ -1041,7 +1044,7 @@ export class StaffTrackService {
               u.image_url AS staff_image_url, r.name AS staff_role,
               (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id) AS item_count
        FROM dining_tables t
-       LEFT JOIN orders o ON t.current_order_id = o.id
+       LEFT JOIN orders o ON t.current_order_id = o.id AND o.is_deleted = 0
        LEFT JOIN users u  ON o.created_by = u.id
        LEFT JOIN roles r  ON u.role_id = r.id
        ${currentWhere}
@@ -1049,7 +1052,7 @@ export class StaffTrackService {
       currentParams
     );
 
-    const conditions: string[] = ['o.dining_table_id IS NOT NULL'];
+    const conditions: string[] = ['o.dining_table_id IS NOT NULL', 'o.is_deleted = 0'];
     const params: any[] = [];
     if (filters.dateFrom) {
       conditions.push('DATE(o.created_at) >= DATE(?)');
@@ -1206,11 +1209,12 @@ export class StaffTrackService {
     }
     if (filters.action) {
       conditions.push('a.action LIKE ?');
-      params.push(`%${filters.action}%`);
+      params.push(ParamUtil.like(filters.action));
     }
     if (filters.search) {
       conditions.push('(u.name LIKE ? OR a.action LIKE ?)');
-      params.push(`%${filters.search}%`, `%${filters.search}%`);
+      const term = ParamUtil.like(filters.search);
+      params.push(term, term);
     }
 
     const whereSql = `WHERE ${conditions.join(' AND ')}`;
@@ -1307,7 +1311,7 @@ export class StaffTrackService {
   // ───────────────────────────────────────────────────────────────────────
 
   static async getOrdersReport(filters: StaffTrackFilters) {
-    const conditions: string[] = ['o.created_by IS NOT NULL'];
+    const conditions: string[] = ['o.created_by IS NOT NULL', 'o.is_deleted = 0'];
     const params: any[] = [];
     if (filters.dateFrom) {
       conditions.push('DATE(o.created_at) >= DATE(?)');
@@ -1426,9 +1430,9 @@ export class StaffTrackService {
         ? "DATE_FORMAT(o.created_at, '%x-W%v')"
         : "DATE_FORMAT(o.created_at, '%Y-%m')";
 
-    const billConditions: string[] = ['1=1'];
+    const billConditions: string[] = ['b.is_deleted = 0'];
     const billParams: any[] = [];
-    const orderConditions: string[] = ['o.created_by IS NOT NULL'];
+    const orderConditions: string[] = ['o.created_by IS NOT NULL', 'o.is_deleted = 0'];
     const orderParams: any[] = [];
 
     if (filters.dateFrom) {

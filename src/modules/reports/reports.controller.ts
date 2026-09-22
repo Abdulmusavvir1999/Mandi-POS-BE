@@ -70,8 +70,16 @@ export class ReportsController {
       const dateFrom = req.query.dateFrom as string | undefined;
       const dateTo = req.query.dateTo as string | undefined;
       const categoryId = ParamUtil.optionalId(req.query.categoryId, 'categoryId');
+      const paymentMethod = req.query.paymentMethod as string | undefined;
+      const orderType = req.query.orderType as string | undefined;
 
-      const report = await ReportsService.getProductSalesReport(dateFrom, dateTo, categoryId);
+      const report = await ReportsService.getProductSalesReport(
+        dateFrom,
+        dateTo,
+        categoryId,
+        paymentMethod,
+        orderType
+      );
       ResponseUtil.success(res, report, 'Product sales report generated successfully');
     } catch (err) {
       next(err);
@@ -82,8 +90,15 @@ export class ReportsController {
     try {
       const dateFrom = req.query.dateFrom as string | undefined;
       const dateTo = req.query.dateTo as string | undefined;
+      const paymentMethod = req.query.paymentMethod as string | undefined;
+      const orderType = req.query.orderType as string | undefined;
 
-      const report = await ReportsService.getCategorySalesReport(dateFrom, dateTo);
+      const report = await ReportsService.getCategorySalesReport(
+        dateFrom,
+        dateTo,
+        paymentMethod,
+        orderType
+      );
       ResponseUtil.success(res, report, 'Category sales report generated successfully');
     } catch (err) {
       next(err);

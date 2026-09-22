@@ -49,6 +49,20 @@ export class ParamUtil {
     return trimmed.length > 0 ? trimmed : undefined;
   }
 
+  /**
+   * Wraps a search term as a LIKE pattern, with its wildcards neutralised.
+   *
+   * `%` and `_` are wildcards to LIKE, so a search for a dish called
+   * "50% Off Combo" or a code like "A_1" was matching every row in the
+   * table instead of the one the operator meant. They are escaped here with
+   * backslash, which is LIKE's default escape character, along with the
+   * backslash itself so a literal one still matches.
+   */
+  static like(term: string): string {
+    const escaped = term.replace(/[\\%_]/g, (ch) => '\\' + ch);
+    return `%${escaped}%`;
+  }
+
   /** Accepts 'true'/'1' (and real booleans) as true; everything else is false. */
   static bool(value: unknown): boolean {
     if (typeof value === 'boolean') return value;

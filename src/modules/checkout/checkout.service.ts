@@ -4,6 +4,7 @@ import { SettingsService } from '../settings/settings.service';
 import { AuditService } from '../audit/audit.service';
 import { OrderType, PaymentMethod } from '../../core/types';
 import { SequenceUtil } from '../../core/utils/sequence.util';
+import { DocumentSequence, ORDER_DOCUMENT, BILL_DOCUMENT } from '../../core/utils/document-sequence.util';
 import { logger } from '../../config/logger';
 
 export interface CheckoutPayload {
@@ -32,9 +33,8 @@ export interface CheckoutPayload {
     isComplimentary?: boolean;
     complimentaryReason?: string;
     selectedAddons?: Array<{ id: number; name: string; price: number; quantity?: number }>;
-    itemType?: 'PRODUCT' | 'COMBO' | 'DEAL';
+    itemType?: 'PRODUCT' | 'COMBO';
     comboId?: number | null;
-    dealId?: number | null;
   }>;
 }
 
@@ -94,6 +94,9 @@ export class CheckoutService {
       await addCol('order_items', 'addons_data', 'TEXT NULL');
       await addCol('order_items', 'item_type', "VARCHAR(30) DEFAULT 'PRODUCT'");
       await addCol('order_items', 'combo_id', 'INT NULL');
+      // Legacy: Meal Deals were withdrawn and nothing writes deal_id any more,
+      // but sales settled while they existed still carry it, so the column is
+      // still ensured rather than dropped.
       await addCol('order_items', 'deal_id', 'INT NULL');
 
       await addCol('bill_items', 'is_complimentary', 'BOOLEAN DEFAULT FALSE');
@@ -101,7 +104,57 @@ export class CheckoutService {
       await addCol('bill_items', 'addons_data', 'TEXT NULL');
       await addCol('bill_items', 'item_type', "VARCHAR(30) DEFAULT 'PRODUCT'");
       await addCol('bill_items', 'combo_id', 'INT NULL');
+      // Legacy, as for order_items above.
       await addCol('bill_items', 'deal_id', 'INT NULL');
+
+      // Soft delete for orders and invoices (see soft_delete_migration.sql).
+      //
+      // An administrator withdrawing a record from the Back-Office no longer
+      // destroys it: the row and its items, payments and refunds stay put, and
+      // `is_deleted` takes them out of every figure and every list.
+      // Deliberately distinct from `is_voided` — a void is a sale cancelled at
+      // the till and remains real history; a delete is a record pulled from
+      // the books by an admin.
+      //
+      // Owned here rather than in the orders or back-office module because
+      // this is already where the bills and orders column migrations live, and
+      // it is chained from ReportsSchema.ensure(), so every reader that
+      // filters on the column is guaranteed to find it.
+      for (const table of ['orders', 'bills']) {
+        await addCol(table, 'is_deleted', 'TINYINT(1) NOT NULL DEFAULT 0');
+        await addCol(table, 'deleted_at', 'DATETIME NULL');
+        await addCol(table, 'deleted_by', 'INT NULL');
+        await addCol(table, 'delete_reason', 'TEXT NULL');
+      }
+
+      // Every read now carries `is_deleted = 0`, usually beside a date range.
+      // MySQL has no CREATE INDEX IF NOT EXISTS, so each one is probed first.
+      const softDeleteIndexes: [string, string, string][] = [
+        ['idx_orders_is_deleted', 'orders', 'is_deleted'],
+        ['idx_orders_deleted_created', 'orders', 'is_deleted, created_at'],
+        ['idx_bills_is_deleted', 'bills', 'is_deleted'],
+        ['idx_bills_deleted_created', 'bills', 'is_deleted, created_at'],
+      ];
+      for (const [name, table, columns] of softDeleteIndexes) {
+        try {
+          const exists = await dbService.queryOne<{ count: number }>(
+            `SELECT COUNT(*) as count
+             FROM INFORMATION_SCHEMA.STATISTICS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ?`,
+            [table, name]
+          );
+          if (!exists || Number(exists.count) === 0) {
+            await dbService.execute(`CREATE INDEX ${name} ON ${table}(${columns})`);
+          }
+        } catch (e) {
+          logger.warn(`Could not create index ${name} on ${table}:`, e);
+        }
+      }
+
+      // The gapless per-day position for orders and invoices. Must come after
+      // `is_deleted` exists: the backfill numbers active rows only.
+      await DocumentSequence.ensureSchema(ORDER_DOCUMENT);
+      await DocumentSequence.ensureSchema(BILL_DOCUMENT);
 
       // 3. Create pos_day_closings table
       await dbService.execute(`
@@ -150,7 +203,7 @@ export class CheckoutService {
     // Check for duplicate offline sync
     if (payload.offlineSyncId) {
       const existingOffline = await dbService.queryOne<{ id: number; bill_number: string }>(
-        'SELECT id, bill_number FROM bills WHERE offline_sync_id = ?',
+        'SELECT id, bill_number FROM bills WHERE offline_sync_id = ? AND is_deleted = 0',
         [payload.offlineSyncId]
       );
       if (existingOffline) {
@@ -192,7 +245,6 @@ export class CheckoutService {
         addonsData: string | null;
         itemType: string;
         comboId: number | null;
-        dealId: number | null;
       }> = [];
 
       for (const item of payload.items) {
@@ -281,7 +333,6 @@ export class CheckoutService {
           addonsData: item.selectedAddons && item.selectedAddons.length > 0 ? JSON.stringify(item.selectedAddons) : null,
           itemType: item.itemType || 'PRODUCT',
           comboId: item.comboId || null,
-          dealId: item.dealId || null,
         });
       }
 
@@ -328,7 +379,7 @@ export class CheckoutService {
 
       if (payload.existingOrderId) {
         const existingOrder = await dbService.queryOne<{ id: number; order_number: string; status: string }>(
-          'SELECT id, order_number, status FROM orders WHERE id = ?',
+          'SELECT id, order_number, status FROM orders WHERE id = ? AND is_deleted = 0',
           [payload.existingOrderId]
         );
         if (!existingOrder) {
@@ -377,6 +428,11 @@ export class CheckoutService {
           ]
         );
         orderId = orderRes.lastInsertRowid;
+
+        // Gapless position within the day, so a list never shows a hole left
+        // by a withdrawn order. Separate from `order_number`, which stays
+        // permanent because it is printed on the receipt.
+        await DocumentSequence.assignForNew(ORDER_DOCUMENT, orderId);
       }
 
       // Order Items & Stock Deductions
@@ -385,8 +441,8 @@ export class CheckoutService {
           `INSERT INTO order_items (
             order_id, product_id, product_name, variant_id, variant_name,
             stock_consumption, unit_price, quantity, subtotal,
-            discount_amount, tax_amount, total_amount, addons_data, item_type, combo_id, deal_id, notes
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)`,
+            discount_amount, tax_amount, total_amount, addons_data, item_type, combo_id, notes
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?)`,
           [
             orderId,
             item.productId,
@@ -401,7 +457,6 @@ export class CheckoutService {
             item.addonsData,
             item.itemType,
             item.comboId,
-            item.dealId,
             item.notes || null,
           ]
         );
@@ -459,14 +514,19 @@ export class CheckoutService {
 
       const billId = billRes.lastInsertRowid;
 
+      // Gapless position within the day, so an invoice list never shows a hole
+      // left by a withdrawn invoice. Separate from `bill_number`, which stays
+      // permanent because it is printed on the customer's copy.
+      await DocumentSequence.assignForNew(BILL_DOCUMENT, billId);
+
       // 8. Insert Bill Items
       for (const item of verifiedItems) {
         await dbService.execute(
           `INSERT INTO bill_items (
             bill_id, product_id, product_name, variant_id, variant_name, stock_consumption,
             unit_price, quantity, subtotal, discount_amount, tax_amount, total_amount,
-            is_complimentary, complimentary_reason, addons_data, item_type, combo_id, deal_id
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, ?)`,
+            is_complimentary, complimentary_reason, addons_data, item_type, combo_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)`,
           [
             billId,
             item.productId,
@@ -483,7 +543,6 @@ export class CheckoutService {
             item.addonsData,
             item.itemType,
             item.comboId,
-            item.dealId,
           ]
         );
       }
@@ -562,7 +621,7 @@ export class CheckoutService {
        LEFT JOIN customers c ON b.customer_id = c.id
        LEFT JOIN dining_tables t ON b.dining_table_id = t.id
        LEFT JOIN users u ON b.cashier_id = u.id
-       WHERE b.id = ?`,
+       WHERE b.id = ? AND b.is_deleted = 0`,
       [billId]
     );
 

@@ -117,9 +117,11 @@ export const createSchema = async (): Promise<void> => {
       max_stock_threshold REAL NOT NULL DEFAULT 100.0,
       shelf_life_days INTEGER,
       product_id INTEGER,
+      default_vendor_id INTEGER,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL
+      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL,
+      FOREIGN KEY (default_vendor_id) REFERENCES vendors(id) ON DELETE SET NULL
     );
 
     -- Stock Entries (Purchase / Addition Ledger)
@@ -436,6 +438,7 @@ export const createSchema = async (): Promise<void> => {
       addons_data TEXT,
       item_type TEXT DEFAULT 'PRODUCT',
       combo_id INTEGER,
+      -- Legacy: Meal Deals were withdrawn, but settled sales still carry it.
       deal_id INTEGER,
       notes TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -548,6 +551,7 @@ export const createSchema = async (): Promise<void> => {
       addons_data TEXT,
       item_type TEXT DEFAULT 'PRODUCT',
       combo_id INTEGER,
+      -- Legacy: Meal Deals were withdrawn, but settled sales still carry it.
       deal_id INTEGER,
       total_amount REAL NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -562,6 +566,7 @@ export const createSchema = async (): Promise<void> => {
       category TEXT NOT NULL DEFAULT 'Sides',
       price REAL NOT NULL DEFAULT 0.0,
       cost_price REAL NOT NULL DEFAULT 0.0,
+      image_url TEXT,
       is_available INTEGER DEFAULT 1,
       stock_item_id INTEGER,
       status TEXT DEFAULT 'ACTIVE',
@@ -582,8 +587,8 @@ export const createSchema = async (): Promise<void> => {
       FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
     );
 
-    -- Combo Meals
-    CREATE TABLE IF NOT EXISTS combo_meals (
+    -- Combo Deals
+    CREATE TABLE IF NOT EXISTS combo_deals (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       combo_code TEXT UNIQUE NOT NULL,
       name TEXT NOT NULL,
@@ -599,49 +604,15 @@ export const createSchema = async (): Promise<void> => {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
-    -- Combo Meal Items
-    CREATE TABLE IF NOT EXISTS combo_meal_items (
+    -- Combo Deal Items
+    CREATE TABLE IF NOT EXISTS combo_deal_items (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       combo_id INTEGER NOT NULL,
       product_id INTEGER NOT NULL,
       variant_id INTEGER,
       quantity INTEGER NOT NULL DEFAULT 1,
       display_order INTEGER DEFAULT 0,
-      FOREIGN KEY (combo_id) REFERENCES combo_meals(id) ON DELETE CASCADE,
-      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
-      FOREIGN KEY (variant_id) REFERENCES product_variants(id) ON DELETE SET NULL
-    );
-
-    -- Meal Deals
-    CREATE TABLE IF NOT EXISTS meal_deals (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      deal_code TEXT UNIQUE NOT NULL,
-      title TEXT NOT NULL,
-      badge_text TEXT DEFAULT 'VALUE DEAL',
-      description TEXT,
-      image_url TEXT,
-      original_price REAL NOT NULL DEFAULT 0.0,
-      deal_price REAL NOT NULL DEFAULT 0.0,
-      savings_amount REAL NOT NULL DEFAULT 0.0,
-      start_date DATE,
-      end_date DATE,
-      start_time TEXT,
-      end_time TEXT,
-      days_of_week TEXT DEFAULT 'ALL',
-      is_active INTEGER DEFAULT 1,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-
-    -- Meal Deal Items
-    CREATE TABLE IF NOT EXISTS meal_deal_items (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      deal_id INTEGER NOT NULL,
-      product_id INTEGER NOT NULL,
-      variant_id INTEGER,
-      quantity INTEGER NOT NULL DEFAULT 1,
-      notes TEXT,
-      FOREIGN KEY (deal_id) REFERENCES meal_deals(id) ON DELETE CASCADE,
+      FOREIGN KEY (combo_id) REFERENCES combo_deals(id) ON DELETE CASCADE,
       FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
       FOREIGN KEY (variant_id) REFERENCES product_variants(id) ON DELETE SET NULL
     );
@@ -814,19 +785,16 @@ export const createSchema = async (): Promise<void> => {
     CREATE INDEX IF NOT EXISTS idx_addon_category ON product_addons(category);
     CREATE INDEX IF NOT EXISTS idx_addon_status ON product_addons(status);
 
-    CREATE INDEX IF NOT EXISTS idx_combo_code ON combo_meals(combo_code);
-    CREATE INDEX IF NOT EXISTS idx_combo_status ON combo_meals(status);
-    CREATE INDEX IF NOT EXISTS idx_cmi_combo ON combo_meal_items(combo_id);
-    CREATE INDEX IF NOT EXISTS idx_cmi_product ON combo_meal_items(product_id);
+    CREATE INDEX IF NOT EXISTS idx_combo_deal_code ON combo_deals(combo_code);
+    CREATE INDEX IF NOT EXISTS idx_combo_deal_status ON combo_deals(status);
+    CREATE INDEX IF NOT EXISTS idx_cdi_combo ON combo_deal_items(combo_id);
+    CREATE INDEX IF NOT EXISTS idx_cdi_product ON combo_deal_items(product_id);
 
-    CREATE INDEX IF NOT EXISTS idx_deal_code ON meal_deals(deal_code);
-    CREATE INDEX IF NOT EXISTS idx_deal_active ON meal_deals(is_active);
-    CREATE INDEX IF NOT EXISTS idx_mdi_deal ON meal_deal_items(deal_id);
-    CREATE INDEX IF NOT EXISTS idx_mdi_product ON meal_deal_items(product_id);
 
     CREATE INDEX IF NOT EXISTS idx_stock_entries_expiry ON stock_entries(expiry_date);
     CREATE INDEX IF NOT EXISTS idx_stock_entries_vendor ON stock_entries(vendor_id);
     CREATE INDEX IF NOT EXISTS idx_stock_items_reorder ON stock_items(reorder_level, current_quantity);
+    CREATE INDEX IF NOT EXISTS idx_stock_items_default_vendor ON stock_items(default_vendor_id);
   `;
 
   await dbService.executeBatch(schemaSql);
