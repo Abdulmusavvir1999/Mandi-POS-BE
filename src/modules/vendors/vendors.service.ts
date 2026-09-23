@@ -25,7 +25,6 @@ export interface CreateVendorInput {
   tax_id?: string;
   pan_number?: string;
   tax_category?: string;
-  msme_number?: string;
 
   payment_terms?: string;
   preferred_payment_method?: string;
@@ -36,7 +35,6 @@ export interface CreateVendorInput {
   upi_id?: string;
 
   credit_limit?: number;
-  credit_period_days?: number;
 
   rating?: number;
   delivery_speed_rating?: number;
@@ -102,7 +100,6 @@ export class VendorsService {
           tax_id VARCHAR(50) NULL,
           pan_number VARCHAR(50) NULL,
           tax_category VARCHAR(50) DEFAULT 'STANDARD',
-          msme_number VARCHAR(50) NULL,
 
           payment_terms VARCHAR(50) DEFAULT 'NET_30',
           preferred_payment_method VARCHAR(50) DEFAULT 'BANK_TRANSFER',
@@ -113,7 +110,6 @@ export class VendorsService {
           upi_id VARCHAR(100) NULL,
 
           credit_limit DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
-          credit_period_days INT NOT NULL DEFAULT 30,
           outstanding_balance DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
           total_purchases_amount DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
           total_purchases_count INT NOT NULL DEFAULT 0,
@@ -188,7 +184,15 @@ export class VendorsService {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
       `);
 
-      // 2. Ensure Permissions
+      // 2. Drop deprecated columns from existing DB schema if present
+      try {
+        await dbService.execute(`ALTER TABLE vendors DROP COLUMN msme_number`);
+      } catch (_) {}
+      try {
+        await dbService.execute(`ALTER TABLE vendors DROP COLUMN credit_period_days`);
+      } catch (_) {}
+
+      // 3. Ensure Permissions
       await dbService.execute(`
         INSERT IGNORE INTO permissions (code, module, description)
         VALUES 
@@ -214,7 +218,7 @@ export class VendorsService {
           AND r.name = 'CASHIER';
       `);
 
-      // 3. Check if any vendor exists, if not, seed realistic sample data
+      // 4. Check if any vendor exists, if not, seed realistic sample data
       const countRes = await dbService.queryOne<{ total: number }>('SELECT COUNT(*) as total FROM vendors');
       if (!countRes || countRes.total === 0) {
         await this.seedInitialVendors();
@@ -435,24 +439,24 @@ export class VendorsService {
       const res = await dbService.execute(`
         INSERT INTO vendors (
           uuid, vendor_code, name, category, status, contact_person, phone, email,
-          address, city, state, postal_code, website, tax_id, pan_number, tax_category, msme_number,
+          address, city, state, postal_code, website, tax_id, pan_number, tax_category,
           payment_terms, preferred_payment_method, bank_name, account_number, ifsc_code, branch_name, upi_id,
-          credit_limit, credit_period_days, outstanding_balance, total_purchases_amount, total_purchases_count,
+          credit_limit, outstanding_balance, total_purchases_amount, total_purchases_count,
           last_purchase_date, last_payment_date, rating, delivery_speed_rating, quality_rating, pricing_rating,
           on_time_delivery_rate, quality_score, fulfillment_rate, performance_notes, notes
         ) VALUES (
           ?, ?, ?, ?, ?, ?, ?, ?,
-          ?, ?, ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?, ?, ?,
           ?, ?, ?, ?, ?, ?, ?,
-          ?, ?, ?, ?, ?,
+          ?, ?, ?, ?,
           DATE_SUB(NOW(), INTERVAL 3 DAY), DATE_SUB(NOW(), INTERVAL 10 DAY), ?, ?, ?, ?,
           ?, ?, ?, ?, ?
         )
       `, [
         v.uuid, v.vendor_code, v.name, v.category, v.status, v.contact_person, v.phone, v.email,
-        v.address, v.city, v.state, v.postal_code, v.website, v.tax_id, v.pan_number, v.tax_category, v.msme_number,
+        v.address, v.city, v.state, v.postal_code, v.website, v.tax_id, v.pan_number, v.tax_category,
         v.payment_terms, v.preferred_payment_method, v.bank_name, v.account_number, v.ifsc_code, v.branch_name, v.upi_id,
-        v.credit_limit, v.credit_period_days, v.outstanding_balance, v.total_purchases_amount, v.total_purchases_count,
+        v.credit_limit, v.outstanding_balance, v.total_purchases_amount, v.total_purchases_count,
         v.rating, v.delivery_speed_rating, v.quality_rating, v.pricing_rating,
         v.on_time_delivery_rate, v.quality_score, v.fulfillment_rate, v.performance_notes, v.notes
       ]);
@@ -649,17 +653,17 @@ export class VendorsService {
       INSERT INTO vendors (
         uuid, vendor_code, name, category, status, image_url, notes,
         contact_person, phone, email, address, city, state, postal_code, website,
-        tax_id, pan_number, tax_category, msme_number,
+        tax_id, pan_number, tax_category,
         payment_terms, preferred_payment_method, bank_name, account_number, ifsc_code, branch_name, upi_id,
-        credit_limit, credit_period_days, outstanding_balance, total_purchases_amount, total_purchases_count,
+        credit_limit, outstanding_balance, total_purchases_amount, total_purchases_count,
         rating, delivery_speed_rating, quality_rating, pricing_rating,
         on_time_delivery_rate, quality_score, fulfillment_rate, performance_notes, created_by
       ) VALUES (
         ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?,
+        ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, 0.00, 0.00, 0,
+        ?, 0.00, 0.00, 0,
         ?, ?, ?, ?,
         ?, ?, ?, ?, ?
       )
@@ -684,7 +688,6 @@ export class VendorsService {
       data.tax_id || null,
       data.pan_number || null,
       data.tax_category || 'STANDARD',
-      data.msme_number || null,
 
       data.payment_terms || 'NET_30',
       data.preferred_payment_method || 'BANK_TRANSFER',
@@ -695,7 +698,6 @@ export class VendorsService {
       data.upi_id || null,
 
       data.credit_limit || 0,
-      data.credit_period_days || 30,
 
       data.rating || 5.0,
       data.delivery_speed_rating || 5.0,
@@ -751,7 +753,6 @@ export class VendorsService {
         tax_id = COALESCE(?, tax_id),
         pan_number = COALESCE(?, pan_number),
         tax_category = COALESCE(?, tax_category),
-        msme_number = COALESCE(?, msme_number),
         payment_terms = COALESCE(?, payment_terms),
         preferred_payment_method = COALESCE(?, preferred_payment_method),
         bank_name = COALESCE(?, bank_name),
@@ -760,7 +761,6 @@ export class VendorsService {
         branch_name = COALESCE(?, branch_name),
         upi_id = COALESCE(?, upi_id),
         credit_limit = COALESCE(?, credit_limit),
-        credit_period_days = COALESCE(?, credit_period_days),
         rating = COALESCE(?, rating),
         delivery_speed_rating = COALESCE(?, delivery_speed_rating),
         quality_rating = COALESCE(?, quality_rating),
@@ -788,7 +788,6 @@ export class VendorsService {
       data.tax_id ?? null,
       data.pan_number ?? null,
       data.tax_category ?? null,
-      data.msme_number ?? null,
       data.payment_terms ?? null,
       data.preferred_payment_method ?? null,
       data.bank_name ?? null,
@@ -797,7 +796,6 @@ export class VendorsService {
       data.branch_name ?? null,
       data.upi_id ?? null,
       data.credit_limit ?? null,
-      data.credit_period_days ?? null,
       data.rating ?? null,
       data.delivery_speed_rating ?? null,
       data.quality_rating ?? null,

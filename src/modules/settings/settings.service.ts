@@ -383,6 +383,11 @@ export class SettingsService {
           const logoUrl = th.logoUrl || settingsMap['logoUrl'] || settingsMap['THEME_LOGO_URL'] || '';
           const favicon = th.favicon || settingsMap['favicon'] || settingsMap['THEME_FAVICON'] || '';
 
+          if (th.darkModeToggleEnabled !== undefined) {
+            settingsMap['DARK_MODE_TOGGLE_ENABLED'] = String(th.darkModeToggleEnabled);
+            settingsMap['THEME_DARK_MODE_TOGGLE'] = String(th.darkModeToggleEnabled);
+          }
+
           settingsMap['theme'] = themeName;
           settingsMap['primaryColor'] = primaryColor;
           settingsMap['primaryHover'] = primaryHover;

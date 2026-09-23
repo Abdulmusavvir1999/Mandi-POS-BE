@@ -2,8 +2,20 @@ import { Request, Response, NextFunction } from 'express';
 import { VendorsService } from './vendors.service';
 import { ResponseUtil } from '../../core/utils/response.util';
 import { ParamUtil } from '../../core/utils/param.util';
+import { VendorImageService } from './vendor-image.service';
 
 export class VendorsController {
+  /** Stores a vendor image/logo and returns its URL; uploaded before or during editing. */
+  static async uploadImage(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { dataUrl } = req.body || {};
+      const data = VendorImageService.save(dataUrl);
+      ResponseUtil.success(res, data, 'Vendor image uploaded successfully');
+    } catch (err) {
+      next(err);
+    }
+  }
+
   static async getAll(req: Request, res: Response, next: NextFunction) {
     try {
       const page = ParamUtil.page(req.query.page);

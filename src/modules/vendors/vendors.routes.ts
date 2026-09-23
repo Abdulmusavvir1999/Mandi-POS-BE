@@ -23,6 +23,7 @@ router.post('/:id/payments', authenticate, requirePermission('vendor.manage'), V
 router.patch('/:id/rating', authenticate, requirePermission('vendor.manage'), VendorsController.updateRating);
 
 // Management CRUD
+router.post('/image', authenticate, requirePermission('vendor.manage'), VendorsController.uploadImage);
 router.post('/', authenticate, requirePermission('vendor.manage'), VendorsController.create);
 router.put('/:id', authenticate, requirePermission('vendor.manage'), VendorsController.update);
 router.delete('/:id', authenticate, requirePermission('vendor.manage'), VendorsController.delete);

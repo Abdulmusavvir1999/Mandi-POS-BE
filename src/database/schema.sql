@@ -718,7 +718,6 @@ CREATE TABLE IF NOT EXISTS vendors (
   tax_id VARCHAR(50) NULL,
   pan_number VARCHAR(50) NULL,
   tax_category VARCHAR(50) DEFAULT 'STANDARD',
-  msme_number VARCHAR(50) NULL,
 
   payment_terms VARCHAR(50) DEFAULT 'NET_30',
   preferred_payment_method VARCHAR(50) DEFAULT 'BANK_TRANSFER',
@@ -729,7 +728,6 @@ CREATE TABLE IF NOT EXISTS vendors (
   upi_id VARCHAR(100) NULL,
 
   credit_limit DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
-  credit_period_days INT NOT NULL DEFAULT 30,
   outstanding_balance DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
   total_purchases_amount DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
   total_purchases_count INT NOT NULL DEFAULT 0,
