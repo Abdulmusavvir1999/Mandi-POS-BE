@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from 'async_hooks';
 import mysql, { Pool, PoolConnection, RowDataPacket, ResultSetHeader } from 'mysql2/promise';
 import { config } from '../config/env';
 import { logger } from '../config/logger';
-import { AppError } from '../core/errors/AppError';
+import { AppError } from '../errors/AppError';
 
 /**
  * MySQL/MariaDB data layer.

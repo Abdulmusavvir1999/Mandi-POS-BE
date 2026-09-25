@@ -2,7 +2,7 @@ import { createApp } from './app';
 import { config } from './config/env';
 import { logger } from './config/logger';
 import { dbService } from './database/db';
-import { CheckoutService } from './modules/checkout/checkout.service';
+import { CheckoutService } from './services/checkout.service';
 
 const startServer = async () => {
   try {

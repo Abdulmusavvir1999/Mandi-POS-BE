@@ -760,14 +760,21 @@ export async function runMysqlMigration() {
   for (const p of products) {
     const catId = catMap[p.cat] || 1;
     await conn.query(
-      `INSERT IGNORE INTO products (category_id, name, sku, cost_price, selling_price, tax_rate, stock_quantity, low_stock_threshold, is_available, status)
-       VALUES (?, ?, ?, ?, ?, 5.00, ?, 10, 1, 'ACTIVE')`,
-      [catId, p.name, p.sku, p.cost, p.price, p.stock]
+      `INSERT IGNORE INTO products (category_id, name, sku, tax_rate, stock_quantity, low_stock_threshold, is_available, status)
+       VALUES (?, ?, ?, 5.00, ?, 10, 1, 'ACTIVE')`,
+      [catId, p.name, p.sku, p.stock]
     );
 
     const [prodRow]: any = await conn.query(`SELECT id FROM products WHERE sku = ? LIMIT 1`, [p.sku]);
     if (prodRow.length > 0) {
       const prodId = prodRow[0].id;
+
+      await conn.query(
+        `INSERT IGNORE INTO product_variants (product_id, name, selling_price, stock_consumption, is_default, status)
+         VALUES (?, 'Standard Portion', ?, 1.000, 1, 'ACTIVE')`,
+        [prodId, p.price]
+      );
+
       await conn.query(
         `INSERT IGNORE INTO stock (product_id, current_stock, reserved_stock, min_stock_alert) VALUES (?, ?, 0, 10)`,
         [prodId, p.stock]
@@ -780,14 +787,16 @@ export async function runMysqlMigration() {
       const unitType = p.cat.includes('Beverages') ? 'liter' : p.cat.includes('Appetizers') ? 'portion' : 'piece';
 
       await conn.query(
-        `INSERT IGNORE INTO stock_items (uuid, stock_code, name, unit_type, current_quantity, current_value, average_unit_price, status, min_stock_alert, product_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 10.0, ?)`,
-        [itemUuid, stockCode, p.name, unitType, p.stock, totalVal, p.cost, prodId]
+        `INSERT IGNORE INTO stock_items (uuid, stock_code, name, unit_type, current_quantity, current_value, average_unit_price, status, min_stock_alert)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 10.0)`,
+        [itemUuid, stockCode, p.name, unitType, p.stock, totalVal, p.cost]
       );
 
       const [stkItemRow]: any = await conn.query(`SELECT id FROM stock_items WHERE stock_code = ? LIMIT 1`, [stockCode]);
       if (stkItemRow.length > 0) {
         const stkId = stkItemRow[0].id;
+        await conn.query(`UPDATE products SET stock_item_id = ? WHERE id = ?`, [stkId, prodId]);
+
         const entryNum = `ENT-${String(prodId).padStart(4, '0')}-INIT`;
         const entryUuid = `entry-${prodId}-${Date.now().toString(36)}`;
         const moveUuid = `move-${prodId}-${Date.now().toString(36)}`;

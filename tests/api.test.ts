@@ -97,7 +97,7 @@ describe(' Shop POS API Suite', () => {
 
     it('should list all dynamic roles and permissions from database', async () => {
       const rolesRes = await request(app)
-        .get('/api/roles')
+        .post('/api/roles/list')
         .set('Authorization', `Bearer ${adminToken}`);
       expect(rolesRes.status).toBe(200);
       expect(rolesRes.body.success).toBe(true);
@@ -106,7 +106,7 @@ describe(' Shop POS API Suite', () => {
       expect(rolesRes.body.data[0]).toHaveProperty('permissions');
 
       const permsRes = await request(app)
-        .get('/api/permissions')
+        .post('/api/permissions/list')
         .set('Authorization', `Bearer ${adminToken}`);
       expect(permsRes.status).toBe(200);
       expect(permsRes.body.success).toBe(true);
@@ -119,7 +119,7 @@ describe(' Shop POS API Suite', () => {
 
       // 1. Create custom role
       const createRes = await request(app)
-        .post('/api/roles')
+        .post('/api/roles/create')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({
           name: uniqueRoleName,
@@ -132,9 +132,10 @@ describe(' Shop POS API Suite', () => {
 
       // 2. Update role description and permissions
       const updateRes = await request(app)
-        .put(`/api/roles/${roleId}`)
+        .post('/api/roles/update')
         .set('Authorization', `Bearer ${adminToken}`)
         .send({
+          id: roleId,
           description: 'Updated shift supervisor',
           permissionIds: [1, 2],
         });
@@ -143,8 +144,9 @@ describe(' Shop POS API Suite', () => {
 
       // 3. Delete custom role (has 0 users)
       const deleteRes = await request(app)
-        .delete(`/api/roles/${roleId}`)
-        .set('Authorization', `Bearer ${adminToken}`);
+        .post('/api/roles/delete')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ id: roleId });
       expect(deleteRes.status).toBe(200);
       expect(deleteRes.body.success).toBe(true);
     });

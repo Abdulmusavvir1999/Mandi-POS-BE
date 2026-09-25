@@ -5,7 +5,7 @@
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc && node -e \"require('fs').cpSync('src/modules/backup/scripts','dist/modules/backup/scripts',{recursive:true})\"",
+    "build": "tsc && node -e \"require('fs').cpSync('src/scripts/pick-folder.ps1','dist/scripts/pick-folder.ps1')\"",
     "start": "node dist/server.js",
     "seed": "tsx src/database/seeders.ts",
     "db:migrate:mysql": "tsx src/database/mysql_migrator.ts",

@@ -2,10 +2,10 @@ import express from 'express';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import { corsMiddleware } from './config/cors';
-import { requestLoggerMiddleware } from './core/middleware/request-logger.middleware';
-import { errorHandler, notFoundHandler } from './core/middleware/error.middleware';
+import { requestLoggerMiddleware } from './middlewares/request-logger.middleware';
+import { errorHandler, notFoundHandler } from './middlewares/error.middleware';
 import apiRoutes from './routes';
-import { UPLOAD_ROOT } from './modules/settings/branding.service';
+import { UPLOAD_ROOT } from './services/branding.service';
 
 export const createApp = (): express.Application => {
   const app = express();
