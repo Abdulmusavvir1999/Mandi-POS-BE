@@ -90,7 +90,6 @@ CREATE TABLE IF NOT EXISTS categories (
   id INT AUTO_INCREMENT PRIMARY KEY,
   name VARCHAR(100) NOT NULL,
   description TEXT,
-  icon VARCHAR(50),
   image_url VARCHAR(255),
   display_order INT DEFAULT 0,
   status ENUM('ACTIVE', 'INACTIVE') DEFAULT 'ACTIVE',
@@ -107,8 +106,6 @@ CREATE TABLE IF NOT EXISTS products (
   sku VARCHAR(50) NOT NULL UNIQUE,
   description TEXT,
   image_url VARCHAR(255),
-  cost_price DECIMAL(10,2) DEFAULT 0.00,
-  selling_price DECIMAL(10,2) NOT NULL,
   tax_rate DECIMAL(5,2) DEFAULT 5.00,
   stock_quantity INT DEFAULT 0,
   low_stock_threshold INT DEFAULT 10,
@@ -155,22 +152,12 @@ CREATE TABLE IF NOT EXISTS stock_items (
   current_quantity DECIMAL(12,3) NOT NULL DEFAULT 0.000,
   current_value DECIMAL(14,2) NOT NULL DEFAULT 0.00,
   average_unit_price DECIMAL(14,4) NOT NULL DEFAULT 0.0000,
-  status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
   min_stock_alert DECIMAL(12,3) NOT NULL DEFAULT 10.000,
-  reorder_level DECIMAL(12,3) NOT NULL DEFAULT 15.000,
-  reorder_quantity DECIMAL(12,3) NOT NULL DEFAULT 50.000,
-  max_stock_threshold DECIMAL(12,3) NOT NULL DEFAULT 100.000,
-  shelf_life_days INT NULL,
-  product_id INT NULL,
-  default_vendor_id INT NULL,
+  status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL,
   INDEX idx_stock_items_code (stock_code),
-  INDEX idx_stock_items_status (status),
-  INDEX idx_stock_items_product (product_id),
-  INDEX idx_stock_items_default_vendor (default_vendor_id),
-  INDEX idx_stock_items_reorder (reorder_level, current_quantity)
+  INDEX idx_stock_items_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Purchase / addition ledger. expiry_date and batch_number support the expiry
@@ -283,9 +270,7 @@ CREATE TABLE IF NOT EXISTS customers (
   email VARCHAR(100),
   address TEXT,
   image_url VARCHAR(255),
-  notes TEXT,
   status ENUM('ACTIVE', 'INACTIVE') DEFAULT 'ACTIVE',
-  tier VARCHAR(30) NOT NULL DEFAULT 'REGULAR',
   loyalty_points INT NOT NULL DEFAULT 0,
   last_visit_at DATETIME NULL,
   total_visits INT DEFAULT 0,
@@ -636,11 +621,15 @@ CREATE TABLE IF NOT EXISTS product_addons (
   is_available BOOLEAN DEFAULT TRUE,
   stock_item_id INT NULL,
   status ENUM('ACTIVE', 'INACTIVE') DEFAULT 'ACTIVE',
+  is_deleted TINYINT(1) NOT NULL DEFAULT 0,
+  deleted_at DATETIME NULL,
+  deleted_by INT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_addon_name (name),
   INDEX idx_addon_category (category),
-  INDEX idx_addon_status (status)
+  INDEX idx_addon_status (status),
+  INDEX idx_addon_is_deleted (is_deleted)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- An add-on reaches the till through one of three routes: pinned to a product,
@@ -672,10 +661,14 @@ CREATE TABLE IF NOT EXISTS combo_deals (
   savings_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
   is_available BOOLEAN DEFAULT TRUE,
   status ENUM('ACTIVE', 'INACTIVE') DEFAULT 'ACTIVE',
+  is_deleted TINYINT(1) NOT NULL DEFAULT 0,
+  deleted_at DATETIME NULL,
+  deleted_by INT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_combo_deal_code (combo_code),
-  INDEX idx_combo_deal_status (status)
+  INDEX idx_combo_deal_status (status),
+  INDEX idx_combo_deal_is_deleted (is_deleted)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS combo_deal_items (
@@ -709,48 +702,34 @@ CREATE TABLE IF NOT EXISTS vendors (
   contact_person VARCHAR(100) NULL,
   phone VARCHAR(30) NOT NULL,
   email VARCHAR(100) NULL,
+  website VARCHAR(255) NULL,
   address TEXT NULL,
   city VARCHAR(100) NULL,
   state VARCHAR(100) NULL,
   postal_code VARCHAR(20) NULL,
-  website VARCHAR(255) NULL,
 
   tax_id VARCHAR(50) NULL,
   pan_number VARCHAR(50) NULL,
-  tax_category VARCHAR(50) DEFAULT 'STANDARD',
+  outstanding_balance DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
 
-  payment_terms VARCHAR(50) DEFAULT 'NET_30',
   preferred_payment_method VARCHAR(50) DEFAULT 'BANK_TRANSFER',
   bank_name VARCHAR(100) NULL,
   account_number VARCHAR(50) NULL,
   ifsc_code VARCHAR(50) NULL,
-  branch_name VARCHAR(100) NULL,
   upi_id VARCHAR(100) NULL,
-
-  credit_limit DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
-  outstanding_balance DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
-  total_purchases_amount DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
-  total_purchases_count INT NOT NULL DEFAULT 0,
-  last_purchase_date DATETIME NULL,
-  last_payment_date DATETIME NULL,
-
-  rating DECIMAL(3, 2) NOT NULL DEFAULT 5.00,
-  delivery_speed_rating DECIMAL(3, 2) NOT NULL DEFAULT 5.00,
-  quality_rating DECIMAL(3, 2) NOT NULL DEFAULT 5.00,
-  pricing_rating DECIMAL(3, 2) NOT NULL DEFAULT 5.00,
-  on_time_delivery_rate DECIMAL(5, 2) NOT NULL DEFAULT 100.00,
-  quality_score DECIMAL(5, 2) NOT NULL DEFAULT 100.00,
-  fulfillment_rate DECIMAL(5, 2) NOT NULL DEFAULT 100.00,
-  performance_notes TEXT NULL,
 
   created_by INT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  is_deleted TINYINT(1) NOT NULL DEFAULT 0,
+  deleted_at DATETIME NULL,
+  deleted_by INT NULL,
   INDEX idx_vendors_code (vendor_code),
   INDEX idx_vendors_name (name),
   INDEX idx_vendors_category (category),
   INDEX idx_vendors_status (status),
-  INDEX idx_vendors_phone (phone)
+  INDEX idx_vendors_phone (phone),
+  INDEX idx_vendors_is_deleted (is_deleted)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS vendor_purchases (

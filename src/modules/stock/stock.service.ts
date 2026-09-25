@@ -26,20 +26,62 @@ export class StockService {
     if (this.schemaEnsured) return;
 
     try {
-      const colCheck = await dbService.queryOne<{ count: number }>(
-        `SELECT COUNT(*) as count
-         FROM INFORMATION_SCHEMA.COLUMNS
-         WHERE TABLE_SCHEMA = DATABASE()
-           AND TABLE_NAME = 'stock_items'
-           AND COLUMN_NAME = 'default_vendor_id'`
-      );
+      const dropColumnSafe = async (table: string, colName: string) => {
+        try {
+          const colCheck = await dbService.queryOne<{ count: number }>(`
+            SELECT COUNT(*) as count 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_SCHEMA = DATABASE() 
+              AND TABLE_NAME = ? 
+              AND COLUMN_NAME = ?
+          `, [table, colName]);
+          if (colCheck && colCheck.count > 0) {
+            try {
+              const fkCheck = await dbService.query<{ CONSTRAINT_NAME: string }>(`
+                SELECT CONSTRAINT_NAME
+                FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = ?
+                  AND COLUMN_NAME = ?
+                  AND REFERENCED_TABLE_NAME IS NOT NULL
+              `, [table, colName]);
+              for (const fk of fkCheck) {
+                await dbService.execute(`ALTER TABLE \`${table}\` DROP FOREIGN KEY \`${fk.CONSTRAINT_NAME}\``);
+              }
+            } catch (_) {}
 
-      if (!colCheck || colCheck.count === 0) {
-        await dbService.execute('ALTER TABLE stock_items ADD COLUMN default_vendor_id INT NULL AFTER product_id');
-        await dbService.execute('CREATE INDEX idx_stock_items_default_vendor ON stock_items(default_vendor_id)');
-      }
+            try {
+              const idxCheck = await dbService.query<{ INDEX_NAME: string }>(`
+                SELECT DISTINCT INDEX_NAME
+                FROM INFORMATION_SCHEMA.STATISTICS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME = ?
+                  AND COLUMN_NAME = ?
+                  AND INDEX_NAME != 'PRIMARY'
+              `, [table, colName]);
+              for (const idx of idxCheck) {
+                await dbService.execute(`ALTER TABLE \`${table}\` DROP INDEX \`${idx.INDEX_NAME}\``);
+              }
+            } catch (_) {}
+
+            await dbService.execute(`ALTER TABLE \`${table}\` DROP COLUMN \`${colName}\``);
+          }
+        } catch (e) {
+          logger.warn(`Could not drop column ${colName} from ${table}:`, e);
+        }
+      };
+
+      await dropColumnSafe('stock_items', 'reorder_level');
+      await dropColumnSafe('stock_items', 'reorder_quantity');
+      await dropColumnSafe('stock_items', 'max_stock_threshold');
+      await dropColumnSafe('stock_items', 'shelf_life_days');
+      await dropColumnSafe('stock_items', 'default_vendor_id');
+      await dropColumnSafe('stock_items', 'product_id');
+      await dropColumnSafe('stock_items', 'is_deleted');
+      await dropColumnSafe('stock_items', 'deleted_at');
+      await dropColumnSafe('stock_items', 'deleted_by');
     } catch (e) {
-      logger.warn('Could not ensure stock_items.default_vendor_id:', e);
+      logger.warn('Could not ensure stock_items schema:', e);
     }
 
     this.schemaEnsured = true;
@@ -93,14 +135,9 @@ export class StockService {
     }
 
     if (search) {
-      where += ' AND (si.name LIKE ? OR si.stock_code LIKE ? OR p.sku LIKE ? OR p.name LIKE ?)';
+      where += ' AND (si.name LIKE ? OR si.stock_code LIKE ?)';
       const term = ParamUtil.like(search);
-      params.push(term, term, term, term);
-    }
-
-    if (categoryId) {
-      where += ' AND p.category_id = ?';
-      params.push(categoryId);
+      params.push(term, term);
     }
 
     if (lowStockOnly) {
@@ -110,8 +147,6 @@ export class StockService {
     const countRes = await dbService.queryOne<{ total: number }>(
       `SELECT COUNT(*) as total
        FROM stock_items si
-       LEFT JOIN products p ON si.product_id = p.id
-       LEFT JOIN categories c ON p.category_id = c.id
        ${where}`,
       params
     );
@@ -129,28 +164,15 @@ export class StockService {
          COALESCE(SUM(si.current_value), 0) as total_valuation,
          COALESCE(SUM(CASE WHEN si.current_quantity <= si.min_stock_alert THEN 1 ELSE 0 END), 0) as low_stock_count
        FROM stock_items si
-       LEFT JOIN products p ON si.product_id = p.id
        ${where}`,
       params
     );
 
     const stockItems = await dbService.query(
       `SELECT si.*,
-              p.id as product_id,
-              p.name as product_name,
-              p.sku,
-              p.selling_price,
-              p.cost_price as product_cost_price,
-              c.name as category_name,
-              v.name as default_vendor_name,
-              v.vendor_code as default_vendor_code,
-              v.status as default_vendor_status,
               (si.current_quantity <= si.min_stock_alert) as is_low_stock,
               si.current_quantity as current_stock
        FROM stock_items si
-       LEFT JOIN products p ON si.product_id = p.id
-       LEFT JOIN categories c ON p.category_id = c.id
-       LEFT JOIN vendors v ON si.default_vendor_id = v.id
        ${where}
        ORDER BY (si.current_quantity <= si.min_stock_alert) DESC, si.name ASC
        LIMIT ? OFFSET ?`,
@@ -181,18 +203,8 @@ export class StockService {
     await this.ensureSchema();
 
     const item = await dbService.queryOne(
-      `SELECT si.*,
-              p.name as product_name,
-              p.sku,
-              p.selling_price,
-              c.name as category_name,
-              v.name as default_vendor_name,
-              v.vendor_code as default_vendor_code,
-              v.status as default_vendor_status
+      `SELECT si.*
        FROM stock_items si
-       LEFT JOIN products p ON si.product_id = p.id
-       LEFT JOIN categories c ON p.category_id = c.id
-       LEFT JOIN vendors v ON si.default_vendor_id = v.id
        WHERE si.id = ?`,
       [id]
     );
@@ -292,19 +304,12 @@ export class StockService {
         unitPrice = 0;
       }
 
-      const reorderLevel = data.reorderLevel !== undefined ? Number(data.reorderLevel) : 10.0;
-      const reorderQty = data.reorderQuantity !== undefined ? Number(data.reorderQuantity) : 20.0;
-      const maxThreshold = data.maxStockThreshold !== undefined ? Number(data.maxStockThreshold) : 100.0;
-      const shelfLife = data.shelfLifeDays !== undefined ? Number(data.shelfLifeDays) : null;
-
       const res = await dbService.execute(
         `INSERT INTO stock_items (
           uuid, stock_code, name, unit_type, current_quantity,
-          current_value, average_unit_price, status, min_stock_alert,
-          reorder_level, reorder_quantity, max_stock_threshold, shelf_life_days, product_id,
-          default_vendor_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
-        [uuid, code, data.name, unitType, totalQty, totalPrice, unitPrice, minAlert, reorderLevel, reorderQty, maxThreshold, shelfLife, data.productId || null, vendor?.id ?? null]
+          current_value, average_unit_price, status, min_stock_alert
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
+        [uuid, code, data.name, unitType, totalQty, totalPrice, unitPrice, minAlert]
       );
 
       const stockItemId = res.lastInsertRowid;
@@ -356,12 +361,7 @@ export class StockService {
       name?: string;
       unitType?: StockUnitType;
       minStockAlert?: number;
-      reorderLevel?: number;
-      reorderQuantity?: number;
-      maxStockThreshold?: number;
-      shelfLifeDays?: number;
       status?: 'active' | 'inactive';
-      vendorId?: number;
     },
     userId: number
   ) {
@@ -369,33 +369,19 @@ export class StockService {
 
     const current = await this.getStockItemById(id);
 
-    // COALESCE leaves the column alone when nothing is sent, so an edit that
-    // does not touch the supplier cannot blank it.
-    const vendor = data.vendorId ? await this.resolveVendor(data.vendorId) : null;
-
     await dbService.execute(
       `UPDATE stock_items
        SET name = COALESCE(?, name),
            unit_type = COALESCE(?, unit_type),
            min_stock_alert = COALESCE(?, min_stock_alert),
-           reorder_level = COALESCE(?, reorder_level),
-           reorder_quantity = COALESCE(?, reorder_quantity),
-           max_stock_threshold = COALESCE(?, max_stock_threshold),
-           shelf_life_days = COALESCE(?, shelf_life_days),
            status = COALESCE(?, status),
-           default_vendor_id = COALESCE(?, default_vendor_id),
            updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
       [
         data.name,
         data.unitType,
         data.minStockAlert,
-        data.reorderLevel,
-        data.reorderQuantity,
-        data.maxStockThreshold,
-        data.shelfLifeDays,
         data.status,
-        vendor?.id ?? null,
         id,
       ]
     );
@@ -1019,8 +1005,6 @@ export class StockService {
          COUNT(DISTINCT CASE WHEN si.current_quantity <= 0 THEN si.id END) as out_of_stock_count,
          COUNT(DISTINCT CASE WHEN si.current_quantity > 0 AND si.current_quantity <= si.min_stock_alert THEN si.id END) as low_stock_count,
          COUNT(DISTINCT CASE WHEN si.current_quantity <= si.min_stock_alert THEN si.id END) as min_stock_count,
-         COUNT(DISTINCT CASE WHEN si.current_quantity <= si.reorder_level THEN si.id END) as reorder_level_count,
-         COUNT(DISTINCT CASE WHEN si.max_stock_threshold > 0 AND si.current_quantity > si.max_stock_threshold THEN si.id END) as overstock_count,
          COUNT(DISTINCT CASE WHEN se.expiry_date IS NOT NULL AND se.expiry_date < CURDATE() THEN si.id END) as expired_count,
          COUNT(DISTINCT CASE WHEN se.expiry_date IS NOT NULL AND se.expiry_date >= CURDATE() AND se.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 30 DAY) THEN si.id END) as expiring_soon_count
        FROM stock_items si
@@ -1031,18 +1015,12 @@ export class StockService {
     const itemsQuery = `
       SELECT
         si.*,
-        p.name as product_name,
-        p.sku,
-        p.selling_price,
-        c.name as category_name,
         latest_exp.batch_number as latest_batch,
         latest_exp.expiry_date as nearest_expiry_date,
         DATEDIFF(latest_exp.expiry_date, CURDATE()) as days_until_expiry,
         CASE
           WHEN si.current_quantity <= 0 THEN 'OUT_OF_STOCK'
           WHEN si.current_quantity <= si.min_stock_alert THEN 'LOW_STOCK'
-          WHEN si.current_quantity <= si.reorder_level THEN 'REORDER_LEVEL'
-          WHEN si.max_stock_threshold > 0 AND si.current_quantity > si.max_stock_threshold THEN 'OVERSTOCK'
           WHEN latest_exp.expiry_date IS NOT NULL AND latest_exp.expiry_date < CURDATE() THEN 'EXPIRED'
           WHEN latest_exp.expiry_date IS NOT NULL AND latest_exp.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 30 DAY) THEN 'EXPIRING_SOON'
           ELSE 'NORMAL'
@@ -1052,16 +1030,12 @@ export class StockService {
           WHEN si.current_quantity <= (si.min_stock_alert / 2) THEN 'critical'
           WHEN latest_exp.expiry_date IS NOT NULL AND latest_exp.expiry_date < CURDATE() THEN 'critical'
           WHEN si.current_quantity <= si.min_stock_alert THEN 'warning'
-          WHEN si.current_quantity <= si.reorder_level THEN 'warning'
           WHEN latest_exp.expiry_date IS NOT NULL AND latest_exp.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 7 DAY) THEN 'warning'
-          WHEN si.max_stock_threshold > 0 AND si.current_quantity > si.max_stock_threshold THEN 'info'
           WHEN latest_exp.expiry_date IS NOT NULL AND latest_exp.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 30 DAY) THEN 'info'
           ELSE 'normal'
         END as severity,
-        GREATEST(0, (COALESCE(si.reorder_quantity, 20) + GREATEST(0, COALESCE(si.reorder_level, 10) - si.current_quantity))) as suggested_reorder_quantity
+        GREATEST(0, (COALESCE(si.min_stock_alert, 10) * 2 - si.current_quantity)) as suggested_reorder_quantity
       FROM stock_items si
-      LEFT JOIN products p ON si.product_id = p.id
-      LEFT JOIN categories c ON p.category_id = c.id
       LEFT JOIN (
         SELECT se1.stock_item_id, se1.batch_number, se1.expiry_date
         FROM stock_entries se1
@@ -1131,7 +1105,7 @@ export class StockService {
               si.current_quantity as current_stock,
               p.selling_price
        FROM stock_items si
-       LEFT JOIN products p ON si.product_id = p.id
+       LEFT JOIN products p ON p.stock_item_id = si.id
        LEFT JOIN categories c ON p.category_id = c.id
        WHERE si.status = 'active' AND si.current_quantity <= si.min_stock_alert
        ORDER BY si.current_quantity ASC`

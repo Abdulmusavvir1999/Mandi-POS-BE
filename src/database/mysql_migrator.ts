@@ -99,7 +99,6 @@ export async function runMysqlMigration() {
       id INT AUTO_INCREMENT PRIMARY KEY,
       name VARCHAR(100) NOT NULL,
       description TEXT,
-      icon VARCHAR(50),
       image_url VARCHAR(255),
       display_order INT DEFAULT 0,
       status ENUM('ACTIVE', 'INACTIVE') DEFAULT 'ACTIVE',
@@ -115,8 +114,6 @@ export async function runMysqlMigration() {
       sku VARCHAR(50) NOT NULL UNIQUE,
       description TEXT,
       image_url VARCHAR(255),
-      cost_price DECIMAL(10,2) DEFAULT 0.00,
-      selling_price DECIMAL(10,2) NOT NULL,
       tax_rate DECIMAL(5,2) DEFAULT 5.00,
       stock_quantity INT DEFAULT 0,
       low_stock_threshold INT DEFAULT 10,
@@ -158,17 +155,12 @@ export async function runMysqlMigration() {
       current_quantity DECIMAL(12,3) NOT NULL DEFAULT 0.000,
       current_value DECIMAL(14,2) NOT NULL DEFAULT 0.00,
       average_unit_price DECIMAL(14,4) NOT NULL DEFAULT 0.0000,
-      status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
       min_stock_alert DECIMAL(12,3) NOT NULL DEFAULT 10.000,
-      product_id INT NULL,
-      default_vendor_id INT NULL,
+      status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL,
       INDEX idx_stock_items_code (stock_code),
-      INDEX idx_stock_items_status (status),
-      INDEX idx_stock_items_product (product_id),
-      INDEX idx_stock_items_default_vendor (default_vendor_id)
+      INDEX idx_stock_items_status (status)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
     -- 8. Stock Entries (Purchase / Addition Ledger)
@@ -265,13 +257,15 @@ export async function runMysqlMigration() {
     -- 10. Customers table
     CREATE TABLE IF NOT EXISTS customers (
       id INT AUTO_INCREMENT PRIMARY KEY,
+      customer_code VARCHAR(50) NULL,
       name VARCHAR(100) NOT NULL,
       phone VARCHAR(20) NOT NULL UNIQUE,
       email VARCHAR(100),
       address TEXT,
       image_url VARCHAR(255),
-      notes TEXT,
       status ENUM('ACTIVE', 'INACTIVE') DEFAULT 'ACTIVE',
+      loyalty_points INT NOT NULL DEFAULT 0,
+      last_visit_at DATETIME NULL,
       total_visits INT DEFAULT 0,
       total_spent DECIMAL(10,2) DEFAULT 0.00,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -285,8 +279,12 @@ export async function runMysqlMigration() {
       name VARCHAR(50) NOT NULL,
       section VARCHAR(50) DEFAULT 'Main Hall',
       capacity INT DEFAULT 4,
-      status ENUM('AVAILABLE', 'SELECTED', 'OCCUPIED', 'UNAVAILABLE') DEFAULT 'AVAILABLE',
+      active_guest_count INT NOT NULL DEFAULT 0,
+      status VARCHAR(30) NOT NULL DEFAULT 'AVAILABLE',
       current_order_id INT NULL,
+      seated_at DATETIME NULL,
+      cleaning_started_at DATETIME NULL,
+      reservation_id INT NULL,
       display_order INT DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -308,6 +306,10 @@ export async function runMysqlMigration() {
       tax_amount DECIMAL(10,2) DEFAULT 0.00,
       total_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
       notes TEXT,
+      is_deleted TINYINT(1) NOT NULL DEFAULT 0,
+      deleted_at DATETIME NULL,
+      deleted_by INT NULL,
+      delete_reason TEXT NULL,
       created_by INT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -398,9 +400,17 @@ export async function runMysqlMigration() {
       discount_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
       tax_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
       total_amount DECIMAL(10,2) NOT NULL,
-      payment_status ENUM('PAID', 'PENDING', 'FAILED', 'REFUNDED') DEFAULT 'PAID',
-      payment_method ENUM('CASH', 'CARD', 'UPI', 'OTHER') NOT NULL,
+      payment_status VARCHAR(30) NOT NULL DEFAULT 'PAID',
+      payment_method VARCHAR(30) NOT NULL,
       notes TEXT,
+      is_voided BOOLEAN DEFAULT FALSE,
+      void_reason TEXT NULL,
+      void_by INT NULL,
+      void_at DATETIME NULL,
+      is_deleted TINYINT(1) NOT NULL DEFAULT 0,
+      deleted_at DATETIME NULL,
+      deleted_by INT NULL,
+      delete_reason TEXT NULL,
       printed_count INT DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -488,6 +498,96 @@ export async function runMysqlMigration() {
       FOREIGN KEY (user_id) REFERENCES users(id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+    -- 23. Vendors table
+    CREATE TABLE IF NOT EXISTS vendors (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      uuid VARCHAR(64) NOT NULL UNIQUE,
+      vendor_code VARCHAR(50) NOT NULL UNIQUE,
+      name VARCHAR(150) NOT NULL,
+      category VARCHAR(100) NOT NULL DEFAULT 'General Supplies',
+      status ENUM('ACTIVE', 'INACTIVE', 'BLOCKED') NOT NULL DEFAULT 'ACTIVE',
+      image_url VARCHAR(255) NULL,
+      notes TEXT NULL,
+
+      contact_person VARCHAR(100) NULL,
+      phone VARCHAR(30) NOT NULL,
+      email VARCHAR(100) NULL,
+      website VARCHAR(255) NULL,
+      address TEXT NULL,
+      city VARCHAR(100) NULL,
+      state VARCHAR(100) NULL,
+      postal_code VARCHAR(20) NULL,
+
+      tax_id VARCHAR(50) NULL,
+      pan_number VARCHAR(50) NULL,
+      outstanding_balance DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
+
+      preferred_payment_method VARCHAR(50) DEFAULT 'BANK_TRANSFER',
+      bank_name VARCHAR(100) NULL,
+      account_number VARCHAR(50) NULL,
+      ifsc_code VARCHAR(50) NULL,
+      upi_id VARCHAR(100) NULL,
+
+      created_by INT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      is_deleted TINYINT(1) NOT NULL DEFAULT 0,
+      deleted_at DATETIME NULL,
+      deleted_by INT NULL,
+      INDEX idx_vendors_code (vendor_code),
+      INDEX idx_vendors_name (name),
+      INDEX idx_vendors_category (category),
+      INDEX idx_vendors_status (status),
+      INDEX idx_vendors_phone (phone),
+      INDEX idx_vendors_is_deleted (is_deleted)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+    -- 24. Vendor Purchases table
+    CREATE TABLE IF NOT EXISTS vendor_purchases (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      uuid VARCHAR(64) NOT NULL UNIQUE,
+      vendor_id INT NOT NULL,
+      invoice_number VARCHAR(100) NOT NULL,
+      order_date DATETIME NOT NULL,
+      due_date DATETIME NULL,
+      total_amount DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
+      paid_amount DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
+      balance_amount DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
+      payment_status ENUM('PAID', 'PARTIAL', 'UNPAID', 'OVERDUE') NOT NULL DEFAULT 'UNPAID',
+      delivery_status ENUM('RECEIVED', 'PENDING', 'CANCELLED') NOT NULL DEFAULT 'RECEIVED',
+      items_summary TEXT NULL,
+      notes TEXT NULL,
+      created_by INT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_vp_vendor_id (vendor_id),
+      INDEX idx_vp_invoice (invoice_number),
+      INDEX idx_vp_payment_status (payment_status),
+      INDEX idx_vp_order_date (order_date),
+      FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+    -- 25. Vendor Payments table
+    CREATE TABLE IF NOT EXISTS vendor_payments (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      uuid VARCHAR(64) NOT NULL UNIQUE,
+      vendor_id INT NOT NULL,
+      purchase_id INT NULL,
+      payment_number VARCHAR(100) NOT NULL UNIQUE,
+      payment_date DATETIME NOT NULL,
+      amount DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
+      payment_method VARCHAR(50) NOT NULL DEFAULT 'BANK_TRANSFER',
+      reference_number VARCHAR(100) NULL,
+      notes TEXT NULL,
+      created_by INT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_vpay_vendor_id (vendor_id),
+      INDEX idx_vpay_purchase_id (purchase_id),
+      INDEX idx_vpay_date (payment_date),
+      FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE CASCADE,
+      FOREIGN KEY (purchase_id) REFERENCES vendor_purchases(id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
     SET FOREIGN_KEY_CHECKS = 1;
   `;
 
@@ -533,6 +633,8 @@ export async function runMysqlMigration() {
     { code: 'user.manage', module: 'USERS', description: 'Manage system users and role assignments' },
     { code: 'settings.manage', module: 'SETTINGS', description: 'Manage restaurant profile, tax and receipt configuration' },
     { code: 'dashboard.view', module: 'DASHBOARD', description: 'Access executive analytics dashboard' },
+    { code: 'vendor.view', module: 'VENDORS', description: 'View vendor list, profiles and purchase records' },
+    { code: 'vendor.manage', module: 'VENDORS', description: 'Create, edit, delete vendors and record purchases and payments' },
   ];
 
   for (const perm of permissions) {

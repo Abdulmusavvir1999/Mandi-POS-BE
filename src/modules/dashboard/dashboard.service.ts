@@ -1,7 +1,10 @@
 import { dbService } from '../../database/db';
+import { CheckoutService } from '../checkout/checkout.service';
 
 export class DashboardService {
   static async getMetrics() {
+    await CheckoutService.ensureSchema();
+
     // 1. Today's & Lifetime Financials
     const financialStats = await dbService.queryOne<{
       today_sales: number;

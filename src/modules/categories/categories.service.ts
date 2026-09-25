@@ -4,7 +4,28 @@ import { AuditService } from '../audit/audit.service';
 import { CategoryImageService } from './category-image.service';
 
 export class CategoriesService {
+  private static schemaEnsured = false;
+
+  static async ensureSchema(): Promise<void> {
+    if (this.schemaEnsured) return;
+    try {
+      // Safely drop deprecated 'icon' column if it exists
+      const iconColCheck = await dbService.queryOne<{ count: number }>(`
+        SELECT COUNT(*) as count 
+        FROM INFORMATION_SCHEMA.COLUMNS 
+        WHERE TABLE_SCHEMA = DATABASE() 
+          AND TABLE_NAME = 'categories' 
+          AND COLUMN_NAME = 'icon'
+      `);
+      if (iconColCheck && iconColCheck.count > 0) {
+        await dbService.execute('ALTER TABLE categories DROP COLUMN icon');
+      }
+      this.schemaEnsured = true;
+    } catch (_) {}
+  }
+
   static async getAll(includeInactive = false) {
+    await this.ensureSchema();
     const where = includeInactive ? '' : "WHERE status = 'ACTIVE'";
     const categories = await dbService.query(
       `SELECT c.*, (SELECT COUNT(*) FROM products p WHERE p.category_id = c.id) as product_count
@@ -16,6 +37,7 @@ export class CategoriesService {
   }
 
   static async getById(id: number) {
+    await this.ensureSchema();
     const category = await dbService.queryOne(
       `SELECT c.*, (SELECT COUNT(*) FROM products p WHERE p.category_id = c.id) as product_count
        FROM categories c
@@ -28,11 +50,12 @@ export class CategoriesService {
     return category;
   }
 
-  static async create(data: { name: string; description?: string; icon?: string; image_url?: string; display_order?: number; status?: string }, userId: number) {
+  static async create(data: { name: string; description?: string; image_url?: string; display_order?: number; status?: string }, userId: number) {
+    await this.ensureSchema();
     const res = await dbService.execute(
-      `INSERT INTO categories (name, description, icon, image_url, display_order, status)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [data.name, data.description || null, data.icon || 'utensils', data.image_url || null, data.display_order || 0, data.status || 'ACTIVE']
+      `INSERT INTO categories (name, description, image_url, display_order, status)
+       VALUES (?, ?, ?, ?, ?)`,
+      [data.name, data.description || null, data.image_url || null, data.display_order || 0, data.status || 'ACTIVE']
     );
 
     await AuditService.log({
@@ -46,7 +69,8 @@ export class CategoriesService {
     return await this.getById(res.lastInsertRowid);
   }
 
-  static async update(id: number, data: { name?: string; description?: string; icon?: string; image_url?: string; display_order?: number; status?: string }, userId: number) {
+  static async update(id: number, data: { name?: string; description?: string; image_url?: string; display_order?: number; status?: string }, userId: number) {
+    await this.ensureSchema();
     const current = await this.getById(id);
 
     // A replaced or cleared image leaves its file behind otherwise, and a POS
@@ -58,13 +82,12 @@ export class CategoriesService {
       `UPDATE categories
        SET name = COALESCE(?, name),
            description = COALESCE(?, description),
-           icon = COALESCE(?, icon),
            image_url = COALESCE(?, image_url),
            display_order = COALESCE(?, display_order),
            status = COALESCE(?, status),
            updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
-      [data.name, data.description, data.icon, data.image_url, data.display_order, data.status, id]
+      [data.name, data.description, data.image_url, data.display_order, data.status, id]
     );
 
     await AuditService.log({
@@ -80,6 +103,7 @@ export class CategoriesService {
   }
 
   static async delete(id: number, userId: number) {
+    await this.ensureSchema();
     const current = await this.getById(id);
     const prodCount = await dbService.queryOne<{ count: number }>('SELECT COUNT(*) as count FROM products WHERE category_id = ?', [id]);
     if (prodCount && prodCount.count > 0) {

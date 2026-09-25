@@ -24,26 +24,14 @@ export interface CreateVendorInput {
 
   tax_id?: string;
   pan_number?: string;
-  tax_category?: string;
 
-  payment_terms?: string;
   preferred_payment_method?: string;
   bank_name?: string;
   account_number?: string;
   ifsc_code?: string;
-  branch_name?: string;
   upi_id?: string;
 
-  credit_limit?: number;
-
-  rating?: number;
-  delivery_speed_rating?: number;
-  quality_rating?: number;
-  pricing_rating?: number;
-  on_time_delivery_rate?: number;
-  quality_score?: number;
-  fulfillment_rate?: number;
-  performance_notes?: string;
+  outstanding_balance?: number;
 }
 
 export interface RecordPurchaseInput {
@@ -99,40 +87,27 @@ export class VendorsService {
 
           tax_id VARCHAR(50) NULL,
           pan_number VARCHAR(50) NULL,
-          tax_category VARCHAR(50) DEFAULT 'STANDARD',
 
-          payment_terms VARCHAR(50) DEFAULT 'NET_30',
           preferred_payment_method VARCHAR(50) DEFAULT 'BANK_TRANSFER',
           bank_name VARCHAR(100) NULL,
           account_number VARCHAR(50) NULL,
           ifsc_code VARCHAR(50) NULL,
-          branch_name VARCHAR(100) NULL,
           upi_id VARCHAR(100) NULL,
 
-          credit_limit DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
           outstanding_balance DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
-          total_purchases_amount DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
-          total_purchases_count INT NOT NULL DEFAULT 0,
-          last_purchase_date DATETIME NULL,
-          last_payment_date DATETIME NULL,
-
-          rating DECIMAL(3, 2) NOT NULL DEFAULT 5.00,
-          delivery_speed_rating DECIMAL(3, 2) NOT NULL DEFAULT 5.00,
-          quality_rating DECIMAL(3, 2) NOT NULL DEFAULT 5.00,
-          pricing_rating DECIMAL(3, 2) NOT NULL DEFAULT 5.00,
-          on_time_delivery_rate DECIMAL(5, 2) NOT NULL DEFAULT 100.00,
-          quality_score DECIMAL(5, 2) NOT NULL DEFAULT 100.00,
-          fulfillment_rate DECIMAL(5, 2) NOT NULL DEFAULT 100.00,
-          performance_notes TEXT NULL,
 
           created_by INT NULL,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          is_deleted TINYINT(1) NOT NULL DEFAULT 0,
+          deleted_at DATETIME NULL,
+          deleted_by INT NULL,
           INDEX idx_vendors_code (vendor_code),
           INDEX idx_vendors_name (name),
           INDEX idx_vendors_category (category),
           INDEX idx_vendors_status (status),
-          INDEX idx_vendors_phone (phone)
+          INDEX idx_vendors_phone (phone),
+          INDEX idx_vendors_is_deleted (is_deleted)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
       `);
 
@@ -184,19 +159,51 @@ export class VendorsService {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
       `);
 
-      // 2. Drop deprecated columns from existing DB schema if present
+      // 2. Drop deprecated/extra columns from existing DB schema if present
+      const colsToDrop = [
+        'msme_number',
+        'credit_period_days',
+        'tax_category',
+        'payment_terms',
+        'branch_name',
+        'credit_limit',
+        'total_purchases_amount',
+        'total_purchases_count',
+        'last_purchase_date',
+        'last_payment_date',
+        'rating',
+        'delivery_speed_rating',
+        'quality_rating',
+        'pricing_rating',
+        'on_time_delivery_rate',
+        'quality_score',
+        'fulfillment_rate',
+        'performance_notes',
+      ];
+      for (const col of colsToDrop) {
+        try {
+          await dbService.execute(`ALTER TABLE vendors DROP COLUMN \`${col}\``);
+        } catch (_) {}
+      }
+
       try {
-        await dbService.execute(`ALTER TABLE vendors DROP COLUMN msme_number`);
+        await dbService.execute(`ALTER TABLE vendors ADD COLUMN is_deleted TINYINT(1) NOT NULL DEFAULT 0`);
       } catch (_) {}
       try {
-        await dbService.execute(`ALTER TABLE vendors DROP COLUMN credit_period_days`);
+        await dbService.execute(`ALTER TABLE vendors ADD COLUMN deleted_at DATETIME NULL`);
+      } catch (_) {}
+      try {
+        await dbService.execute(`ALTER TABLE vendors ADD COLUMN deleted_by INT NULL`);
+      } catch (_) {}
+      try {
+        await dbService.execute(`ALTER TABLE vendors ADD COLUMN outstanding_balance DECIMAL(12, 2) NOT NULL DEFAULT 0.00`);
       } catch (_) {}
 
       // 3. Ensure Permissions
       await dbService.execute(`
         INSERT IGNORE INTO permissions (code, module, description)
         VALUES 
-          ('vendor.view', 'VENDORS', 'View vendor list, profiles, ratings and purchase records'),
+          ('vendor.view', 'VENDORS', 'View vendor list, profiles and purchase records'),
           ('vendor.manage', 'VENDORS', 'Create, edit, delete vendors and record purchases and payments');
       `);
 
@@ -249,29 +256,13 @@ export class VendorsService {
         website: 'https://alwatania-farms.com',
         tax_id: '310123456700003',
         pan_number: 'ALWPM9821K',
-        tax_category: 'STANDARD',
-        msme_number: 'MSME-SA-2023-8891',
-        payment_terms: 'NET_30',
         preferred_payment_method: 'BANK_TRANSFER',
         bank_name: 'Al Rajhi Bank',
         account_number: 'SA0380000123456789012345',
         ifsc_code: 'RJHISARI',
-        branch_name: 'Al Olaya Commercial Branch',
         upi_id: 'alwatania@rajhi',
-        credit_limit: 50000,
-        credit_period_days: 30,
         outstanding_balance: 14500,
-        total_purchases_amount: 182400,
-        total_purchases_count: 16,
-        rating: 4.85,
-        delivery_speed_rating: 4.90,
-        quality_rating: 4.95,
-        pricing_rating: 4.70,
-        on_time_delivery_rate: 98.50,
-        quality_score: 99.20,
-        fulfillment_rate: 97.80,
-        performance_notes: 'Premium Grade-A fresh chicken, mutton cuts, and camel meat. Extremely reliable cold-chain delivery.',
-        notes: 'Primary contractor for  chicken and lamb portions.',
+        notes: 'Primary contractor for chicken and lamb portions.',
       },
       {
         uuid: uuidv4(),
@@ -289,28 +280,12 @@ export class VendorsService {
         website: 'https://deccanbasmati.com',
         tax_id: '310987654300003',
         pan_number: 'DECBA3412M',
-        tax_category: 'STANDARD',
-        msme_number: 'MSME-SA-2022-4412',
-        payment_terms: 'NET_45',
         preferred_payment_method: 'BANK_TRANSFER',
         bank_name: 'National Commercial Bank (SNB)',
         account_number: 'SA4410000098765432109876',
         ifsc_code: 'NCBKSARI',
-        branch_name: 'Jeddah Port Branch',
         upi_id: 'deccanrice@snb',
-        credit_limit: 40000,
-        credit_period_days: 45,
         outstanding_balance: 8200,
-        total_purchases_amount: 135000,
-        total_purchases_count: 11,
-        rating: 4.70,
-        delivery_speed_rating: 4.60,
-        quality_rating: 4.90,
-        pricing_rating: 4.60,
-        on_time_delivery_rate: 96.00,
-        quality_score: 98.50,
-        fulfillment_rate: 95.50,
-        performance_notes: 'Supplies aged 1121 Sella Basmati rice, biryani spices, and dry pulses. Very consistent aromatic quality.',
         notes: 'Bulk packaging 25kg and 50kg bags.',
       },
       {
@@ -329,29 +304,13 @@ export class VendorsService {
         website: 'https://royal-arabian.sa',
         tax_id: '310555666700003',
         pan_number: 'ROYSP7719P',
-        tax_category: 'STANDARD',
-        msme_number: 'MSME-SA-2024-1029',
-        payment_terms: 'NET_15',
         preferred_payment_method: 'BANK_TRANSFER',
         bank_name: 'Riyad Bank',
         account_number: 'SA2220000055566677788899',
         ifsc_code: 'RIBLSARI',
-        branch_name: 'Batha Commercial Center',
         upi_id: 'royalspices@riyad',
-        credit_limit: 20000,
-        credit_period_days: 15,
         outstanding_balance: 3400,
-        total_purchases_amount: 48600,
-        total_purchases_count: 8,
-        rating: 4.90,
-        delivery_speed_rating: 4.80,
-        quality_rating: 5.00,
-        pricing_rating: 4.90,
-        on_time_delivery_rate: 99.00,
-        quality_score: 100.00,
-        fulfillment_rate: 99.00,
-        performance_notes: 'Supplies authentic Hawayej, saffron threads, whole cardamom, cloves, dried black limes, and cinnamon barks.',
-        notes: 'Exclusive artisan spice blend for signature  seasoning.',
+        notes: 'Exclusive artisan spice blend for signature seasoning.',
       },
       {
         uuid: uuidv4(),
@@ -369,28 +328,12 @@ export class VendorsService {
         website: 'https://dailyfreshdairy.com',
         tax_id: '310444112200003',
         pan_number: 'DFDP9012R',
-        tax_category: 'STANDARD',
-        msme_number: null,
-        payment_terms: 'NET_7',
         preferred_payment_method: 'BANK_TRANSFER',
         bank_name: 'Banque Saudi Fransi',
         account_number: 'SA5550000011223344556677',
         ifsc_code: 'BSFRSARI',
-        branch_name: 'Al Kharj Highway Branch',
         upi_id: 'dailyfresh@fransi',
-        credit_limit: 15000,
-        credit_period_days: 7,
         outstanding_balance: 2100,
-        total_purchases_amount: 39800,
-        total_purchases_count: 14,
-        rating: 4.60,
-        delivery_speed_rating: 4.70,
-        quality_rating: 4.80,
-        pricing_rating: 4.30,
-        on_time_delivery_rate: 95.00,
-        quality_score: 97.00,
-        fulfillment_rate: 96.00,
-        performance_notes: 'Fresh Laban, full-cream yoghurt for raita, tomatoes, onions, garlic, and fresh mint/coriander.',
         notes: 'Daily morning deliveries at 06:30 AM.',
       },
       {
@@ -409,28 +352,12 @@ export class VendorsService {
         website: 'https://gulfecopack.com',
         tax_id: '310777990000003',
         pan_number: 'GEPAK5523T',
-        tax_category: 'STANDARD',
-        msme_number: 'MSME-SA-2021-9921',
-        payment_terms: 'NET_30',
         preferred_payment_method: 'BANK_TRANSFER',
         bank_name: 'Arab National Bank (ANB)',
         account_number: 'SA7740000033445566778899',
         ifsc_code: 'ARNBSARI',
-        branch_name: 'Dammam Corniche Branch',
         upi_id: 'gulfecopack@anb',
-        credit_limit: 25000,
-        credit_period_days: 30,
         outstanding_balance: 0,
-        total_purchases_amount: 52000,
-        total_purchases_count: 9,
-        rating: 4.75,
-        delivery_speed_rating: 4.80,
-        quality_rating: 4.70,
-        pricing_rating: 4.75,
-        on_time_delivery_rate: 97.00,
-        quality_score: 98.00,
-        fulfillment_rate: 98.00,
-        performance_notes: ' heavy-duty thermal foil sheets, large banquet round trays, takeaway paper bags, cutlery sets, and napkins.',
         notes: 'Stocked on 2-month buffer quantities.',
       },
     ];
@@ -439,26 +366,20 @@ export class VendorsService {
       const res = await dbService.execute(`
         INSERT INTO vendors (
           uuid, vendor_code, name, category, status, contact_person, phone, email,
-          address, city, state, postal_code, website, tax_id, pan_number, tax_category,
-          payment_terms, preferred_payment_method, bank_name, account_number, ifsc_code, branch_name, upi_id,
-          credit_limit, outstanding_balance, total_purchases_amount, total_purchases_count,
-          last_purchase_date, last_payment_date, rating, delivery_speed_rating, quality_rating, pricing_rating,
-          on_time_delivery_rate, quality_score, fulfillment_rate, performance_notes, notes
+          address, city, state, postal_code, website, tax_id, pan_number,
+          preferred_payment_method, bank_name, account_number, ifsc_code, upi_id,
+          outstanding_balance, notes
         ) VALUES (
           ?, ?, ?, ?, ?, ?, ?, ?,
-          ?, ?, ?, ?, ?, ?, ?, ?,
           ?, ?, ?, ?, ?, ?, ?,
-          ?, ?, ?, ?,
-          DATE_SUB(NOW(), INTERVAL 3 DAY), DATE_SUB(NOW(), INTERVAL 10 DAY), ?, ?, ?, ?,
-          ?, ?, ?, ?, ?
+          ?, ?, ?, ?, ?,
+          ?, ?
         )
       `, [
         v.uuid, v.vendor_code, v.name, v.category, v.status, v.contact_person, v.phone, v.email,
-        v.address, v.city, v.state, v.postal_code, v.website, v.tax_id, v.pan_number, v.tax_category,
-        v.payment_terms, v.preferred_payment_method, v.bank_name, v.account_number, v.ifsc_code, v.branch_name, v.upi_id,
-        v.credit_limit, v.outstanding_balance, v.total_purchases_amount, v.total_purchases_count,
-        v.rating, v.delivery_speed_rating, v.quality_rating, v.pricing_rating,
-        v.on_time_delivery_rate, v.quality_score, v.fulfillment_rate, v.performance_notes, v.notes
+        v.address, v.city, v.state, v.postal_code, v.website, v.tax_id, v.pan_number,
+        v.preferred_payment_method, v.bank_name, v.account_number, v.ifsc_code, v.upi_id,
+        v.outstanding_balance, v.notes
       ]);
 
       const vendorId = res.lastInsertRowid;
@@ -520,8 +441,6 @@ export class VendorsService {
       name: 'name',
       vendor_code: 'vendor_code',
       outstanding_balance: 'outstanding_balance',
-      total_purchases_amount: 'total_purchases_amount',
-      rating: 'rating',
       created_at: 'created_at',
     };
     const sortCol = validSortCols[options.sortBy || ''] || 'name';
@@ -553,22 +472,20 @@ export class VendorsService {
       total_vendors: number;
       active_vendors: number;
       total_outstanding: number;
-      total_purchases: number;
-      avg_rating: number;
-      avg_on_time: number;
-      avg_quality: number;
-      avg_fulfillment: number;
     }>(`
       SELECT 
         COUNT(*) as total_vendors,
         COALESCE(SUM(CASE WHEN status = 'ACTIVE' THEN 1 ELSE 0 END), 0) as active_vendors,
-        COALESCE(SUM(outstanding_balance), 0) as total_outstanding,
-        COALESCE(SUM(total_purchases_amount), 0) as total_purchases,
-        COALESCE(AVG(rating), 5.0) as avg_rating,
-        COALESCE(AVG(on_time_delivery_rate), 100.0) as avg_on_time,
-        COALESCE(AVG(quality_score), 100.0) as avg_quality,
-        COALESCE(AVG(fulfillment_rate), 100.0) as avg_fulfillment
+        COALESCE(SUM(outstanding_balance), 0) as total_outstanding
       FROM vendors
+      WHERE is_deleted = 0
+    `);
+
+    const purchasesSummary = await dbService.queryOne<{
+      total_purchases: number;
+    }>(`
+      SELECT COALESCE(SUM(total_amount), 0) as total_purchases
+      FROM vendor_purchases
     `);
 
     // Overdue summary
@@ -587,6 +504,7 @@ export class VendorsService {
     const categories = await dbService.query<{ category: string; count: number }>(`
       SELECT category, COUNT(*) as count
       FROM vendors
+      WHERE is_deleted = 0
       GROUP BY category
       ORDER BY count DESC
     `);
@@ -595,11 +513,7 @@ export class VendorsService {
       totalVendors: summary?.total_vendors || 0,
       activeVendors: summary?.active_vendors || 0,
       totalOutstanding: summary?.total_outstanding || 0,
-      totalPurchases: summary?.total_purchases || 0,
-      avgRating: Number(summary?.avg_rating || 5).toFixed(2),
-      avgOnTime: Number(summary?.avg_on_time || 100).toFixed(1),
-      avgQuality: Number(summary?.avg_quality || 100).toFixed(1),
-      avgFulfillment: Number(summary?.avg_fulfillment || 100).toFixed(1),
+      totalPurchases: purchasesSummary?.total_purchases || 0,
       overdueCount: overdueRes?.overdue_count || 0,
       overdueAmount: overdueRes?.overdue_amount || 0,
       categories: categories.map((c) => ({ name: c.category, count: c.count })),
@@ -653,19 +567,15 @@ export class VendorsService {
       INSERT INTO vendors (
         uuid, vendor_code, name, category, status, image_url, notes,
         contact_person, phone, email, address, city, state, postal_code, website,
-        tax_id, pan_number, tax_category,
-        payment_terms, preferred_payment_method, bank_name, account_number, ifsc_code, branch_name, upi_id,
-        credit_limit, outstanding_balance, total_purchases_amount, total_purchases_count,
-        rating, delivery_speed_rating, quality_rating, pricing_rating,
-        on_time_delivery_rate, quality_score, fulfillment_rate, performance_notes, created_by
+        tax_id, pan_number,
+        preferred_payment_method, bank_name, account_number, ifsc_code, upi_id,
+        outstanding_balance, created_by
       ) VALUES (
         ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?,
-        ?, 0.00, 0.00, 0,
-        ?, ?, ?, ?,
-        ?, ?, ?, ?, ?
+        ?, ?,
+        ?, ?, ?, ?, ?,
+        ?, ?
       )
     `, [
       uuid,
@@ -687,26 +597,14 @@ export class VendorsService {
 
       data.tax_id || null,
       data.pan_number || null,
-      data.tax_category || 'STANDARD',
 
-      data.payment_terms || 'NET_30',
       data.preferred_payment_method || 'BANK_TRANSFER',
       data.bank_name || null,
       data.account_number || null,
       data.ifsc_code || null,
-      data.branch_name || null,
       data.upi_id || null,
 
-      data.credit_limit || 0,
-
-      data.rating || 5.0,
-      data.delivery_speed_rating || 5.0,
-      data.quality_rating || 5.0,
-      data.pricing_rating || 5.0,
-      data.on_time_delivery_rate || 100.0,
-      data.quality_score || 100.0,
-      data.fulfillment_rate || 100.0,
-      data.performance_notes || null,
+      data.outstanding_balance !== undefined ? Number(data.outstanding_balance) : 0,
       userId,
     ]);
 
@@ -752,23 +650,12 @@ export class VendorsService {
         website = COALESCE(?, website),
         tax_id = COALESCE(?, tax_id),
         pan_number = COALESCE(?, pan_number),
-        tax_category = COALESCE(?, tax_category),
-        payment_terms = COALESCE(?, payment_terms),
         preferred_payment_method = COALESCE(?, preferred_payment_method),
         bank_name = COALESCE(?, bank_name),
         account_number = COALESCE(?, account_number),
         ifsc_code = COALESCE(?, ifsc_code),
-        branch_name = COALESCE(?, branch_name),
         upi_id = COALESCE(?, upi_id),
-        credit_limit = COALESCE(?, credit_limit),
-        rating = COALESCE(?, rating),
-        delivery_speed_rating = COALESCE(?, delivery_speed_rating),
-        quality_rating = COALESCE(?, quality_rating),
-        pricing_rating = COALESCE(?, pricing_rating),
-        on_time_delivery_rate = COALESCE(?, on_time_delivery_rate),
-        quality_score = COALESCE(?, quality_score),
-        fulfillment_rate = COALESCE(?, fulfillment_rate),
-        performance_notes = COALESCE(?, performance_notes),
+        outstanding_balance = COALESCE(?, outstanding_balance),
         updated_at = NOW()
       WHERE id = ?
     `, [
@@ -787,23 +674,12 @@ export class VendorsService {
       data.website ?? null,
       data.tax_id ?? null,
       data.pan_number ?? null,
-      data.tax_category ?? null,
-      data.payment_terms ?? null,
       data.preferred_payment_method ?? null,
       data.bank_name ?? null,
       data.account_number ?? null,
       data.ifsc_code ?? null,
-      data.branch_name ?? null,
       data.upi_id ?? null,
-      data.credit_limit ?? null,
-      data.rating ?? null,
-      data.delivery_speed_rating ?? null,
-      data.quality_rating ?? null,
-      data.pricing_rating ?? null,
-      data.on_time_delivery_rate ?? null,
-      data.quality_score ?? null,
-      data.fulfillment_rate ?? null,
-      data.performance_notes ?? null,
+      data.outstanding_balance !== undefined ? Number(data.outstanding_balance) : null,
       id,
     ]);
 

@@ -2,12 +2,14 @@ import { createApp } from './app';
 import { config } from './config/env';
 import { logger } from './config/logger';
 import { dbService } from './database/db';
+import { CheckoutService } from './modules/checkout/checkout.service';
 
 const startServer = async () => {
   try {
     // 1. Connect to MySQL. Schema and seed data are managed out-of-band
     //    (see src/database/mysql_migrator.ts), not created on every boot.
     await dbService.initialize();
+    await CheckoutService.ensureSchema();
 
     // 2. Start Express App
     const app = createApp();

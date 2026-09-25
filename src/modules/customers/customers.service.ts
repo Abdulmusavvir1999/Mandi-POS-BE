@@ -34,9 +34,25 @@ export class CustomersService {
       };
 
       await addColumnSafe('customer_code', 'VARCHAR(50) NULL');
-      await addColumnSafe('tier', "VARCHAR(30) NOT NULL DEFAULT 'REGULAR'");
       await addColumnSafe('loyalty_points', 'INT NOT NULL DEFAULT 0');
       await addColumnSafe('last_visit_at', 'DATETIME NULL');
+
+      // Safely drop deprecated columns if they exist
+      const deprecatedCols = ['tier', 'notes', 'is_deleted', 'deleted_at', 'deleted_by'];
+      for (const col of deprecatedCols) {
+        try {
+          const colCheck = await dbService.queryOne<{ count: number }>(`
+            SELECT COUNT(*) as count 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_SCHEMA = DATABASE() 
+              AND TABLE_NAME = 'customers' 
+              AND COLUMN_NAME = ?
+          `, [col]);
+          if (colCheck && colCheck.count > 0) {
+            await dbService.execute(`ALTER TABLE customers DROP COLUMN \`${col}\``);
+          }
+        } catch (_) {}
+      }
 
       // Create customer_notes table
       await dbService.execute(`
@@ -58,13 +74,6 @@ export class CustomersService {
         UPDATE customers 
         SET customer_code = CONCAT('CUST-', LPAD(id, 4, '0')) 
         WHERE customer_code IS NULL OR customer_code = ''
-      `);
-
-      // Update tiers based on total spent
-      await dbService.execute(`
-        UPDATE customers 
-        SET tier = 'VIP' 
-        WHERE total_spent >= 5000 AND (tier IS NULL OR tier = 'REGULAR')
       `);
 
       // Backfill last_visit_at from bills if available
@@ -100,7 +109,7 @@ export class CustomersService {
     if (segment) {
       const seg = segment.toUpperCase();
       if (seg === 'VIP') {
-        where += " AND tier IN ('VIP', 'PLATINUM', 'GOLD')";
+        where += " AND total_spent >= 2500";
       } else if (seg === 'FREQUENT') {
         where += " AND (total_visits >= 5 OR (total_visits >= 3 AND DATEDIFF(NOW(), COALESCE(last_visit_at, created_at)) <= 30))";
       } else if (seg === 'AT_RISK') {
@@ -117,8 +126,8 @@ export class CustomersService {
     const total = countRes?.total || 0;
 
     const customers = await dbService.query(
-      `SELECT id, customer_code, name, phone, email, address, image_url, notes, status, 
-              tier, loyalty_points, total_visits, total_spent, last_visit_at, created_at, updated_at,
+      `SELECT id, customer_code, name, phone, email, address, image_url, status, 
+              loyalty_points, total_visits, total_spent, last_visit_at, created_at, updated_at,
               DATEDIFF(NOW(), COALESCE(last_visit_at, created_at)) as days_since_last_visit
        FROM customers
        ${where}
@@ -168,8 +177,8 @@ export class CustomersService {
   static async getById(id: number) {
     await this.ensureSchema();
     const customer = await dbService.queryOne<any>(
-      `SELECT id, customer_code, name, phone, email, address, image_url, notes, status, 
-              tier, loyalty_points, total_visits, total_spent, last_visit_at, created_at, updated_at,
+      `SELECT id, customer_code, name, phone, email, address, image_url, status, 
+              loyalty_points, total_visits, total_spent, last_visit_at, created_at, updated_at,
               DATEDIFF(NOW(), COALESCE(last_visit_at, created_at)) as days_since_last_visit
        FROM customers WHERE id = ?`,
       [id]
@@ -214,8 +223,6 @@ export class CustomersService {
     email?: string;
     address?: string;
     image_url?: string;
-    notes?: string;
-    tier?: string;
     customer_code?: string;
   }, userId: number) {
     await this.ensureSchema();
@@ -225,16 +232,14 @@ export class CustomersService {
     }
 
     const res = await dbService.execute(
-      `INSERT INTO customers (name, phone, email, address, image_url, notes, tier, status, total_visits, total_spent, customer_code)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', 0, 0.0, ?)`,
+      `INSERT INTO customers (name, phone, email, address, image_url, status, total_visits, total_spent, customer_code)
+       VALUES (?, ?, ?, ?, ?, 'ACTIVE', 0, 0.0, ?)`,
       [
         data.name,
         data.phone,
         data.email || null,
         data.address || null,
         data.image_url || null,
-        data.notes || null,
-        data.tier || 'REGULAR',
         data.customer_code || null,
       ]
     );
@@ -265,9 +270,7 @@ export class CustomersService {
       email?: string;
       address?: string;
       image_url?: string;
-      notes?: string;
       status?: string;
-      tier?: string;
       loyalty_points?: number;
       customer_code?: string;
     },
@@ -294,9 +297,7 @@ export class CustomersService {
            email = COALESCE(?, email),
            address = COALESCE(?, address),
            image_url = COALESCE(?, image_url),
-           notes = COALESCE(?, notes),
            status = COALESCE(?, status),
-           tier = COALESCE(?, tier),
            loyalty_points = COALESCE(?, loyalty_points),
            customer_code = COALESCE(?, customer_code),
            updated_at = CURRENT_TIMESTAMP
@@ -307,9 +308,7 @@ export class CustomersService {
         data.email,
         data.address,
         data.image_url,
-        data.notes,
         data.status,
-        data.tier,
         data.loyalty_points,
         data.customer_code,
         id,
@@ -588,7 +587,7 @@ export class CustomersService {
       repeat_count: number;
     }>(`
       SELECT COUNT(*) as total_customers,
-             SUM(CASE WHEN tier IN ('VIP', 'GOLD', 'PLATINUM') THEN 1 ELSE 0 END) as vip_count,
+             SUM(CASE WHEN total_spent >= 2500 THEN 1 ELSE 0 END) as vip_count,
              COALESCE(SUM(total_spent), 0) as total_spent_sum,
              COALESCE(SUM(total_visits), 0) as total_visits_sum,
              SUM(CASE WHEN total_visits > 1 THEN 1 ELSE 0 END) as repeat_count

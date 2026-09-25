@@ -193,7 +193,7 @@ export class ReportsService {
          (si.current_quantity * COALESCE(p.selling_price, si.average_unit_price)) as stock_valuation_retail,
          (si.current_quantity <= si.min_stock_alert) as is_low_stock
        FROM stock_items si
-       LEFT JOIN products p ON si.product_id = p.id
+       LEFT JOIN products p ON p.stock_item_id = si.id
        LEFT JOIN categories c ON p.category_id = c.id
        WHERE si.status = 'active'
        ORDER BY (si.current_quantity <= si.min_stock_alert) DESC, si.current_quantity ASC`
@@ -209,7 +209,7 @@ export class ReportsService {
          COALESCE(SUM(si.current_value), 0) as total_valuation_cost,
          COALESCE(SUM(si.current_quantity * COALESCE(p.selling_price, si.average_unit_price)), 0) as total_valuation_retail
        FROM stock_items si
-       LEFT JOIN products p ON si.product_id = p.id
+       LEFT JOIN products p ON p.stock_item_id = si.id
        WHERE si.status = 'active'`
     );
 

@@ -54,7 +54,6 @@ export const createSchema = async (): Promise<void> => {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       description TEXT,
-      icon TEXT,
       image_url TEXT,
       display_order INTEGER DEFAULT 0,
       status TEXT DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE', 'INACTIVE')),
@@ -70,8 +69,6 @@ export const createSchema = async (): Promise<void> => {
       sku TEXT UNIQUE NOT NULL,
       description TEXT,
       image_url TEXT,
-      cost_price REAL DEFAULT 0.0,
-      selling_price REAL NOT NULL,
       tax_rate REAL DEFAULT 5.0,
       stock_quantity INTEGER DEFAULT 0,
       low_stock_threshold INTEGER DEFAULT 10,
@@ -110,18 +107,10 @@ export const createSchema = async (): Promise<void> => {
       current_quantity REAL NOT NULL DEFAULT 0.0,
       current_value REAL NOT NULL DEFAULT 0.0,
       average_unit_price REAL NOT NULL DEFAULT 0.0,
-      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'inactive')),
       min_stock_alert REAL NOT NULL DEFAULT 10.0,
-      reorder_level REAL NOT NULL DEFAULT 15.0,
-      reorder_quantity REAL NOT NULL DEFAULT 50.0,
-      max_stock_threshold REAL NOT NULL DEFAULT 100.0,
-      shelf_life_days INTEGER,
-      product_id INTEGER,
-      default_vendor_id INTEGER,
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'inactive')),
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE SET NULL,
-      FOREIGN KEY (default_vendor_id) REFERENCES vendors(id) ON DELETE SET NULL
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
     -- Stock Entries (Purchase / Addition Ledger)
@@ -312,9 +301,8 @@ export const createSchema = async (): Promise<void> => {
       phone TEXT UNIQUE NOT NULL,
       email TEXT,
       address TEXT,
-      notes TEXT,
+      image_url TEXT,
       status TEXT DEFAULT 'ACTIVE' CHECK(status IN ('ACTIVE', 'INACTIVE')),
-      tier TEXT DEFAULT 'REGULAR',
       loyalty_points INTEGER DEFAULT 0,
       last_visit_at DATETIME,
       total_visits INTEGER DEFAULT 0,
@@ -740,7 +728,6 @@ export const createSchema = async (): Promise<void> => {
     CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone);
     CREATE INDEX IF NOT EXISTS idx_customers_name ON customers(name);
     CREATE INDEX IF NOT EXISTS idx_customers_code ON customers(customer_code);
-    CREATE INDEX IF NOT EXISTS idx_customers_tier ON customers(tier);
     CREATE INDEX IF NOT EXISTS idx_cust_notes_cid ON customer_notes(customer_id);
 
     CREATE INDEX IF NOT EXISTS idx_queue_num ON queue(queue_number);

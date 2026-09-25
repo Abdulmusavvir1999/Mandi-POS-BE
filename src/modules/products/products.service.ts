@@ -17,6 +17,30 @@ export interface ProductVariantInput {
 }
 
 export class ProductsService {
+  private static schemaEnsured = false;
+
+  static async ensureSchema(): Promise<void> {
+    if (this.schemaEnsured) return;
+    try {
+      const deprecatedCols = ['cost_price', 'selling_price'];
+      for (const col of deprecatedCols) {
+        try {
+          const colCheck = await dbService.queryOne<{ count: number }>(`
+            SELECT COUNT(*) as count 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_SCHEMA = DATABASE() 
+              AND TABLE_NAME = 'products' 
+              AND COLUMN_NAME = ?
+          `, [col]);
+          if (colCheck && colCheck.count > 0) {
+            await dbService.execute(`ALTER TABLE products DROP COLUMN \`${col}\``);
+          }
+        } catch (_) {}
+      }
+      this.schemaEnsured = true;
+    } catch (_) {}
+  }
+
   static async getVariants(productId: number) {
     try {
       return await dbService.query(
@@ -88,6 +112,7 @@ export class ProductsService {
     sortBy = 'name',
     sortOrder = 'ASC'
   ) {
+    await this.ensureSchema();
     const offset = (page - 1) * limit;
     let where = 'WHERE 1=1';
     const params: any[] = [];
@@ -114,7 +139,7 @@ export class ProductsService {
     );
     const total = countRes?.total || 0;
 
-    const allowedSort = ['name', 'selling_price', 'cost_price', 'stock_quantity', 'created_at', 'sku'];
+    const allowedSort = ['name', 'stock_quantity', 'created_at', 'sku'];
     const validSortBy = allowedSort.includes(sortBy) ? sortBy : 'name';
     const validSortOrder = sortOrder.toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
 
@@ -124,7 +149,7 @@ export class ProductsService {
        FROM products p
        JOIN categories c ON p.category_id = c.id
        LEFT JOIN stock s ON p.id = s.product_id
-       LEFT JOIN stock_items si ON si.product_id = p.id
+       LEFT JOIN stock_items si ON p.stock_item_id = si.id
        ${where}
        ORDER BY p.${validSortBy} ${validSortOrder}
        LIMIT ? OFFSET ?`,
@@ -147,12 +172,13 @@ export class ProductsService {
   }
 
   static async getById(id: number) {
+    await this.ensureSchema();
     // The View page reports on the ledger item a dish draws from, so the join
     // carries the unit, the balance, the code and the weighted average cost.
     const product = await dbService.queryOne<any>(
       `SELECT p.*, c.name as category_name,
               s.current_stock, s.reserved_stock, s.min_stock_alert,
-              COALESCE(p.stock_item_id, si.id) AS resolved_stock_item_id,
+              p.stock_item_id      AS resolved_stock_item_id,
               si.stock_code        AS linked_stock_code,
               si.current_quantity  AS linked_stock_quantity,
               si.unit_type         AS linked_unit_type,
@@ -162,7 +188,7 @@ export class ProductsService {
        FROM products p
        JOIN categories c ON p.category_id = c.id
        LEFT JOIN stock s ON p.id = s.product_id
-       LEFT JOIN stock_items si ON si.product_id = p.id
+       LEFT JOIN stock_items si ON p.stock_item_id = si.id
        WHERE p.id = ?`,
       [id]
     );
@@ -181,8 +207,6 @@ export class ProductsService {
     sku: string;
     description?: string;
     imageUrl?: string;
-    costPrice?: number;
-    sellingPrice: number;
     taxRate?: number;
     initialStock?: number;
     lowStockThreshold?: number;
@@ -191,6 +215,7 @@ export class ProductsService {
     variantStockMode?: 'COMMON' | 'EACH';
     variants?: ProductVariantInput[];
   }, userId: number) {
+    await this.ensureSchema();
     const existingSku = await dbService.queryOne('SELECT id FROM products WHERE sku = ?', [data.sku]);
     if (existingSku) {
       throw AppError.conflict('Product SKU already exists');
@@ -200,17 +225,15 @@ export class ProductsService {
       const res = await dbService.execute(
         `INSERT INTO products (
           category_id, name, sku, description, image_url,
-          cost_price, selling_price, tax_rate, stock_quantity,
+          tax_rate, stock_quantity,
           low_stock_threshold, is_available, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
         [
           data.categoryId,
           data.name,
           data.sku,
           data.description || null,
           data.imageUrl || null,
-          data.costPrice || 0,
-          data.sellingPrice,
           data.taxRate !== undefined ? data.taxRate : 5.0,
           data.initialStock || 0,
           data.lowStockThreshold || 10,
@@ -220,16 +243,14 @@ export class ProductsService {
 
       const productId = res.lastInsertRowid;
       const initialStock = Number(data.initialStock) || 0;
-      const costPrice = Number(data.costPrice) || 0;
-      const initialVal = initialStock * costPrice;
 
       // 1. Create 3-Tier Stock Master record
       const stockCode = `STK-${String(productId).padStart(4, '0')}`;
       const itemUuid = `item-${productId}-${Date.now().toString(36)}`;
       const stkRes = await dbService.execute(
-        `INSERT INTO stock_items (uuid, stock_code, name, unit_type, current_quantity, current_value, average_unit_price, status, min_stock_alert, product_id)
-         VALUES (?, ?, ?, 'piece', ?, ?, ?, 'active', ?, ?)`,
-        [itemUuid, stockCode, data.name, initialStock, initialVal, costPrice, data.lowStockThreshold || 10, productId]
+        `INSERT INTO stock_items (uuid, stock_code, name, unit_type, current_quantity, current_value, average_unit_price, status, min_stock_alert)
+         VALUES (?, ?, ?, 'piece', ?, 0, 0, 'active', ?)`,
+        [itemUuid, stockCode, data.name, initialStock, data.lowStockThreshold || 10]
       );
       const stockItemId = stkRes.lastInsertRowid;
 
@@ -240,14 +261,14 @@ export class ProductsService {
 
         await dbService.execute(
           `INSERT INTO stock_entries (uuid, stock_item_id, entry_number, quantity, multiplier, total_quantity, total_price, unit_price, status, supplier, notes, created_by)
-           VALUES (?, ?, ?, ?, 1.0, ?, ?, ?, 'posted', 'Initial Setup', 'Initial product inventory', ?)`,
-          [entryUuid, stockItemId, entryNum, initialStock, initialStock, initialVal, costPrice, userId]
+           VALUES (?, ?, ?, ?, 1.0, ?, 0, 0, 'posted', 'Initial Setup', 'Initial product inventory', ?)`,
+          [entryUuid, stockItemId, entryNum, initialStock, initialStock, userId]
         );
 
         await dbService.execute(
           `INSERT INTO stock_movements (uuid, stock_item_id, movement_type, reference_type, reference_id, quantity, unit_price, total_value, balance_quantity, balance_value, notes, created_by)
-           VALUES (?, ?, 'in', 'INITIAL_STOCK', ?, ?, ?, ?, ?, ?, 'Initial inventory stock addition', ?)`,
-          [moveUuid, stockItemId, entryNum, initialStock, costPrice, initialVal, initialStock, initialVal, userId]
+           VALUES (?, ?, 'in', 'INITIAL_STOCK', ?, ?, 0, 0, ?, 0, 'Initial inventory stock addition', ?)`,
+          [moveUuid, stockItemId, entryNum, initialStock, initialStock, userId]
         );
       }
 
@@ -267,12 +288,11 @@ export class ProductsService {
         );
       }
 
-      if (data.stockItemId !== undefined || data.variantStockMode !== undefined) {
-        await dbService.execute(
-          'UPDATE products SET stock_item_id = ?, variant_stock_mode = COALESCE(?, variant_stock_mode) WHERE id = ?',
-          [data.stockItemId ? Number(data.stockItemId) : null, data.variantStockMode || null, productId]
-        );
-      }
+      const assignedStockItemId = data.stockItemId ? Number(data.stockItemId) : stockItemId;
+      await dbService.execute(
+        'UPDATE products SET stock_item_id = ?, variant_stock_mode = COALESCE(?, variant_stock_mode) WHERE id = ?',
+        [assignedStockItemId, data.variantStockMode || null, productId]
+      );
 
       await this.replaceVariants(productId, data.variants);
 
@@ -294,8 +314,6 @@ export class ProductsService {
     sku?: string;
     description?: string;
     imageUrl?: string;
-    costPrice?: number;
-    sellingPrice?: number;
     taxRate?: number;
     lowStockThreshold?: number;
     isAvailable?: boolean;
@@ -304,6 +322,7 @@ export class ProductsService {
     variantStockMode?: 'COMMON' | 'EACH';
     variants?: ProductVariantInput[];
   }, userId: number) {
+    await this.ensureSchema();
     const current = await this.getById(id);
 
     if (data.sku && data.sku !== current.sku) {
@@ -320,8 +339,6 @@ export class ProductsService {
            sku = COALESCE(?, sku),
            description = COALESCE(?, description),
            image_url = COALESCE(?, image_url),
-           cost_price = COALESCE(?, cost_price),
-           selling_price = COALESCE(?, selling_price),
            tax_rate = COALESCE(?, tax_rate),
            low_stock_threshold = COALESCE(?, low_stock_threshold),
            is_available = COALESCE(?, is_available),
@@ -334,8 +351,6 @@ export class ProductsService {
         data.sku,
         data.description,
         data.imageUrl,
-        data.costPrice,
-        data.sellingPrice,
         data.taxRate,
         data.lowStockThreshold,
         data.isAvailable !== undefined ? (data.isAvailable ? 1 : 0) : null,
@@ -346,7 +361,7 @@ export class ProductsService {
 
     if (data.lowStockThreshold !== undefined) {
       await dbService.execute('UPDATE stock SET min_stock_alert = ? WHERE product_id = ?', [data.lowStockThreshold, id]);
-      await dbService.execute('UPDATE stock_items SET min_stock_alert = ? WHERE product_id = ?', [data.lowStockThreshold, id]);
+      await dbService.execute('UPDATE stock_items si JOIN products p ON p.stock_item_id = si.id SET si.min_stock_alert = ? WHERE p.id = ?', [data.lowStockThreshold, id]);
     }
 
     if (data.stockItemId !== undefined || data.variantStockMode !== undefined) {
@@ -372,12 +387,12 @@ export class ProductsService {
     }
 
     if (data.name) {
-      await dbService.execute('UPDATE stock_items SET name = ? WHERE product_id = ?', [data.name, id]);
+      await dbService.execute('UPDATE stock_items si JOIN products p ON p.stock_item_id = si.id SET si.name = ? WHERE p.id = ?', [data.name, id]);
     }
 
     if (data.status) {
       const stockStatus = data.status.toLowerCase() === 'active' ? 'active' : 'inactive';
-      await dbService.execute('UPDATE stock_items SET status = ? WHERE product_id = ?', [stockStatus, id]);
+      await dbService.execute('UPDATE stock_items si JOIN products p ON p.stock_item_id = si.id SET si.status = ? WHERE p.id = ?', [stockStatus, id]);
     }
 
     await AuditService.log({
@@ -393,6 +408,7 @@ export class ProductsService {
   }
 
   static async delete(id: number, userId: number) {
+    await this.ensureSchema();
     const current = await this.getById(id);
 
     // Check if product is part of previous bills
@@ -404,7 +420,7 @@ export class ProductsService {
     if (billItemsCount && billItemsCount.count > 0) {
       // Soft-delete by setting status to INACTIVE so audit and historical sales remain valid
       await dbService.execute("UPDATE products SET status = 'INACTIVE', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [id]);
-      await dbService.execute("UPDATE stock_items SET status = 'inactive', updated_at = CURRENT_TIMESTAMP WHERE product_id = ?", [id]);
+      await dbService.execute("UPDATE stock_items si JOIN products p ON p.stock_item_id = si.id SET si.status = 'inactive', si.updated_at = CURRENT_TIMESTAMP WHERE p.id = ?", [id]);
       await AuditService.log({
         userId,
         action: 'PRODUCT_DEACTIVATED',
@@ -417,11 +433,11 @@ export class ProductsService {
     }
 
     await dbService.transaction(async () => {
-      const stkItem = await dbService.queryOne<{ id: number }>('SELECT id FROM stock_items WHERE product_id = ?', [id]);
-      if (stkItem) {
-        await dbService.execute('DELETE FROM stock_movements WHERE stock_item_id = ?', [stkItem.id]);
-        await dbService.execute('DELETE FROM stock_entries WHERE stock_item_id = ?', [stkItem.id]);
-        await dbService.execute('DELETE FROM stock_items WHERE id = ?', [stkItem.id]);
+      const prod = await dbService.queryOne<{ stock_item_id: number }>('SELECT stock_item_id FROM products WHERE id = ?', [id]);
+      if (prod?.stock_item_id) {
+        await dbService.execute('DELETE FROM stock_movements WHERE stock_item_id = ?', [prod.stock_item_id]);
+        await dbService.execute('DELETE FROM stock_entries WHERE stock_item_id = ?', [prod.stock_item_id]);
+        await dbService.execute('DELETE FROM stock_items WHERE id = ?', [prod.stock_item_id]);
       }
       await dbService.execute('DELETE FROM stock_transactions WHERE product_id = ?', [id]);
       await dbService.execute('DELETE FROM stock WHERE product_id = ?', [id]);

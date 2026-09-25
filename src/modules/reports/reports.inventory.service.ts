@@ -73,7 +73,7 @@ export class ReportsInventoryService {
              ELSE 'OK'
            END                                    AS stock_status
          FROM stock_items si
-         LEFT JOIN products p ON si.product_id = p.id
+         LEFT JOIN products p ON p.stock_item_id = si.id
          LEFT JOIN categories c ON p.category_id = c.id
          ${where}
          ORDER BY value_at_cost DESC`,
@@ -87,9 +87,9 @@ export class ReportsInventoryService {
            COALESCE(SUM(si.current_quantity * COALESCE(NULLIF(p.selling_price, 0), si.average_unit_price)), 0) AS total_value_at_retail,
            COALESCE(SUM(CASE WHEN si.current_quantity <= 0 THEN 1 ELSE 0 END), 0) AS out_of_stock_count,
            COALESCE(SUM(CASE WHEN si.current_quantity > 0 AND si.current_quantity <= si.min_stock_alert THEN 1 ELSE 0 END), 0) AS low_stock_count,
-           COALESCE(SUM(CASE WHEN si.product_id IS NULL THEN 1 ELSE 0 END), 0) AS unlinked_count
+           COALESCE(SUM(CASE WHEN p.id IS NULL THEN 1 ELSE 0 END), 0) AS unlinked_count
          FROM stock_items si
-         LEFT JOIN products p ON si.product_id = p.id
+         LEFT JOIN products p ON p.stock_item_id = si.id
          ${where}`,
         params
       ),
@@ -101,7 +101,7 @@ export class ReportsInventoryService {
            COALESCE(SUM(si.current_value), 0)     AS total_value_at_cost,
            COALESCE(SUM(si.current_quantity * COALESCE(NULLIF(p.selling_price, 0), si.average_unit_price)), 0) AS total_value_at_retail
          FROM stock_items si
-         LEFT JOIN products p ON si.product_id = p.id
+         LEFT JOIN products p ON p.stock_item_id = si.id
          LEFT JOIN categories c ON p.category_id = c.id
          ${where}
          GROUP BY c.name
@@ -180,7 +180,7 @@ export class ReportsInventoryService {
            COALESCE(SUM(CASE WHEN sm.movement_type = 'wastage' THEN ABS(sm.quantity) ELSE 0 END), 0) AS wastage_quantity
          FROM stock_movements sm
          JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON si.product_id = p.id
+         LEFT JOIN products p ON p.stock_item_id = si.id
          ${scope.where}
          GROUP BY si.id, si.stock_code, si.name, si.unit_type, si.current_quantity
          ORDER BY ABS(SUM(sm.quantity)) DESC`,
@@ -195,7 +195,7 @@ export class ReportsInventoryService {
            COUNT(DISTINCT sm.stock_item_id)       AS items_affected
          FROM stock_movements sm
          JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON si.product_id = p.id
+         LEFT JOIN products p ON p.stock_item_id = si.id
          ${scope.where}
          GROUP BY sm.movement_type
          ORDER BY total_value DESC`,
@@ -212,7 +212,7 @@ export class ReportsInventoryService {
            COALESCE(SUM(CASE WHEN sm.quantity < 0 THEN sm.total_value ELSE 0 END), 0)   AS value_out
          FROM stock_movements sm
          JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON si.product_id = p.id
+         LEFT JOIN products p ON p.stock_item_id = si.id
          ${scope.where}
          GROUP BY period, period_start
          ORDER BY period_start ASC`,
@@ -228,7 +228,7 @@ export class ReportsInventoryService {
            COALESCE(SUM(CASE WHEN sm.quantity < 0 THEN sm.total_value ELSE 0 END), 0)   AS value_out
          FROM stock_movements sm
          JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON si.product_id = p.id
+         LEFT JOIN products p ON p.stock_item_id = si.id
          ${scope.where}`,
         scope.params
       ),
@@ -322,7 +322,7 @@ export class ReportsInventoryService {
            COALESCE(SUM(sm.total_value), 0)       AS wasted_value
          FROM stock_movements sm
          JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON si.product_id = p.id
+         LEFT JOIN products p ON p.stock_item_id = si.id
          ${scope.where}`,
         scope.params
       ),
@@ -339,7 +339,7 @@ export class ReportsInventoryService {
            MAX(sm.movement_date)                  AS last_wasted_at
          FROM stock_movements sm
          JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON si.product_id = p.id
+         LEFT JOIN products p ON p.stock_item_id = si.id
          LEFT JOIN categories c ON p.category_id = c.id
          ${scope.where}
          GROUP BY si.id, si.stock_code, si.name, si.unit_type, c.name
@@ -354,7 +354,7 @@ export class ReportsInventoryService {
            COALESCE(SUM(sm.total_value), 0)       AS wasted_value
          FROM stock_movements sm
          JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON si.product_id = p.id
+         LEFT JOIN products p ON p.stock_item_id = si.id
          ${scope.where}
          GROUP BY reason
          ORDER BY wasted_value DESC
@@ -370,7 +370,7 @@ export class ReportsInventoryService {
            COALESCE(SUM(sm.total_value), 0)       AS wasted_value
          FROM stock_movements sm
          JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON si.product_id = p.id
+         LEFT JOIN products p ON p.stock_item_id = si.id
          ${scope.where}
          GROUP BY period, period_start
          ORDER BY period_start ASC`,
@@ -384,7 +384,7 @@ export class ReportsInventoryService {
            COALESCE(SUM(sm.total_value), 0)       AS wasted_value
          FROM stock_movements sm
          JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON si.product_id = p.id
+         LEFT JOIN products p ON p.stock_item_id = si.id
          LEFT JOIN users u ON sm.created_by = u.id
          ${scope.where}
          GROUP BY u.id, u.name
@@ -397,7 +397,7 @@ export class ReportsInventoryService {
            COALESCE(SUM(sm.total_value), 0)       AS value_out
          FROM stock_movements sm
          JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON si.product_id = p.id
+         LEFT JOIN products p ON p.stock_item_id = si.id
          ${consumedScope.where}`,
         consumedScope.params
       ),
@@ -609,7 +609,7 @@ export class ReportsInventoryService {
            COALESCE(SUM(sm.total_value), 0)       AS consumed_value
          FROM stock_movements sm
          JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON si.product_id = p.id
+         LEFT JOIN products p ON p.stock_item_id = si.id
          ${scope.where}`,
         scope.params
       ),
@@ -626,7 +626,7 @@ export class ReportsInventoryService {
            COALESCE(SUM(CASE WHEN sm.movement_type = 'wastage' THEN ABS(sm.quantity) ELSE 0 END), 0) AS wasted_quantity
          FROM stock_movements sm
          JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON si.product_id = p.id
+         LEFT JOIN products p ON p.stock_item_id = si.id
          ${scope.where}
          GROUP BY si.id, si.stock_code, si.name, si.unit_type, si.current_quantity, si.average_unit_price
          ORDER BY consumed_value DESC`,
@@ -640,7 +640,7 @@ export class ReportsInventoryService {
            COALESCE(SUM(sm.total_value), 0)       AS consumed_value
          FROM stock_movements sm
          JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON si.product_id = p.id
+         LEFT JOIN products p ON p.stock_item_id = si.id
          ${scope.where}
          GROUP BY sm.movement_type
          ORDER BY consumed_value DESC`,
@@ -654,7 +654,7 @@ export class ReportsInventoryService {
            COALESCE(SUM(sm.total_value), 0)       AS consumed_value
          FROM stock_movements sm
          JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON si.product_id = p.id
+         LEFT JOIN products p ON p.stock_item_id = si.id
          ${scope.where}
          GROUP BY period, period_start
          ORDER BY period_start ASC`,
@@ -997,7 +997,7 @@ export class ReportsInventoryService {
            COALESCE(SUM(CASE WHEN sm.quantity < 0 THEN sm.total_value ELSE 0 END), 0)   AS value_decreased
          FROM stock_movements sm
          JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON si.product_id = p.id
+         LEFT JOIN products p ON p.stock_item_id = si.id
          ${scope.where}`,
         scope.params
       ),
@@ -1015,7 +1015,7 @@ export class ReportsInventoryService {
            MAX(sm.movement_date)                  AS last_adjusted_at
          FROM stock_movements sm
          JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON si.product_id = p.id
+         LEFT JOIN products p ON p.stock_item_id = si.id
          ${scope.where}
          GROUP BY si.id, si.stock_code, si.name, si.unit_type
          ORDER BY adjustments_count DESC, total_value_moved DESC`,
@@ -1029,7 +1029,7 @@ export class ReportsInventoryService {
            COALESCE(SUM(sm.total_value), 0)       AS total_value_moved
          FROM stock_movements sm
          JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON si.product_id = p.id
+         LEFT JOIN products p ON p.stock_item_id = si.id
          ${scope.where}
          GROUP BY reason
          ORDER BY adjustments_count DESC
@@ -1046,7 +1046,7 @@ export class ReportsInventoryService {
            COALESCE(SUM(sm.total_value), 0)       AS total_value_moved
          FROM stock_movements sm
          JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON si.product_id = p.id
+         LEFT JOIN products p ON p.stock_item_id = si.id
          LEFT JOIN users u ON sm.created_by = u.id
          ${scope.where}
          GROUP BY u.id, u.name
@@ -1062,7 +1062,7 @@ export class ReportsInventoryService {
            COALESCE(SUM(sm.total_value), 0)       AS total_value_moved
          FROM stock_movements sm
          JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON si.product_id = p.id
+         LEFT JOIN products p ON p.stock_item_id = si.id
          ${scope.where}
          GROUP BY period, period_start
          ORDER BY period_start ASC`,
@@ -1084,7 +1084,7 @@ export class ReportsInventoryService {
            COALESCE(u.name, 'System')             AS adjusted_by
          FROM stock_movements sm
          JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON si.product_id = p.id
+         LEFT JOIN products p ON p.stock_item_id = si.id
          LEFT JOIN users u ON sm.created_by = u.id
          ${scope.where}
          ORDER BY sm.movement_date DESC, sm.id DESC
