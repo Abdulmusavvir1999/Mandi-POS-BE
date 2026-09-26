@@ -365,7 +365,7 @@ export class ReportsController {
     try {
       const tolerance = req.query.tolerance !== undefined ? Number(req.query.tolerance) : undefined;
       const report = await ReportsInventoryService.variance({
-        stockItemId: ParamUtil.optionalId(req.query.stockItemId, 'stockItemId'),
+        stockId: ParamUtil.optionalId(req.query.stockId, 'stockId'),
         onlyDiscrepancies: ParamUtil.bool(req.query.onlyDiscrepancies),
         tolerance: Number.isFinite(tolerance) && tolerance! >= 0 ? tolerance : undefined,
       });
@@ -463,7 +463,7 @@ export class ReportsController {
   private static inventoryOptions(req: Request) {
     return {
       range: range(req),
-      stockItemId: ParamUtil.optionalId(req.query.stockItemId, 'stockItemId'),
+      stockId: ParamUtil.optionalId(req.query.stockId, 'stockId'),
       categoryId: ParamUtil.optionalId(req.query.categoryId, 'categoryId'),
       granularity: granularity(req),
       limit: req.query.limit ? ParamUtil.limit(req.query.limit, 200, 1000) : undefined,

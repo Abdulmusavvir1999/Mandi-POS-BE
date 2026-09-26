@@ -214,7 +214,7 @@ export const REPORT_CATALOG: {
           path: '/api/reports/inventory/movement',
           description: 'Inflow, outflow and net change per item with reconstructed opening balance.',
           permission: 'report.view',
-          filters: ['stockItemId', 'categoryId', ...GRANULARITY],
+          filters: ['stockId', 'categoryId', ...GRANULARITY],
           ranged: true,
         },
         {
@@ -223,7 +223,7 @@ export const REPORT_CATALOG: {
           path: '/api/reports/inventory/wastage',
           description: 'Stock written off by item, reason and operator, as a share of outflow.',
           permission: 'report.view',
-          filters: ['stockItemId', 'categoryId', ...GRANULARITY],
+          filters: ['stockId', 'categoryId', ...GRANULARITY],
           ranged: true,
         },
         {
@@ -232,7 +232,7 @@ export const REPORT_CATALOG: {
           path: '/api/reports/inventory/purchases',
           description: 'Stock purchases by item and supplier with unit-price spread and vendor invoices.',
           permission: 'report.view',
-          filters: ['stockItemId', ...GRANULARITY, 'limit'],
+          filters: ['stockId', ...GRANULARITY, 'limit'],
           ranged: true,
         },
         {
@@ -241,7 +241,7 @@ export const REPORT_CATALOG: {
           path: '/api/reports/inventory/consumption',
           description: 'Booked depletion against sales-implied depletion, with days of cover per item.',
           permission: 'report.view',
-          filters: ['stockItemId', 'categoryId', ...GRANULARITY],
+          filters: ['stockId', 'categoryId', ...GRANULARITY],
           ranged: true,
         },
         {
@@ -259,7 +259,7 @@ export const REPORT_CATALOG: {
           path: '/api/reports/inventory/variance',
           description: 'Master stock balance against its own movement ledger. Whole-history, not ranged.',
           permission: 'report.view',
-          filters: ['stockItemId', 'onlyDiscrepancies', 'tolerance'],
+          filters: ['stockId', 'onlyDiscrepancies', 'tolerance'],
           ranged: false,
         },
         {
@@ -268,7 +268,7 @@ export const REPORT_CATALOG: {
           path: '/api/reports/inventory/adjustments',
           description: 'Manual stock corrections by item, reason and operator, excluding wastage.',
           permission: 'report.view',
-          filters: ['stockItemId', 'categoryId', ...GRANULARITY, 'limit'],
+          filters: ['stockId', 'categoryId', ...GRANULARITY, 'limit'],
           ranged: true,
         },
       ],

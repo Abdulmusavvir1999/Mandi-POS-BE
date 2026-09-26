@@ -87,40 +87,41 @@ export const updateStockItemSchema = z
 
 export const createStockEntrySchema = z
   .object({
-    stockItemId: z.coerce.number({ required_error: 'Stock item is required' }).int().positive('Stock item is required'),
+    stockId: z.coerce.number({ required_error: 'Stock item is required' }).int().positive('Stock item is required'),
+    // Optional: a purchase can be entered before the vendor is known, and the
+    // free-text `supplier` note still records where the batch came from.
+    vendorId: z.coerce.number().int().positive('Vendor is invalid').optional().nullable(),
     quantity: z.coerce.number({ required_error: 'Quantity is required' }).positive('Quantity must be greater than 0'),
     multiplier: z.coerce.number().positive('Multiplier must be greater than 0').optional().default(1),
     totalPrice: z.coerce.number({ required_error: 'Total price is required' }).nonnegative('Total price must be zero or more'),
     supplier: z.string().optional(),
-    vendorId: z.coerce.number().int().positive('Vendor is invalid').optional(),
-    invoiceNumber: z.string().optional(),
     notes: z.string().optional(),
     entryDate: z.string().optional(),
-    batchNumber: z.string().optional(),
-    expiryDate: z.string().optional(),
   })
   .passthrough();
 
 export const stockInSchema = z
   .object({
     productId: z.coerce.number().int().positive().optional(),
-    stockItemId: z.coerce.number().int().positive().optional(),
+    stockId: z.coerce.number().int().positive().optional(),
     quantity: z.coerce.number({ required_error: 'Quantity is required' }).positive('Quantity must be greater than 0'),
     multiplier: z.coerce.number().positive().optional(),
     totalPrice: z.coerce.number().nonnegative().optional(),
     supplier: z.string().optional(),
-    invoiceNumber: z.string().optional(),
     notes: z.string().optional(),
   })
   .passthrough();
 
 export const stockAdjustSchema = z
   .object({
-    stockItemId: z.coerce.number().int().positive().optional(),
+    stockId: z.coerce.number().int().positive().optional(),
     productId: z.coerce.number().int().positive().optional(),
-    adjustmentType: z.enum(['INCREASE', 'DECREASE', 'adjustment', 'wastage', 'return', 'in', 'out'], {
-      required_error: 'Adjustment type is required',
-    }),
+    // `return` is a customer giving goods back (stock in); `return_to_supplier`
+    // is goods going back to the vendor (stock out). Opposite directions.
+    adjustmentType: z.enum(
+      ['INCREASE', 'DECREASE', 'adjustment', 'wastage', 'return', 'return_to_supplier', 'in', 'out'],
+      { required_error: 'Adjustment type is required' }
+    ),
     quantity: z.coerce.number({ required_error: 'Quantity is required' }).positive('Quantity must be greater than 0'),
     multiplier: z.coerce.number().positive('Multiplier must be greater than 0').optional(),
     totalPrice: z.coerce.number().min(0, 'Total cost cannot be negative').optional(),

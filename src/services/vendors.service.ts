@@ -8,7 +8,10 @@ import { ParamUtil } from '../utils/param.util';
 export interface CreateVendorInput {
   vendor_code?: string;
   name: string;
+  /** Primary category. Kept for existing callers and reports; mirrors categories[0]. */
   category?: string;
+  /** Every kind of goods this vendor supplies. */
+  categories?: string[];
   status?: 'ACTIVE' | 'INACTIVE' | 'BLOCKED';
   image_url?: string;
   notes?: string;
@@ -88,13 +91,13 @@ export class VendorsService {
           tax_id VARCHAR(50) NULL,
           pan_number VARCHAR(50) NULL,
 
+          outstanding_balance DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
+
           preferred_payment_method VARCHAR(50) DEFAULT 'BANK_TRANSFER',
           bank_name VARCHAR(100) NULL,
           account_number VARCHAR(50) NULL,
           ifsc_code VARCHAR(50) NULL,
           upi_id VARCHAR(100) NULL,
-
-          outstanding_balance DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
 
           created_by INT NULL,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -109,6 +112,36 @@ export class VendorsService {
           INDEX idx_vendors_phone (phone),
           INDEX idx_vendors_is_deleted (is_deleted)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+      `);
+
+      // A vendor supplies more than one kind of goods, so the categories live
+      // in their own table. `vendors.category` is kept as the primary one —
+      // the first the user picked — because the vendor list, the detail header
+      // and the inventory purchases report all still read it, and dropping it
+      // would break them for no gain.
+      await dbService.execute(`
+        CREATE TABLE IF NOT EXISTS vendor_categories (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          vendor_id INT NOT NULL,
+          category VARCHAR(100) NOT NULL,
+          display_order INT NOT NULL DEFAULT 0,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE KEY uniq_vendor_category (vendor_id, category),
+          FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE CASCADE,
+          INDEX idx_vendor_categories_vendor (vendor_id),
+          INDEX idx_vendor_categories_category (category)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+      `);
+
+      // Back-fill once, so vendors created before this keep the category they
+      // already had instead of appearing to supply nothing.
+      await dbService.execute(`
+        INSERT IGNORE INTO vendor_categories (vendor_id, category, display_order)
+        SELECT v.id, v.category, 0
+        FROM vendors v
+        WHERE v.category IS NOT NULL
+          AND v.category <> ''
+          AND NOT EXISTS (SELECT 1 FROM vendor_categories vc WHERE vc.vendor_id = v.id)
       `);
 
       await dbService.execute(`
@@ -159,46 +192,6 @@ export class VendorsService {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
       `);
 
-      // 2. Drop deprecated/extra columns from existing DB schema if present
-      const colsToDrop = [
-        'msme_number',
-        'credit_period_days',
-        'tax_category',
-        'payment_terms',
-        'branch_name',
-        'credit_limit',
-        'total_purchases_amount',
-        'total_purchases_count',
-        'last_purchase_date',
-        'last_payment_date',
-        'rating',
-        'delivery_speed_rating',
-        'quality_rating',
-        'pricing_rating',
-        'on_time_delivery_rate',
-        'quality_score',
-        'fulfillment_rate',
-        'performance_notes',
-      ];
-      for (const col of colsToDrop) {
-        try {
-          await dbService.execute(`ALTER TABLE vendors DROP COLUMN \`${col}\``);
-        } catch (_) {}
-      }
-
-      try {
-        await dbService.execute(`ALTER TABLE vendors ADD COLUMN is_deleted TINYINT(1) NOT NULL DEFAULT 0`);
-      } catch (_) {}
-      try {
-        await dbService.execute(`ALTER TABLE vendors ADD COLUMN deleted_at DATETIME NULL`);
-      } catch (_) {}
-      try {
-        await dbService.execute(`ALTER TABLE vendors ADD COLUMN deleted_by INT NULL`);
-      } catch (_) {}
-      try {
-        await dbService.execute(`ALTER TABLE vendors ADD COLUMN outstanding_balance DECIMAL(12, 2) NOT NULL DEFAULT 0.00`);
-      } catch (_) {}
-
       // 3. Ensure Permissions
       await dbService.execute(`
         INSERT IGNORE INTO permissions (code, module, description)
@@ -225,175 +218,83 @@ export class VendorsService {
           AND r.name = 'CASHIER';
       `);
 
-      // 4. Check if any vendor exists, if not, seed realistic sample data
-      const countRes = await dbService.queryOne<{ total: number }>('SELECT COUNT(*) as total FROM vendors');
-      if (!countRes || countRes.total === 0) {
-        await this.seedInitialVendors();
-      }
-
       this.schemaEnsured = true;
       logger.info('Vendor Management schema, permissions, and tables verified successfully.');
     } catch (err) {
+      this.schemaEnsured = true;
       logger.error('Error ensuring vendor schema:', err);
     }
   }
 
-  private static async seedInitialVendors(): Promise<void> {
-    const seeds = [
-      {
-        uuid: uuidv4(),
-        vendor_code: 'VND-001',
-        name: 'Al-Watania Poultry & Meat Farms',
-        category: 'Meat & Poultry',
-        status: 'ACTIVE',
-        contact_person: 'Sheikh Tariq Mansoor',
-        phone: '+966 50 123 4567',
-        email: 'orders@alwatania-farms.com',
-        address: 'Wholesale Meat District, Gate 4',
-        city: 'Riyadh',
-        state: 'Central Region',
-        postal_code: '11564',
-        website: 'https://alwatania-farms.com',
-        tax_id: '310123456700003',
-        pan_number: 'ALWPM9821K',
-        preferred_payment_method: 'BANK_TRANSFER',
-        bank_name: 'Al Rajhi Bank',
-        account_number: 'SA0380000123456789012345',
-        ifsc_code: 'RJHISARI',
-        upi_id: 'alwatania@rajhi',
-        outstanding_balance: 14500,
-        notes: 'Primary contractor for chicken and lamb portions.',
-      },
-      {
-        uuid: uuidv4(),
-        vendor_code: 'VND-002',
-        name: 'Deccan Basmati & Grain Traders',
-        category: 'Rice & Grains',
-        status: 'ACTIVE',
-        contact_person: 'Abdul Rahman Siddiqui',
-        phone: '+966 54 987 6543',
-        email: 'supplies@deccanbasmati.com',
-        address: 'Grain Silo Complex, Warehouse #12',
-        city: 'Jeddah',
-        state: 'Western Province',
-        postal_code: '21432',
-        website: 'https://deccanbasmati.com',
-        tax_id: '310987654300003',
-        pan_number: 'DECBA3412M',
-        preferred_payment_method: 'BANK_TRANSFER',
-        bank_name: 'National Commercial Bank (SNB)',
-        account_number: 'SA4410000098765432109876',
-        ifsc_code: 'NCBKSARI',
-        upi_id: 'deccanrice@snb',
-        outstanding_balance: 8200,
-        notes: 'Bulk packaging 25kg and 50kg bags.',
-      },
-      {
-        uuid: uuidv4(),
-        vendor_code: 'VND-003',
-        name: 'Royal Arabian Spice Kingdom',
-        category: 'Spices & Condiments',
-        status: 'ACTIVE',
-        contact_person: 'Mustafa Al-Harbi',
-        phone: '+966 56 333 7890',
-        email: 'spices@royal-arabian.sa',
-        address: 'Souq Al-Zal, Shop 88',
-        city: 'Riyadh',
-        state: 'Central Region',
-        postal_code: '11411',
-        website: 'https://royal-arabian.sa',
-        tax_id: '310555666700003',
-        pan_number: 'ROYSP7719P',
-        preferred_payment_method: 'BANK_TRANSFER',
-        bank_name: 'Riyad Bank',
-        account_number: 'SA2220000055566677788899',
-        ifsc_code: 'RIBLSARI',
-        upi_id: 'royalspices@riyad',
-        outstanding_balance: 3400,
-        notes: 'Exclusive artisan spice blend for signature seasoning.',
-      },
-      {
-        uuid: uuidv4(),
-        vendor_code: 'VND-004',
-        name: 'Daily Fresh Dairy & Produce Co.',
-        category: 'Dairy & Fresh Produce',
-        status: 'ACTIVE',
-        contact_person: 'Hassan Al-Najjar',
-        phone: '+966 53 444 1122',
-        email: 'dispatch@dailyfreshdairy.com',
-        address: 'Industrial Dairy Valley, Unit 5',
-        city: 'Al Kharj',
-        state: 'Central Region',
-        postal_code: '16278',
-        website: 'https://dailyfreshdairy.com',
-        tax_id: '310444112200003',
-        pan_number: 'DFDP9012R',
-        preferred_payment_method: 'BANK_TRANSFER',
-        bank_name: 'Banque Saudi Fransi',
-        account_number: 'SA5550000011223344556677',
-        ifsc_code: 'BSFRSARI',
-        upi_id: 'dailyfresh@fransi',
-        outstanding_balance: 2100,
-        notes: 'Daily morning deliveries at 06:30 AM.',
-      },
-      {
-        uuid: uuidv4(),
-        vendor_code: 'VND-005',
-        name: 'Gulf EcoPack & Disposables',
-        category: 'Packaging & Disposables',
-        status: 'ACTIVE',
-        contact_person: 'Bilal Khurram',
-        phone: '+966 55 777 9900',
-        email: 'sales@gulfecopack.com',
-        address: '2nd Industrial City, Plot 405',
-        city: 'Dammam',
-        state: 'Eastern Province',
-        postal_code: '31421',
-        website: 'https://gulfecopack.com',
-        tax_id: '310777990000003',
-        pan_number: 'GEPAK5523T',
-        preferred_payment_method: 'BANK_TRANSFER',
-        bank_name: 'Arab National Bank (ANB)',
-        account_number: 'SA7740000033445566778899',
-        ifsc_code: 'ARNBSARI',
-        upi_id: 'gulfecopack@anb',
-        outstanding_balance: 0,
-        notes: 'Stocked on 2-month buffer quantities.',
-      },
-    ];
+  /**
+   * Normalises a submitted category list: trimmed, de-duplicated
+   * case-insensitively, blanks dropped, order preserved. The first entry is
+   * the primary one written back to `vendors.category`.
+   */
+  private static normaliseCategories(input: unknown, fallback?: string): string[] {
+    const raw = Array.isArray(input) ? input : input === undefined || input === null ? [] : [input];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const item of raw) {
+      const value = String(item ?? '').trim();
+      if (!value) continue;
+      const key = value.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(value);
+    }
+    if (out.length === 0) {
+      const fb = String(fallback ?? '').trim();
+      if (fb) out.push(fb);
+    }
+    return out;
+  }
 
-    for (const v of seeds) {
-      const res = await dbService.execute(`
-        INSERT INTO vendors (
-          uuid, vendor_code, name, category, status, contact_person, phone, email,
-          address, city, state, postal_code, website, tax_id, pan_number,
-          preferred_payment_method, bank_name, account_number, ifsc_code, upi_id,
-          outstanding_balance, notes
-        ) VALUES (
-          ?, ?, ?, ?, ?, ?, ?, ?,
-          ?, ?, ?, ?, ?, ?, ?,
-          ?, ?, ?, ?, ?,
-          ?, ?
-        )
-      `, [
-        v.uuid, v.vendor_code, v.name, v.category, v.status, v.contact_person, v.phone, v.email,
-        v.address, v.city, v.state, v.postal_code, v.website, v.tax_id, v.pan_number,
-        v.preferred_payment_method, v.bank_name, v.account_number, v.ifsc_code, v.upi_id,
-        v.outstanding_balance, v.notes
-      ]);
+  /** Replaces a vendor's category set. Call inside a transaction. */
+  private static async replaceCategories(vendorId: number, categories: string[]): Promise<void> {
+    await dbService.execute('DELETE FROM vendor_categories WHERE vendor_id = ?', [vendorId]);
+    for (let i = 0; i < categories.length; i++) {
+      await dbService.execute(
+        'INSERT IGNORE INTO vendor_categories (vendor_id, category, display_order) VALUES (?, ?, ?)',
+        [vendorId, categories[i], i]
+      );
+    }
+  }
 
-      const vendorId = res.lastInsertRowid;
+  /**
+   * Adds `categories` to each vendor in one query rather than one per row —
+   * a page of 50 vendors would otherwise be 50 extra round trips.
+   */
+  private static async attachCategories(vendors: any[]): Promise<void> {
+    for (const v of vendors) v.categories = [];
+    if (vendors.length === 0) return;
 
-      // Seed initial purchase invoice for this vendor
-      if (v.outstanding_balance > 0) {
-        await dbService.execute(`
-          INSERT INTO vendor_purchases (
-            uuid, vendor_id, invoice_number, order_date, due_date, total_amount, paid_amount, balance_amount, payment_status, delivery_status, items_summary, notes
-          ) VALUES (?, ?, ?, DATE_SUB(NOW(), INTERVAL 3 DAY), DATE_ADD(NOW(), INTERVAL 25 DAY), ?, 0.00, ?, 'UNPAID', 'RECEIVED', ?, 'Initial system seed invoice')
-        `, [
-          uuidv4(), vendorId, `INV-${v.vendor_code}-001`, v.outstanding_balance, v.outstanding_balance, `Standard supply delivery for ${v.category}`
-        ]);
-      }
+    const ids = vendors.map((v) => v.id).filter((id) => Number.isFinite(Number(id)));
+    if (ids.length === 0) return;
+
+    let rows: any[] = [];
+    try {
+      rows = await dbService.query<any>(
+        `SELECT vendor_id, category
+         FROM vendor_categories
+         WHERE vendor_id IN (${ids.map(() => '?').join(',')})
+         ORDER BY display_order ASC, id ASC`,
+        ids
+      );
+    } catch {
+      return;
+    }
+
+    const byVendor = new Map<number, string[]>();
+    for (const r of rows) {
+      const list = byVendor.get(r.vendor_id) || [];
+      list.push(r.category);
+      byVendor.set(r.vendor_id, list);
+    }
+    for (const v of vendors) {
+      const list = byVendor.get(v.id) || [];
+      // A vendor that predates the join table still shows its single category.
+      v.categories = list.length ? list : this.normaliseCategories([], v.category);
     }
   }
 
@@ -422,8 +323,14 @@ export class VendorsService {
     }
 
     if (options.category && options.category !== 'ALL') {
-      where += ' AND category = ?';
-      params.push(options.category);
+      // Matches any of the vendor's categories, not just the primary one, so a
+      // vendor that supplies three things is found under all three. The OR on
+      // `category` keeps rows that predate the join table findable.
+      where += ` AND (EXISTS (
+                   SELECT 1 FROM vendor_categories vc
+                   WHERE vc.vendor_id = vendors.id AND vc.category = ?
+                 ) OR category = ?)`;
+      params.push(options.category, options.category);
     }
 
     if (options.status && options.status !== 'ALL') {
@@ -446,13 +353,21 @@ export class VendorsService {
     const sortCol = validSortCols[options.sortBy || ''] || 'name';
     const sortDir = options.sortOrder === 'DESC' ? 'DESC' : 'ASC';
 
-    const vendors = await dbService.query(
-      `SELECT * FROM vendors
+    const vendors = await dbService.query<any>(
+      `SELECT vendors.*,
+              COALESCE((SELECT SUM(amount) FROM vendor_payments WHERE vendor_id = vendors.id), 0) AS total_paid_amount,
+              COALESCE((SELECT SUM(total_amount) FROM vendor_purchases WHERE vendor_id = vendors.id), 0) AS total_purchases_amount,
+              COALESCE((SELECT COUNT(*) FROM vendor_purchases WHERE vendor_id = vendors.id), 0) AS total_purchases_count,
+              (SELECT order_date FROM vendor_purchases WHERE vendor_id = vendors.id ORDER BY order_date DESC LIMIT 1) AS last_purchase_date,
+              (SELECT payment_date FROM vendor_payments WHERE vendor_id = vendors.id ORDER BY payment_date DESC LIMIT 1) AS last_payment_date
+       FROM vendors
        ${where}
        ORDER BY ${sortCol} ${sortDir}
        LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     );
+
+    await this.attachCategories(vendors);
 
     return {
       data: vendors,
@@ -500,11 +415,24 @@ export class VendorsService {
       WHERE payment_status != 'PAID' AND due_date IS NOT NULL AND due_date < NOW()
     `);
 
-    // Distinct categories
+    // Distinct categories, counted across every category a vendor supplies —
+    // so a vendor listed under three appears in all three tallies. The UNION
+    // picks up vendors that predate the join table and have only the primary.
     const categories = await dbService.query<{ category: string; count: number }>(`
-      SELECT category, COUNT(*) as count
-      FROM vendors
-      WHERE is_deleted = 0
+      SELECT category, COUNT(DISTINCT vendor_id) as count
+      FROM (
+        SELECT vc.category AS category, vc.vendor_id AS vendor_id
+        FROM vendor_categories vc
+        JOIN vendors v ON v.id = vc.vendor_id
+        WHERE v.is_deleted = 0
+        UNION
+        SELECT v.category AS category, v.id AS vendor_id
+        FROM vendors v
+        WHERE v.is_deleted = 0
+          AND v.category IS NOT NULL
+          AND v.category <> ''
+          AND NOT EXISTS (SELECT 1 FROM vendor_categories vc2 WHERE vc2.vendor_id = v.id)
+      ) all_cats
       GROUP BY category
       ORDER BY count DESC
     `);
@@ -523,10 +451,12 @@ export class VendorsService {
   static async getById(id: number) {
     await this.ensureSchema();
 
-    const vendor = await dbService.queryOne('SELECT * FROM vendors WHERE id = ?', [id]);
+    const vendor = await dbService.queryOne<any>('SELECT * FROM vendors WHERE id = ?', [id]);
     if (!vendor) {
       throw AppError.notFound('Vendor not found');
     }
+
+    await this.attachCategories([vendor]);
 
     const purchases = await dbService.query(
       `SELECT * FROM vendor_purchases WHERE vendor_id = ? ORDER BY order_date DESC LIMIT 50`,
@@ -538,31 +468,93 @@ export class VendorsService {
       [id]
     );
 
+    const auditLogs = await this.getAuditLogs(id);
+
+    const totalPurchasesAmount = (purchases as any[]).reduce((sum: number, p: any) => sum + Number(p.total_amount || 0), 0);
+    const totalPaidAmount = (payments as any[]).reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0);
+    const lastPurchaseDate = (purchases as any[]).length > 0 ? (purchases as any[])[0].order_date : null;
+    const lastPaymentDate = (payments as any[]).length > 0 ? (payments as any[])[0].payment_date : null;
+
     return {
-      ...vendor,
+      ...(vendor as any),
+      total_purchases_amount: totalPurchasesAmount,
+      total_paid_amount: totalPaidAmount,
+      total_purchases_count: (purchases as any[]).length,
+      last_purchase_date: lastPurchaseDate,
+      last_payment_date: lastPaymentDate,
       purchases,
       payments,
+      audit_logs: auditLogs,
     };
+  }
+
+  static async getAuditLogs(id: number) {
+    await this.ensureSchema();
+    const logs = await dbService.query(
+      `SELECT a.id, a.user_id, u.name as user_name, u.username, a.action, a.module, a.record_id,
+              a.old_values, a.new_values, a.ip_address, a.created_at
+       FROM audit_logs a
+       LEFT JOIN users u ON a.user_id = u.id
+       WHERE a.module = 'VENDORS' AND (a.record_id = ? OR a.record_id = ?)
+       ORDER BY a.created_at DESC
+       LIMIT 100`,
+      [String(id), id]
+    );
+
+    return (logs as any[]).map((log: any) => {
+      let oldValues = null;
+      let newValues = null;
+      try {
+        oldValues = log.old_values ? (typeof log.old_values === 'string' ? JSON.parse(log.old_values) : log.old_values) : null;
+      } catch {}
+      try {
+        newValues = log.new_values ? (typeof log.new_values === 'string' ? JSON.parse(log.new_values) : log.new_values) : null;
+      } catch {}
+
+      return {
+        ...log,
+        old_values: oldValues,
+        new_values: newValues,
+      };
+    });
   }
 
   static async create(data: CreateVendorInput, userId: number) {
     await this.ensureSchema();
 
-    // Auto-generate vendor_code if not supplied
+    // Auto-generate unique vendor_code if not supplied
     let vendorCode = data.vendor_code?.trim().toUpperCase();
     if (!vendorCode) {
       const maxRes = await dbService.queryOne<{ max_id: number }>('SELECT COALESCE(MAX(id), 0) as max_id FROM vendors');
-      const nextNum = (maxRes?.max_id || 0) + 1;
+      let nextNum = (maxRes?.max_id || 0) + 1;
       vendorCode = `VND-${String(nextNum).padStart(3, '0')}`;
-    }
-
-    const existingCode = await dbService.queryOne('SELECT id FROM vendors WHERE vendor_code = ?', [vendorCode]);
-    if (existingCode) {
-      throw AppError.conflict(`Vendor code ${vendorCode} already exists`);
+      let exists = await dbService.queryOne('SELECT id FROM vendors WHERE vendor_code = ?', [vendorCode]);
+      while (exists) {
+        nextNum++;
+        vendorCode = `VND-${String(nextNum).padStart(3, '0')}`;
+        exists = await dbService.queryOne('SELECT id FROM vendors WHERE vendor_code = ?', [vendorCode]);
+      }
+    } else {
+      const existingCode = await dbService.queryOne('SELECT id FROM vendors WHERE vendor_code = ?', [vendorCode]);
+      if (existingCode) {
+        throw AppError.conflict(`Vendor code ${vendorCode} already exists`);
+      }
     }
 
     const uuid = uuidv4();
+    const paymentMethod = Array.isArray(data.preferred_payment_method)
+      ? data.preferred_payment_method.join(',')
+      : (data.preferred_payment_method || 'BANK_TRANSFER');
 
+    // The first selected category is written to vendors.category so the list,
+    // the detail header and the purchases report keep working unchanged.
+    const categories = this.normaliseCategories(
+      data.categories ?? data.category,
+      'General Supplies'
+    );
+    const primaryCategory = categories[0] || 'General Supplies';
+
+    return await dbService.transaction(async () => {
     const res = await dbService.execute(`
       INSERT INTO vendors (
         uuid, vendor_code, name, category, status, image_url, notes,
@@ -581,7 +573,7 @@ export class VendorsService {
       uuid,
       vendorCode,
       data.name.trim(),
-      data.category || 'General Supplies',
+      primaryCategory,
       data.status || 'ACTIVE',
       data.image_url || null,
       data.notes || null,
@@ -598,7 +590,7 @@ export class VendorsService {
       data.tax_id || null,
       data.pan_number || null,
 
-      data.preferred_payment_method || 'BANK_TRANSFER',
+      paymentMethod,
       data.bank_name || null,
       data.account_number || null,
       data.ifsc_code || null,
@@ -610,15 +602,18 @@ export class VendorsService {
 
     const createdId = res.lastInsertRowid;
 
+    await this.replaceCategories(createdId, categories);
+
     await AuditService.log({
       userId,
       action: 'VENDOR_CREATED',
       module: 'VENDORS',
       recordId: createdId,
-      newValues: { name: data.name, vendor_code: vendorCode },
+      newValues: { name: data.name, vendor_code: vendorCode, categories },
     });
 
     return await this.getById(createdId);
+    });
   }
 
   static async update(id: number, data: Partial<CreateVendorInput>, userId: number) {
@@ -632,6 +627,18 @@ export class VendorsService {
       }
     }
 
+    const paymentMethod = data.preferred_payment_method !== undefined
+      ? (Array.isArray(data.preferred_payment_method) ? data.preferred_payment_method.join(',') : data.preferred_payment_method)
+      : null;
+
+    // Only touch categories when the caller sent them; an update that omits
+    // the field leaves the existing set alone, like every other column here.
+    const nextCategories = data.categories !== undefined || data.category !== undefined
+      ? this.normaliseCategories(data.categories ?? data.category, current.category)
+      : null;
+    const primaryCategory = nextCategories && nextCategories.length ? nextCategories[0] : null;
+
+    return await dbService.transaction(async () => {
     await dbService.execute(`
       UPDATE vendors
       SET 
@@ -660,7 +667,7 @@ export class VendorsService {
       WHERE id = ?
     `, [
       data.name ?? null,
-      data.category ?? null,
+      primaryCategory,
       data.status ?? null,
       data.image_url ?? null,
       data.notes ?? null,
@@ -674,7 +681,7 @@ export class VendorsService {
       data.website ?? null,
       data.tax_id ?? null,
       data.pan_number ?? null,
-      data.preferred_payment_method ?? null,
+      paymentMethod,
       data.bank_name ?? null,
       data.account_number ?? null,
       data.ifsc_code ?? null,
@@ -682,6 +689,10 @@ export class VendorsService {
       data.outstanding_balance !== undefined ? Number(data.outstanding_balance) : null,
       id,
     ]);
+
+    if (nextCategories) {
+      await this.replaceCategories(id, nextCategories);
+    }
 
     await AuditService.log({
       userId,
@@ -692,6 +703,7 @@ export class VendorsService {
     });
 
     return await this.getById(id);
+    });
   }
 
   static async delete(id: number, userId: number) {
@@ -814,18 +826,10 @@ export class VendorsService {
         UPDATE vendors
         SET 
           outstanding_balance = outstanding_balance + ?,
-          total_purchases_amount = total_purchases_amount + ?,
-          total_purchases_count = total_purchases_count + 1,
-          last_purchase_date = ?,
-          last_payment_date = CASE WHEN ? > 0 THEN ? ELSE last_payment_date END,
           updated_at = NOW()
         WHERE id = ?
       `, [
         balanceAmount,
-        totalAmount,
-        data.order_date,
-        paidAmount,
-        data.order_date,
         vendorId,
       ]);
 
@@ -933,10 +937,9 @@ export class VendorsService {
         UPDATE vendors
         SET 
           outstanding_balance = GREATEST(0.00, outstanding_balance - ?),
-          last_payment_date = ?,
           updated_at = NOW()
         WHERE id = ?
-      `, [paymentAmount, data.payment_date, vendorId]);
+      `, [paymentAmount, vendorId]);
 
       await AuditService.log({
         userId,
@@ -950,58 +953,207 @@ export class VendorsService {
     });
   }
 
-  /**
-   * Rating & Performance Scorecard Update
-   */
-  static async updateRatingAndPerformance(
-    vendorId: number,
-    data: {
-      rating?: number;
-      delivery_speed_rating?: number;
-      quality_rating?: number;
-      pricing_rating?: number;
-      on_time_delivery_rate?: number;
-      quality_score?: number;
-      fulfillment_rate?: number;
-      performance_notes?: string;
-    },
-    userId: number
-  ) {
+  static async updatePayment(vendorId: number, paymentId: number, data: Partial<RecordPaymentInput>, userId: number) {
     await this.ensureSchema();
+    const currentPayment = await dbService.queryOne<any>(
+      'SELECT * FROM vendor_payments WHERE id = ? AND vendor_id = ?',
+      [paymentId, vendorId]
+    );
+    if (!currentPayment) {
+      throw AppError.notFound('Payment record not found');
+    }
 
-    await dbService.execute(`
-      UPDATE vendors
-      SET
-        rating = COALESCE(?, rating),
-        delivery_speed_rating = COALESCE(?, delivery_speed_rating),
-        quality_rating = COALESCE(?, quality_rating),
-        pricing_rating = COALESCE(?, pricing_rating),
-        on_time_delivery_rate = COALESCE(?, on_time_delivery_rate),
-        quality_score = COALESCE(?, quality_score),
-        fulfillment_rate = COALESCE(?, fulfillment_rate),
-        performance_notes = COALESCE(?, performance_notes),
-        updated_at = NOW()
-      WHERE id = ?
-    `, [
-      data.rating ?? null,
-      data.delivery_speed_rating ?? null,
-      data.quality_rating ?? null,
-      data.pricing_rating ?? null,
-      data.on_time_delivery_rate ?? null,
-      data.quality_score ?? null,
-      data.fulfillment_rate ?? null,
-      data.performance_notes ?? null,
-      vendorId,
-    ]);
+    const newAmount = data.amount !== undefined ? Number(data.amount) : Number(currentPayment.amount);
+    const amountDiff = newAmount - Number(currentPayment.amount);
 
-    await AuditService.log({
-      userId,
-      action: 'VENDOR_PERFORMANCE_UPDATED',
-      module: 'VENDORS',
-      recordId: vendorId,
-      newValues: data,
+    return await dbService.transaction(async () => {
+      await dbService.execute(`
+        UPDATE vendor_payments
+        SET 
+          payment_date = COALESCE(?, payment_date),
+          amount = COALESCE(?, amount),
+          payment_method = COALESCE(?, payment_method),
+          reference_number = COALESCE(?, reference_number),
+          notes = COALESCE(?, notes)
+        WHERE id = ? AND vendor_id = ?
+      `, [
+        data.payment_date ?? null,
+        data.amount !== undefined ? newAmount : null,
+        data.payment_method ?? null,
+        data.reference_number ?? null,
+        data.notes ?? null,
+        paymentId,
+        vendorId,
+      ]);
+
+      if (amountDiff !== 0) {
+        await dbService.execute(`
+          UPDATE vendors
+          SET outstanding_balance = GREATEST(0.00, outstanding_balance - ?), updated_at = NOW()
+          WHERE id = ?
+        `, [amountDiff, vendorId]);
+      }
+
+      await AuditService.log({
+        userId,
+        action: 'VENDOR_PAYMENT_UPDATED',
+        module: 'VENDORS',
+        recordId: paymentId,
+        newValues: { vendorId, amount: newAmount },
+      });
+
+      return await this.getById(vendorId);
     });
+  }
 
-    return await this.getById(vendorId);
+  static async deletePayment(vendorId: number, paymentId: number, userId: number) {
+    await this.ensureSchema();
+    const currentPayment = await dbService.queryOne<any>(
+      'SELECT * FROM vendor_payments WHERE id = ? AND vendor_id = ?',
+      [paymentId, vendorId]
+    );
+    if (!currentPayment) {
+      throw AppError.notFound('Payment record not found');
+    }
+
+    const amount = Number(currentPayment.amount);
+
+    return await dbService.transaction(async () => {
+      await dbService.execute('DELETE FROM vendor_payments WHERE id = ? AND vendor_id = ?', [paymentId, vendorId]);
+
+      // Restore vendor outstanding balance
+      await dbService.execute(`
+        UPDATE vendors
+        SET outstanding_balance = outstanding_balance + ?, updated_at = NOW()
+        WHERE id = ?
+      `, [amount, vendorId]);
+
+      // If linked to a purchase, reverse the purchase paid amount
+      if (currentPayment.purchase_id) {
+        const purchase = await dbService.queryOne<any>(
+          'SELECT * FROM vendor_purchases WHERE id = ? AND vendor_id = ?',
+          [currentPayment.purchase_id, vendorId]
+        );
+        if (purchase) {
+          const newPaid = Math.max(0, Number(purchase.paid_amount) - amount);
+          const newBal = Number(purchase.total_amount) - newPaid;
+          const newStatus = newBal === 0 ? 'PAID' : (newPaid > 0 ? 'PARTIAL' : 'UNPAID');
+
+          await dbService.execute(`
+            UPDATE vendor_purchases
+            SET paid_amount = ?, balance_amount = ?, payment_status = ?, updated_at = NOW()
+            WHERE id = ?
+          `, [newPaid, newBal, newStatus, currentPayment.purchase_id]);
+        }
+      }
+
+      await AuditService.log({
+        userId,
+        action: 'VENDOR_PAYMENT_DELETED',
+        module: 'VENDORS',
+        recordId: paymentId,
+        oldValues: { amount, paymentNumber: currentPayment.payment_number, vendorId },
+      });
+
+      return await this.getById(vendorId);
+    });
+  }
+
+  static async updatePurchase(vendorId: number, purchaseId: number, data: Partial<RecordPurchaseInput>, userId: number) {
+    await this.ensureSchema();
+    const currentPurchase = await dbService.queryOne<any>(
+      'SELECT * FROM vendor_purchases WHERE id = ? AND vendor_id = ?',
+      [purchaseId, vendorId]
+    );
+    if (!currentPurchase) {
+      throw AppError.notFound('Purchase record not found');
+    }
+
+    const newTotal = data.total_amount !== undefined ? Number(data.total_amount) : Number(currentPurchase.total_amount);
+    const paidAmount = Number(currentPurchase.paid_amount);
+    const newBal = Math.max(0, newTotal - paidAmount);
+    const balanceDiff = newBal - Number(currentPurchase.balance_amount);
+    const newStatus = newBal === 0 ? 'PAID' : (paidAmount > 0 ? 'PARTIAL' : 'UNPAID');
+
+    return await dbService.transaction(async () => {
+      await dbService.execute(`
+        UPDATE vendor_purchases
+        SET 
+          invoice_number = COALESCE(?, invoice_number),
+          order_date = COALESCE(?, order_date),
+          due_date = COALESCE(?, due_date),
+          total_amount = ?,
+          balance_amount = ?,
+          payment_status = ?,
+          items_summary = COALESCE(?, items_summary),
+          notes = COALESCE(?, notes),
+          updated_at = NOW()
+        WHERE id = ? AND vendor_id = ?
+      `, [
+        data.invoice_number ?? null,
+        data.order_date ?? null,
+        data.due_date ?? null,
+        newTotal,
+        newBal,
+        newStatus,
+        data.items_summary ?? null,
+        data.notes ?? null,
+        purchaseId,
+        vendorId,
+      ]);
+
+      if (balanceDiff !== 0) {
+        await dbService.execute(`
+          UPDATE vendors
+          SET outstanding_balance = GREATEST(0.00, outstanding_balance + ?), updated_at = NOW()
+          WHERE id = ?
+        `, [balanceDiff, vendorId]);
+      }
+
+      await AuditService.log({
+        userId,
+        action: 'VENDOR_PURCHASE_UPDATED',
+        module: 'VENDORS',
+        recordId: purchaseId,
+        newValues: { total_amount: newTotal, vendorId },
+      });
+
+      return await this.getById(vendorId);
+    });
+  }
+
+  static async deletePurchase(vendorId: number, purchaseId: number, userId: number) {
+    await this.ensureSchema();
+    const currentPurchase = await dbService.queryOne<any>(
+      'SELECT * FROM vendor_purchases WHERE id = ? AND vendor_id = ?',
+      [purchaseId, vendorId]
+    );
+    if (!currentPurchase) {
+      throw AppError.notFound('Purchase record not found');
+    }
+
+    const balanceAmount = Number(currentPurchase.balance_amount);
+
+    return await dbService.transaction(async () => {
+      await dbService.execute('DELETE FROM vendor_purchases WHERE id = ? AND vendor_id = ?', [purchaseId, vendorId]);
+
+      if (balanceAmount > 0) {
+        await dbService.execute(`
+          UPDATE vendors
+          SET outstanding_balance = GREATEST(0.00, outstanding_balance - ?), updated_at = NOW()
+          WHERE id = ?
+        `, [balanceAmount, vendorId]);
+      }
+
+      await AuditService.log({
+        userId,
+        action: 'VENDOR_PURCHASE_DELETED',
+        module: 'VENDORS',
+        recordId: purchaseId,
+        oldValues: { invoice: currentPurchase.invoice_number, amount: currentPurchase.total_amount, vendorId },
+      });
+
+      return await this.getById(vendorId);
+    });
   }
 }

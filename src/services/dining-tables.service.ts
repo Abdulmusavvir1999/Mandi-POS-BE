@@ -77,19 +77,6 @@ export class DiningTablesService {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
       `);
 
-      // Seed baseline reservations if empty
-      const rsvCount = await dbService.queryOne<{ total: number }>('SELECT COUNT(*) as total FROM table_reservations');
-      if (!rsvCount || rsvCount.total === 0) {
-        await dbService.execute(`
-          INSERT IGNORE INTO table_reservations (
-            uuid, reservation_code, table_id, customer_name, customer_phone, guest_count, reservation_time, preferred_section, special_requests, status
-          ) VALUES 
-          (?, 'RSV-101', 3, 'Fahad Al-Otaibi', '+966 50 444 8899', 6, DATE_ADD(CURDATE(), INTERVAL 19 HOUR), 'Family Cabins', 'Baby high chair requested; birthday dinner', 'CONFIRMED'),
-          (?, 'RSV-102', 7, 'Eng. Mansoor Al-Zahrani', '+966 55 222 3311', 8, DATE_ADD(CURDATE(), INTERVAL 20 HOUR), 'Majlis Floor Seating', 'VIP Traditional Majlis setup', 'CONFIRMED')
-        `, [uuidv4(), uuidv4()]);
-      }
-
-
       this.schemaEnsured = true;
       logger.info('Dining and Table Management schema verified successfully.');
     } catch (err) {
@@ -459,44 +446,49 @@ export class DiningTablesService {
     const nextCode = `RSV-${(countRes?.count || 0) + 101}`;
     const uuid = uuidv4();
 
-    const res = await dbService.execute(`
-      INSERT INTO table_reservations (
-        uuid, reservation_code, table_id, customer_name, customer_phone,
-        guest_count, reservation_time, preferred_section, special_requests, status, created_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'CONFIRMED', ?)
-    `, [
-      uuid,
-      nextCode,
-      data.tableId || null,
-      data.customerName.trim(),
-      data.customerPhone.trim(),
-      data.guestCount || 2,
-      data.reservationTime,
-      data.preferredSection || null,
-      data.specialRequests || null,
-      userId,
-    ]);
+    // Booking the table and holding it are one action: a failure between them
+    // left a confirmed reservation against a table still showing AVAILABLE,
+    // which the floor would then seat to someone else.
+    return await dbService.transaction(async () => {
+      const res = await dbService.execute(`
+        INSERT INTO table_reservations (
+          uuid, reservation_code, table_id, customer_name, customer_phone,
+          guest_count, reservation_time, preferred_section, special_requests, status, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'CONFIRMED', ?)
+      `, [
+        uuid,
+        nextCode,
+        data.tableId || null,
+        data.customerName.trim(),
+        data.customerPhone.trim(),
+        data.guestCount || 2,
+        data.reservationTime,
+        data.preferredSection || null,
+        data.specialRequests || null,
+        userId,
+      ]);
 
-    const rsvId = res.lastInsertRowid;
+      const rsvId = res.lastInsertRowid;
 
-    // If table assigned, mark table as RESERVED
-    if (data.tableId) {
-      await dbService.execute(`
-        UPDATE dining_tables 
-        SET status = 'RESERVED', reservation_id = ?, active_guest_count = ?
-        WHERE id = ? AND status = 'AVAILABLE'
-      `, [rsvId, data.guestCount || 2, data.tableId]);
-    }
+      // If table assigned, mark table as RESERVED
+      if (data.tableId) {
+        await dbService.execute(`
+          UPDATE dining_tables
+          SET status = 'RESERVED', reservation_id = ?, active_guest_count = ?
+          WHERE id = ? AND status = 'AVAILABLE'
+        `, [rsvId, data.guestCount || 2, data.tableId]);
+      }
 
-    await AuditService.log({
-      userId,
-      action: 'TABLE_RESERVATION_CREATED',
-      module: 'DINING',
-      recordId: rsvId,
-      newValues: { code: nextCode, customer: data.customerName, tableId: data.tableId },
+      await AuditService.log({
+        userId,
+        action: 'TABLE_RESERVATION_CREATED',
+        module: 'DINING',
+        recordId: rsvId,
+        newValues: { code: nextCode, customer: data.customerName, tableId: data.tableId },
+      });
+
+      return await dbService.queryOne('SELECT * FROM table_reservations WHERE id = ?', [rsvId]);
     });
-
-    return await dbService.queryOne('SELECT * FROM table_reservations WHERE id = ?', [rsvId]);
   }
 
   static async seatReservation(reservationId: number, tableId: number, userId: number) {

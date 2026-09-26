@@ -30,7 +30,7 @@ export interface ReportCapabilities {
   billItemVariants: boolean;
   /** `bill_items.stock_consumption` — units of stock drawn per item sold. */
   billItemConsumption: boolean;
-  /** `products.stock_item_id` — links a menu item to the stock it depletes. */
+  /** `products.stock_id` — links a menu item to the stock it depletes. */
   productStockLink: boolean;
   /** `customers.tier` — loyalty tier segmentation in customer analytics. */
   customerTiers: boolean;
@@ -64,7 +64,7 @@ export class ReportsSchema {
     this.capabilityCache = {
       billItemVariants: await has('bill_items', 'variant_id'),
       billItemConsumption: await has('bill_items', 'stock_consumption'),
-      productStockLink: await has('products', 'stock_item_id'),
+      productStockLink: await has('products', 'stock_id'),
       customerTiers: await has('customers', 'tier'),
     };
     return this.capabilityCache;
@@ -197,28 +197,6 @@ export class ReportsSchema {
         WHERE p.code = 'refund.view'
           AND r.name = 'CASHIER';
       `);
-
-      const seeded = await dbService.queryOne<{ total: number }>(
-        'SELECT COUNT(*) as total FROM expense_categories'
-      );
-      if (!seeded || Number(seeded.total) === 0) {
-        await dbService.execute(`
-          INSERT IGNORE INTO expense_categories (name, description, is_fixed_cost, is_system, display_order)
-          VALUES
-            ('Rent', 'Shop, kitchen and storage rent', 1, 1, 1),
-            ('Salaries and Wages', 'Staff payroll, overtime and incentives', 1, 1, 2),
-            ('Utilities', 'Electricity, water, gas and internet', 0, 1, 3),
-            ('Raw Material', 'Ingredient and grocery purchases', 0, 1, 4),
-            ('Packaging', 'Takeaway boxes, bags, cutlery and wrapping', 0, 1, 5),
-            ('Maintenance', 'Equipment servicing, plumbing and repairs', 0, 1, 6),
-            ('Transport', 'Delivery fuel, vehicle upkeep and freight', 0, 1, 7),
-            ('Marketing', 'Advertising, printing and promotions', 0, 1, 8),
-            ('Licenses and Fees', 'Trade licence, FSSAI and statutory fees', 1, 1, 9),
-            ('Cleaning', 'Housekeeping supplies and pest control', 0, 1, 10),
-            ('Miscellaneous', 'Uncategorised operational spend', 0, 1, 99);
-        `);
-      }
-
       // Reporting indexes. MySQL has no CREATE INDEX IF NOT EXISTS, so each one
       // is attempted and a duplicate-name failure is the expected no-op.
       const indexes: [string, string, string][] = [

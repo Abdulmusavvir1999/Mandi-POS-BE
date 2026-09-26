@@ -4,7 +4,7 @@ import { Granularity, ReportQuery, ReportRange } from '../utils/reports.query';
 
 export interface InventoryReportOptions {
   range: ReportRange;
-  stockItemId?: number;
+  stockId?: number;
   categoryId?: number;
   granularity?: Granularity;
   limit?: number;
@@ -18,7 +18,7 @@ export interface ValuationOptions {
 }
 
 /**
- * Inventory reporting over the `stock_items` master and its ledgers.
+ * Inventory reporting over the `stocks` master and its ledgers.
  *
  * Two conventions of the stock module drive every query here:
  *
@@ -51,7 +51,7 @@ export class ReportsInventoryService {
     const [items, totals, byCategory] = await Promise.all([
       dbService.query(
         `SELECT
-           si.id                                  AS stock_item_id,
+           si.id                                  AS stock_id,
            si.stock_code,
            si.name                                AS item_name,
            si.unit_type,
@@ -72,8 +72,8 @@ export class ReportsInventoryService {
              WHEN si.current_quantity <= si.min_stock_alert THEN 'LOW'
              ELSE 'OK'
            END                                    AS stock_status
-         FROM stock_items si
-         LEFT JOIN products p ON p.stock_item_id = si.id
+         FROM stocks si
+         LEFT JOIN products p ON p.stock_id = si.id
          LEFT JOIN categories c ON p.category_id = c.id
          ${where}
          ORDER BY value_at_cost DESC`,
@@ -88,8 +88,8 @@ export class ReportsInventoryService {
            COALESCE(SUM(CASE WHEN si.current_quantity <= 0 THEN 1 ELSE 0 END), 0) AS out_of_stock_count,
            COALESCE(SUM(CASE WHEN si.current_quantity > 0 AND si.current_quantity <= si.min_stock_alert THEN 1 ELSE 0 END), 0) AS low_stock_count,
            COALESCE(SUM(CASE WHEN p.id IS NULL THEN 1 ELSE 0 END), 0) AS unlinked_count
-         FROM stock_items si
-         LEFT JOIN products p ON p.stock_item_id = si.id
+         FROM stocks si
+         LEFT JOIN products p ON p.stock_id = si.id
          ${where}`,
         params
       ),
@@ -100,8 +100,8 @@ export class ReportsInventoryService {
            COALESCE(SUM(si.current_quantity), 0)  AS total_quantity,
            COALESCE(SUM(si.current_value), 0)     AS total_value_at_cost,
            COALESCE(SUM(si.current_quantity * COALESCE(NULLIF((SELECT MIN(pv.selling_price) FROM product_variants pv WHERE pv.product_id = p.id), 0), si.average_unit_price)), 0) AS total_value_at_retail
-         FROM stock_items si
-         LEFT JOIN products p ON p.stock_item_id = si.id
+         FROM stocks si
+         LEFT JOIN products p ON p.stock_id = si.id
          LEFT JOIN categories c ON p.category_id = c.id
          ${where}
          GROUP BY c.name
@@ -166,7 +166,7 @@ export class ReportsInventoryService {
     const [byItem, byType, series, totals, opening] = await Promise.all([
       dbService.query(
         `SELECT
-           si.id                                  AS stock_item_id,
+           si.id                                  AS stock_id,
            si.stock_code,
            si.name                                AS item_name,
            si.unit_type,
@@ -179,8 +179,8 @@ export class ReportsInventoryService {
            COALESCE(SUM(CASE WHEN sm.quantity < 0 THEN sm.total_value ELSE 0 END), 0)   AS value_out,
            COALESCE(SUM(CASE WHEN sm.movement_type = 'wastage' THEN ABS(sm.quantity) ELSE 0 END), 0) AS wastage_quantity
          FROM stock_movements sm
-         JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON p.stock_item_id = si.id
+         JOIN stocks si ON sm.stock_id = si.id
+         LEFT JOIN products p ON p.stock_id = si.id
          ${scope.where}
          GROUP BY si.id, si.stock_code, si.name, si.unit_type, si.current_quantity
          ORDER BY ABS(SUM(sm.quantity)) DESC`,
@@ -192,10 +192,10 @@ export class ReportsInventoryService {
            COUNT(sm.id)                           AS movements_count,
            COALESCE(SUM(ABS(sm.quantity)), 0)     AS total_quantity,
            COALESCE(SUM(sm.total_value), 0)       AS total_value,
-           COUNT(DISTINCT sm.stock_item_id)       AS items_affected
+           COUNT(DISTINCT sm.stock_id)       AS items_affected
          FROM stock_movements sm
-         JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON p.stock_item_id = si.id
+         JOIN stocks si ON sm.stock_id = si.id
+         LEFT JOIN products p ON p.stock_id = si.id
          ${scope.where}
          GROUP BY sm.movement_type
          ORDER BY total_value DESC`,
@@ -211,8 +211,8 @@ export class ReportsInventoryService {
            COALESCE(SUM(CASE WHEN sm.quantity > 0 THEN sm.total_value ELSE 0 END), 0)   AS value_in,
            COALESCE(SUM(CASE WHEN sm.quantity < 0 THEN sm.total_value ELSE 0 END), 0)   AS value_out
          FROM stock_movements sm
-         JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON p.stock_item_id = si.id
+         JOIN stocks si ON sm.stock_id = si.id
+         LEFT JOIN products p ON p.stock_id = si.id
          ${scope.where}
          GROUP BY period, period_start
          ORDER BY period_start ASC`,
@@ -221,29 +221,29 @@ export class ReportsInventoryService {
       dbService.queryOne(
         `SELECT
            COUNT(sm.id)                           AS movements_count,
-           COUNT(DISTINCT sm.stock_item_id)       AS items_affected,
+           COUNT(DISTINCT sm.stock_id)       AS items_affected,
            COALESCE(SUM(CASE WHEN sm.quantity > 0 THEN sm.quantity ELSE 0 END), 0)      AS quantity_in,
            COALESCE(SUM(CASE WHEN sm.quantity < 0 THEN ABS(sm.quantity) ELSE 0 END), 0) AS quantity_out,
            COALESCE(SUM(CASE WHEN sm.quantity > 0 THEN sm.total_value ELSE 0 END), 0)   AS value_in,
            COALESCE(SUM(CASE WHEN sm.quantity < 0 THEN sm.total_value ELSE 0 END), 0)   AS value_out
          FROM stock_movements sm
-         JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON p.stock_item_id = si.id
+         JOIN stocks si ON sm.stock_id = si.id
+         LEFT JOIN products p ON p.stock_id = si.id
          ${scope.where}`,
         scope.params
       ),
       // Everything booked before the window, which is the opening balance.
       dbService.query(
-        `SELECT sm.stock_item_id, COALESCE(SUM(sm.quantity), 0) AS opening_quantity
+        `SELECT sm.stock_id, COALESCE(SUM(sm.quantity), 0) AS opening_quantity
          FROM stock_movements sm
          WHERE sm.movement_date < ?
-         GROUP BY sm.stock_item_id`,
+         GROUP BY sm.stock_id`,
         [options.range.startAt]
       ),
     ]);
 
     const openingByItem = new Map<number, number>(
-      opening.map((row: any) => [Number(row.stock_item_id), ReportQuery.num(row.opening_quantity)])
+      opening.map((row: any) => [Number(row.stock_id), ReportQuery.num(row.opening_quantity)])
     );
 
     const items = ReportQuery.numbers(byItem, [
@@ -256,7 +256,7 @@ export class ReportsInventoryService {
       'value_out',
       'wastage_quantity',
     ]).map((row) => {
-      const openingQuantity = ReportQuery.round(openingByItem.get(Number(row.stock_item_id)) ?? 0);
+      const openingQuantity = ReportQuery.round(openingByItem.get(Number(row.stock_id)) ?? 0);
       return {
         ...row,
         opening_quantity: openingQuantity,
@@ -317,18 +317,18 @@ export class ReportsInventoryService {
       dbService.queryOne(
         `SELECT
            COUNT(sm.id)                           AS events_count,
-           COUNT(DISTINCT sm.stock_item_id)       AS items_affected,
+           COUNT(DISTINCT sm.stock_id)       AS items_affected,
            COALESCE(SUM(ABS(sm.quantity)), 0)     AS wasted_quantity,
            COALESCE(SUM(sm.total_value), 0)       AS wasted_value
          FROM stock_movements sm
-         JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON p.stock_item_id = si.id
+         JOIN stocks si ON sm.stock_id = si.id
+         LEFT JOIN products p ON p.stock_id = si.id
          ${scope.where}`,
         scope.params
       ),
       dbService.query(
         `SELECT
-           si.id                                  AS stock_item_id,
+           si.id                                  AS stock_id,
            si.stock_code,
            si.name                                AS item_name,
            si.unit_type,
@@ -338,8 +338,8 @@ export class ReportsInventoryService {
            COALESCE(SUM(sm.total_value), 0)       AS wasted_value,
            MAX(sm.movement_date)                  AS last_wasted_at
          FROM stock_movements sm
-         JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON p.stock_item_id = si.id
+         JOIN stocks si ON sm.stock_id = si.id
+         LEFT JOIN products p ON p.stock_id = si.id
          LEFT JOIN categories c ON p.category_id = c.id
          ${scope.where}
          GROUP BY si.id, si.stock_code, si.name, si.unit_type, c.name
@@ -353,8 +353,8 @@ export class ReportsInventoryService {
            COALESCE(SUM(ABS(sm.quantity)), 0)     AS wasted_quantity,
            COALESCE(SUM(sm.total_value), 0)       AS wasted_value
          FROM stock_movements sm
-         JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON p.stock_item_id = si.id
+         JOIN stocks si ON sm.stock_id = si.id
+         LEFT JOIN products p ON p.stock_id = si.id
          ${scope.where}
          GROUP BY reason
          ORDER BY wasted_value DESC
@@ -369,8 +369,8 @@ export class ReportsInventoryService {
            COALESCE(SUM(ABS(sm.quantity)), 0)     AS wasted_quantity,
            COALESCE(SUM(sm.total_value), 0)       AS wasted_value
          FROM stock_movements sm
-         JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON p.stock_item_id = si.id
+         JOIN stocks si ON sm.stock_id = si.id
+         LEFT JOIN products p ON p.stock_id = si.id
          ${scope.where}
          GROUP BY period, period_start
          ORDER BY period_start ASC`,
@@ -383,8 +383,8 @@ export class ReportsInventoryService {
            COUNT(sm.id)                           AS events_count,
            COALESCE(SUM(sm.total_value), 0)       AS wasted_value
          FROM stock_movements sm
-         JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON p.stock_item_id = si.id
+         JOIN stocks si ON sm.stock_id = si.id
+         LEFT JOIN products p ON p.stock_id = si.id
          LEFT JOIN users u ON sm.created_by = u.id
          ${scope.where}
          GROUP BY u.id, u.name
@@ -396,8 +396,8 @@ export class ReportsInventoryService {
            COALESCE(SUM(ABS(sm.quantity)), 0)     AS quantity_out,
            COALESCE(SUM(sm.total_value), 0)       AS value_out
          FROM stock_movements sm
-         JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON p.stock_item_id = si.id
+         JOIN stocks si ON sm.stock_id = si.id
+         LEFT JOIN products p ON p.stock_id = si.id
          ${consumedScope.where}`,
         consumedScope.params
       ),
@@ -432,7 +432,7 @@ export class ReportsInventoryService {
   }
 
   /**
-   * Purchases: the `stock_entries` ledger, plus the invoice-level view from
+   * Purchases: the `stock_vendor_purchase` ledger, plus the invoice-level view from
    * `vendor_purchases` when the vendor module has been migrated.
    */
   static async purchase(options: InventoryReportOptions) {
@@ -443,27 +443,27 @@ export class ReportsInventoryService {
     const { where, params } = ReportQuery.dateRange('se', options.range, 'entry_date');
     let scoped = `${where} AND se.status = 'posted'`;
     const args = [...params];
-    if (options.stockItemId) {
-      scoped += ' AND se.stock_item_id = ?';
-      args.push(options.stockItemId);
+    if (options.stockId) {
+      scoped += ' AND se.stock_id = ?';
+      args.push(options.stockId);
     }
 
     const [totals, byItem, bySupplier, series, entries, vendorView] = await Promise.all([
       dbService.queryOne(
         `SELECT
            COUNT(se.id)                           AS entries_count,
-           COUNT(DISTINCT se.stock_item_id)       AS items_purchased,
-           COUNT(DISTINCT se.supplier)            AS suppliers_count,
+           COUNT(DISTINCT se.stock_id)       AS items_purchased,
+           COUNT(DISTINCT se.vendor_id)           AS suppliers_count,
            COALESCE(SUM(se.total_quantity), 0)    AS total_quantity,
            COALESCE(SUM(se.total_price), 0)       AS total_spend,
            COALESCE(AVG(se.total_price), 0)       AS avg_entry_value
-         FROM stock_entries se
+         FROM stock_vendor_purchase se
          ${scoped}`,
         args
       ),
       dbService.query(
         `SELECT
-           si.id                                  AS stock_item_id,
+           si.id                                  AS stock_id,
            si.stock_code,
            si.name                                AS item_name,
            si.unit_type,
@@ -474,8 +474,8 @@ export class ReportsInventoryService {
            MIN(se.unit_price)                     AS min_unit_price,
            MAX(se.unit_price)                     AS max_unit_price,
            MAX(se.entry_date)                     AS last_purchased_at
-         FROM stock_entries se
-         JOIN stock_items si ON se.stock_item_id = si.id
+         FROM stock_vendor_purchase se
+         JOIN stocks si ON se.stock_id = si.id
          ${scoped}
          GROUP BY si.id, si.stock_code, si.name, si.unit_type
          ORDER BY total_spend DESC`,
@@ -483,13 +483,14 @@ export class ReportsInventoryService {
       ),
       dbService.query(
         `SELECT
-           COALESCE(NULLIF(TRIM(se.supplier), ''), 'Unattributed') AS supplier,
+           COALESCE(v.name, 'Unattributed')       AS supplier,
            COUNT(se.id)                           AS entries_count,
-           COUNT(DISTINCT se.stock_item_id)       AS items_supplied,
+           COUNT(DISTINCT se.stock_id)       AS items_supplied,
            COALESCE(SUM(se.total_quantity), 0)    AS total_quantity,
            COALESCE(SUM(se.total_price), 0)       AS total_spend,
            MAX(se.entry_date)                     AS last_purchased_at
-         FROM stock_entries se
+         FROM stock_vendor_purchase se
+         LEFT JOIN vendors v ON se.vendor_id = v.id
          ${scoped}
          GROUP BY supplier
          ORDER BY total_spend DESC`,
@@ -502,7 +503,7 @@ export class ReportsInventoryService {
            COUNT(se.id)                           AS entries_count,
            COALESCE(SUM(se.total_quantity), 0)    AS total_quantity,
            COALESCE(SUM(se.total_price), 0)       AS total_spend
-         FROM stock_entries se
+         FROM stock_vendor_purchase se
          ${scoped}
          GROUP BY period, period_start
          ORDER BY period_start ASC`,
@@ -519,13 +520,14 @@ export class ReportsInventoryService {
            se.unit_price,
            se.total_price,
            se.supplier,
-           se.invoice_number,
+           v.name                                 AS vendor_name,
            si.name                                AS item_name,
            si.stock_code,
            si.unit_type,
            COALESCE(u.name, 'System')             AS created_by_name
-         FROM stock_entries se
-         JOIN stock_items si ON se.stock_item_id = si.id
+         FROM stock_vendor_purchase se
+         JOIN stocks si ON se.stock_id = si.id
+         LEFT JOIN vendors v ON se.vendor_id = v.id
          LEFT JOIN users u ON se.created_by = u.id
          ${scoped}
          ORDER BY se.entry_date DESC, se.id DESC
@@ -589,7 +591,7 @@ export class ReportsInventoryService {
    *
    * `booked` is the recorded depletion from the movement ledger. `sold` is the
    * stock those sales *should* have drawn, derived from the menu-to-stock link
-   * (`products.stock_item_id` and the per-line `stock_consumption`). The gap
+   * (`products.stock_id` and the per-line `stock_consumption`). The gap
    * between them is the untracked depletion — the single most useful number
    * here, and it is only available on a database that has the link columns.
    */
@@ -604,18 +606,18 @@ export class ReportsInventoryService {
       dbService.queryOne(
         `SELECT
            COUNT(sm.id)                           AS movements_count,
-           COUNT(DISTINCT sm.stock_item_id)       AS items_consumed,
+           COUNT(DISTINCT sm.stock_id)       AS items_consumed,
            COALESCE(SUM(ABS(sm.quantity)), 0)     AS consumed_quantity,
            COALESCE(SUM(sm.total_value), 0)       AS consumed_value
          FROM stock_movements sm
-         JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON p.stock_item_id = si.id
+         JOIN stocks si ON sm.stock_id = si.id
+         LEFT JOIN products p ON p.stock_id = si.id
          ${scope.where}`,
         scope.params
       ),
       dbService.query(
         `SELECT
-           si.id                                  AS stock_item_id,
+           si.id                                  AS stock_id,
            si.stock_code,
            si.name                                AS item_name,
            si.unit_type,
@@ -625,8 +627,8 @@ export class ReportsInventoryService {
            COALESCE(SUM(sm.total_value), 0)       AS consumed_value,
            COALESCE(SUM(CASE WHEN sm.movement_type = 'wastage' THEN ABS(sm.quantity) ELSE 0 END), 0) AS wasted_quantity
          FROM stock_movements sm
-         JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON p.stock_item_id = si.id
+         JOIN stocks si ON sm.stock_id = si.id
+         LEFT JOIN products p ON p.stock_id = si.id
          ${scope.where}
          GROUP BY si.id, si.stock_code, si.name, si.unit_type, si.current_quantity, si.average_unit_price
          ORDER BY consumed_value DESC`,
@@ -639,8 +641,8 @@ export class ReportsInventoryService {
            COALESCE(SUM(ABS(sm.quantity)), 0)     AS consumed_quantity,
            COALESCE(SUM(sm.total_value), 0)       AS consumed_value
          FROM stock_movements sm
-         JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON p.stock_item_id = si.id
+         JOIN stocks si ON sm.stock_id = si.id
+         LEFT JOIN products p ON p.stock_id = si.id
          ${scope.where}
          GROUP BY sm.movement_type
          ORDER BY consumed_value DESC`,
@@ -653,8 +655,8 @@ export class ReportsInventoryService {
            COALESCE(SUM(ABS(sm.quantity)), 0)     AS consumed_quantity,
            COALESCE(SUM(sm.total_value), 0)       AS consumed_value
          FROM stock_movements sm
-         JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON p.stock_item_id = si.id
+         JOIN stocks si ON sm.stock_id = si.id
+         LEFT JOIN products p ON p.stock_id = si.id
          ${scope.where}
          GROUP BY period, period_start
          ORDER BY period_start ASC`,
@@ -668,15 +670,15 @@ export class ReportsInventoryService {
     const consumedValue = ReportQuery.round(ReportQuery.num(totals?.consumed_value));
 
     const soldByItem = new Map<number, { quantity: number; value: number }>(
-      (soldDepletion?.items ?? []).map((row) => [row.stock_item_id, { quantity: row.sold_quantity, value: row.sold_value }])
+      (soldDepletion?.items ?? []).map((row) => [row.stock_id, { quantity: row.sold_quantity, value: row.sold_value }])
     );
 
     return {
       range: options.range,
       granularity,
       basis: caps.productStockLink
-        ? 'booked depletion from stock_movements, compared to sales-implied depletion via products.stock_item_id'
-        : 'booked depletion from stock_movements only; this database has no products.stock_item_id link',
+        ? 'booked depletion from stock_movements, compared to sales-implied depletion via products.stock_id'
+        : 'booked depletion from stock_movements only; this database has no products.stock_id link',
       summary: {
         movements_count: Number(totals?.movements_count ?? 0),
         items_consumed: Number(totals?.items_consumed ?? 0),
@@ -696,7 +698,7 @@ export class ReportsInventoryService {
         'consumed_value',
         'wasted_quantity',
       ]).map((row) => {
-        const sold = soldByItem.get(Number(row.stock_item_id));
+        const sold = soldByItem.get(Number(row.stock_id));
         const dailyBurn = options.range.days ? row.consumed_quantity / options.range.days : 0;
         return {
           ...row,
@@ -720,7 +722,7 @@ export class ReportsInventoryService {
    *
    * Two different measures, deliberately both reported:
    *
-   * - **recipe food cost** — `quantity x products.cost_price` over the billed
+   * - **recipe food cost** — `quantity x stock_consumption x stocks.average_unit_price` over the billed
    *   lines. Stable, but only as accurate as the maintained cost prices.
    * - **purchase food cost** — what was actually spent on stock in the window
    *   over revenue in the same window. Noisy for a short range, since a bulk
@@ -743,7 +745,7 @@ export class ReportsInventoryService {
       dbService.queryOne(
         `SELECT
            COALESCE(SUM(bi.total_amount), 0)                        AS revenue,
-           COALESCE(SUM(bi.quantity * COALESCE((SELECT AVG(si.average_unit_price) FROM stock_items si WHERE si.id = p.stock_item_id), 0)), 0) AS cogs,
+           COALESCE(SUM(bi.quantity * COALESCE((SELECT AVG(si.average_unit_price) FROM stocks si WHERE si.id = p.stock_id), 0)), 0) AS cogs,
            COALESCE(SUM(bi.quantity), 0)                            AS quantity_sold,
            COUNT(DISTINCT bi.bill_id)                               AS bills_count
          FROM bill_items bi
@@ -758,7 +760,7 @@ export class ReportsInventoryService {
            c.id                                                     AS category_id,
            COALESCE(SUM(bi.quantity), 0)                            AS quantity_sold,
            COALESCE(SUM(bi.total_amount), 0)                        AS revenue,
-           COALESCE(SUM(bi.quantity * COALESCE((SELECT AVG(si.average_unit_price) FROM stock_items si WHERE si.id = p.stock_item_id), 0)), 0) AS cogs
+           COALESCE(SUM(bi.quantity * COALESCE((SELECT AVG(si.average_unit_price) FROM stocks si WHERE si.id = p.stock_id), 0)), 0) AS cogs
          FROM bill_items bi
          JOIN bills b ON bi.bill_id = b.id
          JOIN products p ON bi.product_id = p.id
@@ -773,11 +775,11 @@ export class ReportsInventoryService {
            p.id                                                     AS product_id,
            p.name                                                   AS product_name,
            p.sku,
-           COALESCE((SELECT AVG(si.average_unit_price) FROM stock_items si WHERE si.id = p.stock_item_id), 0) AS cost_price,
+           COALESCE((SELECT AVG(si.average_unit_price) FROM stocks si WHERE si.id = p.stock_id), 0) AS cost_price,
            COALESCE((SELECT MIN(pv.selling_price) FROM product_variants pv WHERE pv.product_id = p.id), 0) AS selling_price,
            COALESCE(SUM(bi.quantity), 0)                            AS quantity_sold,
            COALESCE(SUM(bi.total_amount), 0)                        AS revenue,
-           COALESCE(SUM(bi.quantity * COALESCE((SELECT AVG(si.average_unit_price) FROM stock_items si WHERE si.id = p.stock_item_id), 0)), 0) AS cogs
+           COALESCE(SUM(bi.quantity * COALESCE((SELECT AVG(si.average_unit_price) FROM stocks si WHERE si.id = p.stock_id), 0)), 0) AS cogs
          FROM bill_items bi
          JOIN bills b ON bi.bill_id = b.id
          JOIN products p ON bi.product_id = p.id
@@ -792,7 +794,7 @@ export class ReportsInventoryService {
            ${bucket.label}                                          AS period,
            ${bucket.start}                                          AS period_start,
            COALESCE(SUM(bi.total_amount), 0)                        AS revenue,
-           COALESCE(SUM(bi.quantity * COALESCE((SELECT AVG(si.average_unit_price) FROM stock_items si WHERE si.id = p.stock_item_id), 0)), 0) AS cogs
+           COALESCE(SUM(bi.quantity * COALESCE((SELECT AVG(si.average_unit_price) FROM stocks si WHERE si.id = p.stock_id), 0)), 0) AS cogs
          FROM bill_items bi
          JOIN bills b ON bi.bill_id = b.id
          JOIN products p ON bi.product_id = p.id
@@ -803,7 +805,7 @@ export class ReportsInventoryService {
       ),
       dbService.queryOne(
         `SELECT COALESCE(SUM(se.total_price), 0) AS purchase_spend
-         FROM stock_entries se
+         FROM stock_vendor_purchase se
          ${ReportQuery.dateRange('se', options.range, 'entry_date').where}
            AND se.status = 'posted'`,
         ReportQuery.dateRange('se', options.range, 'entry_date').params
@@ -880,20 +882,20 @@ export class ReportsInventoryService {
    * the whole history, and truncating the ledger to a window would manufacture
    * a variance out of the opening balance.
    */
-  static async variance(options: { stockItemId?: number; onlyDiscrepancies?: boolean; tolerance?: number } = {}) {
+  static async variance(options: { stockId?: number; onlyDiscrepancies?: boolean; tolerance?: number } = {}) {
     await ReportsSchema.ensure();
     const tolerance = options.tolerance ?? 0.001;
 
     let where = "WHERE si.status = 'active'";
     const params: any[] = [];
-    if (options.stockItemId) {
+    if (options.stockId) {
       where += ' AND si.id = ?';
-      params.push(options.stockItemId);
+      params.push(options.stockId);
     }
 
     const rows = await dbService.query(
       `SELECT
-         si.id                                    AS stock_item_id,
+         si.id                                    AS stock_id,
          si.stock_code,
          si.name                                  AS item_name,
          si.unit_type,
@@ -904,23 +906,23 @@ export class ReportsInventoryService {
          COALESCE(ledger.movements_count, 0)      AS movements_count,
          last_move.balance_quantity               AS last_recorded_balance,
          last_move.movement_date                  AS last_movement_at
-       FROM stock_items si
+       FROM stocks si
        LEFT JOIN (
-         SELECT stock_item_id,
+         SELECT stock_id,
                 SUM(quantity) AS ledger_quantity,
                 COUNT(*)      AS movements_count
          FROM stock_movements
-         GROUP BY stock_item_id
-       ) ledger ON ledger.stock_item_id = si.id
+         GROUP BY stock_id
+       ) ledger ON ledger.stock_id = si.id
        LEFT JOIN (
-         SELECT sm.stock_item_id, sm.balance_quantity, sm.movement_date
+         SELECT sm.stock_id, sm.balance_quantity, sm.movement_date
          FROM stock_movements sm
          JOIN (
-           SELECT stock_item_id, MAX(id) AS max_id
+           SELECT stock_id, MAX(id) AS max_id
            FROM stock_movements
-           GROUP BY stock_item_id
+           GROUP BY stock_id
          ) latest ON latest.max_id = sm.id
-       ) last_move ON last_move.stock_item_id = si.id
+       ) last_move ON last_move.stock_id = si.id
        ${where}
        ORDER BY ABS(si.current_quantity - COALESCE(ledger.ledger_quantity, 0)) DESC`,
       params
@@ -989,21 +991,21 @@ export class ReportsInventoryService {
       dbService.queryOne(
         `SELECT
            COUNT(sm.id)                           AS adjustments_count,
-           COUNT(DISTINCT sm.stock_item_id)       AS items_affected,
+           COUNT(DISTINCT sm.stock_id)       AS items_affected,
            COALESCE(SUM(CASE WHEN sm.quantity > 0 THEN sm.quantity ELSE 0 END), 0)      AS quantity_increased,
            COALESCE(SUM(CASE WHEN sm.quantity < 0 THEN ABS(sm.quantity) ELSE 0 END), 0) AS quantity_decreased,
            COALESCE(SUM(sm.quantity), 0)          AS net_quantity_change,
            COALESCE(SUM(CASE WHEN sm.quantity > 0 THEN sm.total_value ELSE 0 END), 0)   AS value_increased,
            COALESCE(SUM(CASE WHEN sm.quantity < 0 THEN sm.total_value ELSE 0 END), 0)   AS value_decreased
          FROM stock_movements sm
-         JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON p.stock_item_id = si.id
+         JOIN stocks si ON sm.stock_id = si.id
+         LEFT JOIN products p ON p.stock_id = si.id
          ${scope.where}`,
         scope.params
       ),
       dbService.query(
         `SELECT
-           si.id                                  AS stock_item_id,
+           si.id                                  AS stock_id,
            si.stock_code,
            si.name                                AS item_name,
            si.unit_type,
@@ -1014,8 +1016,8 @@ export class ReportsInventoryService {
            COALESCE(SUM(sm.total_value), 0)       AS total_value_moved,
            MAX(sm.movement_date)                  AS last_adjusted_at
          FROM stock_movements sm
-         JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON p.stock_item_id = si.id
+         JOIN stocks si ON sm.stock_id = si.id
+         LEFT JOIN products p ON p.stock_id = si.id
          ${scope.where}
          GROUP BY si.id, si.stock_code, si.name, si.unit_type
          ORDER BY adjustments_count DESC, total_value_moved DESC`,
@@ -1028,8 +1030,8 @@ export class ReportsInventoryService {
            COALESCE(SUM(sm.quantity), 0)          AS net_quantity_change,
            COALESCE(SUM(sm.total_value), 0)       AS total_value_moved
          FROM stock_movements sm
-         JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON p.stock_item_id = si.id
+         JOIN stocks si ON sm.stock_id = si.id
+         LEFT JOIN products p ON p.stock_id = si.id
          ${scope.where}
          GROUP BY reason
          ORDER BY adjustments_count DESC
@@ -1045,8 +1047,8 @@ export class ReportsInventoryService {
            COALESCE(SUM(CASE WHEN sm.quantity < 0 THEN ABS(sm.quantity) ELSE 0 END), 0) AS quantity_decreased,
            COALESCE(SUM(sm.total_value), 0)       AS total_value_moved
          FROM stock_movements sm
-         JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON p.stock_item_id = si.id
+         JOIN stocks si ON sm.stock_id = si.id
+         LEFT JOIN products p ON p.stock_id = si.id
          LEFT JOIN users u ON sm.created_by = u.id
          ${scope.where}
          GROUP BY u.id, u.name
@@ -1061,8 +1063,8 @@ export class ReportsInventoryService {
            COALESCE(SUM(sm.quantity), 0)          AS net_quantity_change,
            COALESCE(SUM(sm.total_value), 0)       AS total_value_moved
          FROM stock_movements sm
-         JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON p.stock_item_id = si.id
+         JOIN stocks si ON sm.stock_id = si.id
+         LEFT JOIN products p ON p.stock_id = si.id
          ${scope.where}
          GROUP BY period, period_start
          ORDER BY period_start ASC`,
@@ -1083,8 +1085,8 @@ export class ReportsInventoryService {
            si.unit_type,
            COALESCE(u.name, 'System')             AS adjusted_by
          FROM stock_movements sm
-         JOIN stock_items si ON sm.stock_item_id = si.id
-         LEFT JOIN products p ON p.stock_item_id = si.id
+         JOIN stocks si ON sm.stock_id = si.id
+         LEFT JOIN products p ON p.stock_id = si.id
          LEFT JOIN users u ON sm.created_by = u.id
          ${scope.where}
          ORDER BY sm.movement_date DESC, sm.id DESC
@@ -1133,7 +1135,7 @@ export class ReportsInventoryService {
   /**
    * Stock the range's sales should have drawn down, via the menu-to-stock link.
    *
-   * Only reachable when `products.stock_item_id` exists. The per-line
+   * Only reachable when `products.stock_id` exists. The per-line
    * `stock_consumption` is how many stock units one sold unit draws (a half
    * portion draws less than a full), defaulting to 1 where absent.
    */
@@ -1144,7 +1146,7 @@ export class ReportsInventoryService {
 
     const rows = await dbService.query(
       `SELECT
-         si.id                                    AS stock_item_id,
+         si.id                                    AS stock_id,
          si.stock_code,
          si.name                                  AS item_name,
          si.unit_type,
@@ -1154,7 +1156,7 @@ export class ReportsInventoryService {
        FROM bill_items bi
        JOIN bills b ON bi.bill_id = b.id
        JOIN products p ON bi.product_id = p.id
-       JOIN stock_items si ON p.stock_item_id = si.id
+       JOIN stocks si ON p.stock_id = si.id
        ${billScope.where}
        GROUP BY si.id, si.stock_code, si.name, si.unit_type, si.average_unit_price
        ORDER BY sold_value DESC`,
@@ -1237,9 +1239,9 @@ export class ReportsInventoryService {
     const args = [...params];
 
     if (extra) scoped += ` AND ${extra}`;
-    if (options.stockItemId) {
-      scoped += ' AND sm.stock_item_id = ?';
-      args.push(options.stockItemId);
+    if (options.stockId) {
+      scoped += ' AND sm.stock_id = ?';
+      args.push(options.stockId);
     }
     if (options.categoryId) {
       scoped += ' AND p.category_id = ?';

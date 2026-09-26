@@ -108,11 +108,12 @@ export class ReportsService {
          c.name as category_name,
          SUM(bi.quantity) as quantity_sold,
          SUM(bi.total_amount) as revenue_generated,
-         SUM(bi.quantity * p.cost_price) as total_cost,
-         (SUM(bi.total_amount) - SUM(bi.quantity * p.cost_price)) as estimated_gross_profit
+         COALESCE(SUM(bi.quantity * COALESCE(bi.stock_consumption, 1) * COALESCE(si.average_unit_price, 0)), 0) as total_cost,
+         COALESCE(SUM(bi.total_amount) - SUM(bi.quantity * COALESCE(bi.stock_consumption, 1) * COALESCE(si.average_unit_price, 0)), 0) as estimated_gross_profit
        FROM bill_items bi
        JOIN bills b ON bi.bill_id = b.id
        JOIN products p ON bi.product_id = p.id
+       LEFT JOIN stocks si ON si.id = p.stock_id
        JOIN categories c ON p.category_id = c.id
        ${where}
        GROUP BY p.id
@@ -175,7 +176,7 @@ export class ReportsService {
   static async getStockReport() {
     const stockReport = await dbService.query(
       `SELECT
-         si.id as stock_item_id,
+         si.id as stock_id,
          si.stock_code,
          si.name as item_name,
          si.unit_type,
@@ -192,8 +193,8 @@ export class ReportsService {
          si.current_value as stock_valuation_cost,
          (si.current_quantity * COALESCE((SELECT MIN(pv.selling_price) FROM product_variants pv WHERE pv.product_id = p.id), si.average_unit_price)) as stock_valuation_retail,
          (si.current_quantity <= si.min_stock_alert) as is_low_stock
-       FROM stock_items si
-       LEFT JOIN products p ON p.stock_item_id = si.id
+       FROM stocks si
+       LEFT JOIN products p ON p.stock_id = si.id
        LEFT JOIN categories c ON p.category_id = c.id
        WHERE si.status = 'active'
        ORDER BY (si.current_quantity <= si.min_stock_alert) DESC, si.current_quantity ASC`
@@ -208,8 +209,8 @@ export class ReportsService {
          COALESCE(SUM(si.current_quantity), 0) as total_items_in_stock,
          COALESCE(SUM(si.current_value), 0) as total_valuation_cost,
          COALESCE(SUM(si.current_quantity * COALESCE((SELECT MIN(pv.selling_price) FROM product_variants pv WHERE pv.product_id = p.id), si.average_unit_price)), 0) as total_valuation_retail
-       FROM stock_items si
-       LEFT JOIN products p ON p.stock_item_id = si.id
+       FROM stocks si
+       LEFT JOIN products p ON p.stock_id = si.id
        WHERE si.status = 'active'`
     );
 

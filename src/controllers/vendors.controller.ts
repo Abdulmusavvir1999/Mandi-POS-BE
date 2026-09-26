@@ -112,6 +112,28 @@ export class VendorsController {
     }
   }
 
+  static async updatePurchase(req: Request, res: Response, next: NextFunction) {
+    try {
+      const id = ParamUtil.id(req.params.id, 'id');
+      const purchaseId = ParamUtil.id(req.params.purchaseId, 'purchaseId');
+      const vendor = await VendorsService.updatePurchase(id, purchaseId, req.body, req.user!.id);
+      ResponseUtil.success(res, vendor, 'Purchase invoice updated successfully');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async deletePurchase(req: Request, res: Response, next: NextFunction) {
+    try {
+      const id = ParamUtil.id(req.params.id, 'id');
+      const purchaseId = ParamUtil.id(req.params.purchaseId, 'purchaseId');
+      const vendor = await VendorsService.deletePurchase(id, purchaseId, req.user!.id);
+      ResponseUtil.success(res, vendor, 'Purchase invoice deleted successfully');
+    } catch (err) {
+      next(err);
+    }
+  }
+
   static async getPayments(req: Request, res: Response, next: NextFunction) {
     try {
       const id = ParamUtil.id(req.params.id, 'id');
@@ -135,11 +157,33 @@ export class VendorsController {
     }
   }
 
-  static async updateRating(req: Request, res: Response, next: NextFunction) {
+  static async updatePayment(req: Request, res: Response, next: NextFunction) {
     try {
       const id = ParamUtil.id(req.params.id, 'id');
-      const vendor = await VendorsService.updateRatingAndPerformance(id, req.body, req.user!.id);
-      ResponseUtil.success(res, vendor, 'Vendor rating and performance updated successfully');
+      const paymentId = ParamUtil.id(req.params.paymentId, 'paymentId');
+      const vendor = await VendorsService.updatePayment(id, paymentId, req.body, req.user!.id);
+      ResponseUtil.success(res, vendor, 'Disbursement payment updated successfully');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async deletePayment(req: Request, res: Response, next: NextFunction) {
+    try {
+      const id = ParamUtil.id(req.params.id, 'id');
+      const paymentId = ParamUtil.id(req.params.paymentId, 'paymentId');
+      const vendor = await VendorsService.deletePayment(id, paymentId, req.user!.id);
+      ResponseUtil.success(res, vendor, 'Disbursement payment deleted successfully');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async getAuditLogs(req: Request, res: Response, next: NextFunction) {
+    try {
+      const id = ParamUtil.id(req.params.id, 'id');
+      const data = await VendorsService.getAuditLogs(id);
+      ResponseUtil.success(res, data, 'Vendor audit logs retrieved successfully');
     } catch (err) {
       next(err);
     }

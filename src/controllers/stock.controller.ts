@@ -69,14 +69,14 @@ export class StockController {
     try {
       const page = ParamUtil.page(req.query.page);
       const limit = ParamUtil.limit(req.query.limit, 50);
-      const stockItemId = ParamUtil.optionalId(req.query.stockItemId, 'stockItemId');
+      const stockId = ParamUtil.optionalId(req.query.stockId, 'stockId');
       const search = req.query.search as string | undefined;
-      const supplier = req.query.supplier as string | undefined;
+      const supplier = req.query.supplier as 'Initial Setup' | 'Vendor' | undefined;
       const dateFrom = req.query.dateFrom as string | undefined;
       const dateTo = req.query.dateTo as string | undefined;
       const vendorId = ParamUtil.optionalId(req.query.vendorId, 'vendorId');
 
-      const result = await StockService.getStockEntries(page, limit, stockItemId, search, supplier, dateFrom, dateTo, vendorId);
+      const result = await StockService.getStockEntries(page, limit, stockId, search, supplier, dateFrom, dateTo, vendorId);
       ResponseUtil.paginated(res, result, 'Stock purchase entries fetched successfully');
     } catch (err) {
       next(err);
@@ -102,13 +102,13 @@ export class StockController {
     try {
       const page = ParamUtil.page(req.query.page);
       const limit = ParamUtil.limit(req.query.limit, 50);
-      const stockItemId = ParamUtil.optionalId(req.query.stockItemId, 'stockItemId');
+      const stockId = ParamUtil.optionalId(req.query.stockId, 'stockId');
       const movementType = req.query.movementType as string | undefined;
       const search = req.query.search as string | undefined;
       const dateFrom = req.query.dateFrom as string | undefined;
       const dateTo = req.query.dateTo as string | undefined;
 
-      const result = await StockService.getStockMovements(page, limit, stockItemId, movementType, search, dateFrom, dateTo);
+      const result = await StockService.getStockMovements(page, limit, stockId, movementType, search, dateFrom, dateTo);
       ResponseUtil.paginated(res, result, 'Stock movements fetched successfully');
     } catch (err) {
       next(err);

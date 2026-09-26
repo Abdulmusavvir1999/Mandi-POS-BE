@@ -14,13 +14,18 @@ router.get('/:id', authenticate, VendorsController.getById);
 // Purchase History & Recording
 router.get('/:id/purchases', authenticate, VendorsController.getPurchases);
 router.post('/:id/purchases', authenticate, requirePermission('vendor.manage'), VendorsController.recordPurchase);
+router.put('/:id/purchases/:purchaseId', authenticate, requirePermission('vendor.manage'), VendorsController.updatePurchase);
+router.delete('/:id/purchases/:purchaseId', authenticate, requirePermission('vendor.manage'), VendorsController.deletePurchase);
 
 // Payments & Recording
 router.get('/:id/payments', authenticate, VendorsController.getPayments);
 router.post('/:id/payments', authenticate, requirePermission('vendor.manage'), VendorsController.recordPayment);
+router.put('/:id/payments/:paymentId', authenticate, requirePermission('vendor.manage'), VendorsController.updatePayment);
+router.delete('/:id/payments/:paymentId', authenticate, requirePermission('vendor.manage'), VendorsController.deletePayment);
 
-// Ratings & Performance
-router.patch('/:id/rating', authenticate, requirePermission('vendor.manage'), VendorsController.updateRating);
+// Audit Logs
+router.get('/:id/audit-logs', authenticate, VendorsController.getAuditLogs);
+
 
 // Management CRUD
 router.post('/image', authenticate, requirePermission('vendor.manage'), VendorsController.uploadImage);

@@ -333,20 +333,15 @@ export class BackOfficeService {
         const stockQty = Number(item.stock_consumption || 1) * Number(item.quantity || 0);
         if (stockQty <= 0) continue;
 
-        const product = await dbService.queryOne<{ stock_item_id: number | null }>(
-          'SELECT stock_item_id FROM products WHERE id = ?',
+        const product = await dbService.queryOne<{ stock_id: number | null }>(
+          'SELECT stock_id FROM products WHERE id = ?',
           [item.product_id]
         );
 
-        if (product?.stock_item_id) {
+        if (product?.stock_id) {
           await dbService.execute(
-            'UPDATE stock_items SET current_quantity = current_quantity + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-            [stockQty, product.stock_item_id]
-          );
-        } else {
-          await dbService.execute(
-            'UPDATE stock SET current_stock = current_stock + ?, updated_at = CURRENT_TIMESTAMP WHERE product_id = ?',
-            [stockQty, item.product_id]
+            'UPDATE stocks SET current_quantity = current_quantity + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            [stockQty, product.stock_id]
           );
         }
       }
@@ -749,20 +744,15 @@ export class BackOfficeService {
         const stockQty = Number(item.stock_consumption || 1) * Number(item.quantity || 0);
         if (stockQty <= 0) continue;
 
-        const product = await dbService.queryOne<{ stock_item_id: number | null }>(
-          'SELECT stock_item_id FROM products WHERE id = ?',
+        const product = await dbService.queryOne<{ stock_id: number | null }>(
+          'SELECT stock_id FROM products WHERE id = ?',
           [item.product_id]
         );
 
-        if (product?.stock_item_id) {
+        if (product?.stock_id) {
           await dbService.execute(
-            'UPDATE stock_items SET current_quantity = current_quantity - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-            [stockQty, product.stock_item_id]
-          );
-        } else {
-          await dbService.execute(
-            'UPDATE stock SET current_stock = current_stock - ?, updated_at = CURRENT_TIMESTAMP WHERE product_id = ?',
-            [stockQty, item.product_id]
+            'UPDATE stocks SET current_quantity = current_quantity - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            [stockQty, product.stock_id]
           );
         }
       }

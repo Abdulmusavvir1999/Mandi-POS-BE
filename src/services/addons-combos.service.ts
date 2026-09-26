@@ -10,7 +10,7 @@ export interface CreateAddonInput {
   cost_price?: number;
   image_url?: string | null;
   is_available?: boolean;
-  stock_item_id?: number | null;
+  stock_id?: number | null;
   status?: 'ACTIVE' | 'INACTIVE';
 }
 
@@ -80,7 +80,7 @@ export class AddonsCombosService {
           cost_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
           image_url VARCHAR(255) NULL,
           is_available BOOLEAN DEFAULT TRUE,
-          stock_item_id INT NULL,
+          stock_id INT NULL,
           status ENUM('ACTIVE', 'INACTIVE') DEFAULT 'ACTIVE',
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -156,48 +156,6 @@ export class AddonsCombosService {
         );
       }
 
-      // 6. Seed baseline add-ons if empty
-      const addonCount = await dbService.queryOne<{ count: number }>('SELECT COUNT(*) as count FROM product_addons');
-      if (!addonCount || addonCount.count === 0) {
-        await dbService.execute(`
-          INSERT IGNORE INTO product_addons (id, name, category, price, cost_price, is_available, status) VALUES
-          (1, 'Extra Spicy Daqoos Sauce', 'Sauces', 3.00, 1.00, 1, 'ACTIVE'),
-          (2, 'Creamy Garlic Tahini Dip', 'Sauces', 4.00, 1.50, 1, 'ACTIVE'),
-          (3, 'Crispy Fried Caramelized Onions', 'Toppings', 4.00, 1.20, 1, 'ACTIVE'),
-          (4, 'Golden Roasted Almonds & Raisins', 'Toppings', 8.00, 3.50, 1, 'ACTIVE'),
-          (5, 'Extra Traditional Shurba (Soup Bowl)', 'Sides', 6.00, 2.00, 1, 'ACTIVE'),
-          (6, 'Extra Fragrant  Rice Portion', 'Sides', 15.00, 5.00, 1, 'ACTIVE'),
-          (7, 'Melted Cheddar Cheese Drizzle', 'Toppings', 5.00, 2.00, 1, 'ACTIVE'),
-          (8, 'Chilled Ayran Laban Bottle (330ml)', 'Beverages', 6.00, 2.50, 1, 'ACTIVE');
-        `);
-
-        await dbService.execute(`
-          INSERT IGNORE INTO product_addon_mappings (id, addon_id, is_global) VALUES
-          (1, 1, 1), (2, 2, 1), (3, 3, 1), (4, 4, 1), (5, 5, 1), (6, 6, 1), (7, 7, 1), (8, 8, 1);
-        `);
-      }
-
-      // 7. Seed baseline combo deals if empty
-      const comboCount = await dbService.queryOne<{ count: number }>('SELECT COUNT(*) as count FROM combo_deals');
-      if (!comboCount || comboCount.count === 0) {
-        await dbService.execute(`
-          INSERT IGNORE INTO combo_deals (id, combo_code, name, description, original_price, combo_price, savings_amount, is_available, status) VALUES
-          (1, 'CMB-ROYAL-DUO', 'Royal  Duo Combo', '1 Half Mutton  + 1 Half Chicken  + 2 Daqoos + 2 Ayran Laban Bottles', 134.00, 115.00, 19.00, 1, 'ACTIVE'),
-          (2, 'CMB-CHARCOAL-SOLO', 'Single Charcoal Grill Meal', '1 Half Chicken Madhbi + Fresh Garden Salad + 1 Daqoos + Arabic Red Tea Pot', 58.00, 49.00, 9.00, 1, 'ACTIVE');
-        `);
-
-        // Connect combo items if products exist
-        const p1 = await dbService.queryOne<{ id: number }>('SELECT id FROM products WHERE sku LIKE "%MM%" OR name LIKE "%Mutton%" LIMIT 1');
-        const p2 = await dbService.queryOne<{ id: number }>('SELECT id FROM products WHERE sku LIKE "%CM%" OR name LIKE "%Chicken%" LIMIT 1');
-        if (p1 && p2) {
-          await dbService.execute(`
-            INSERT IGNORE INTO combo_deal_items (combo_id, product_id, quantity, display_order) VALUES
-            (1, ?, 1, 1),
-            (1, ?, 1, 2);
-          `, [p1.id, p2.id]);
-        }
-      }
-
       this.schemaEnsured = true;
       logger.info('Add-ons and Combo Deals schema verified successfully.');
     } catch (err) {
@@ -236,37 +194,41 @@ export class AddonsCombosService {
 
   public static async createAddon(input: CreateAddonInput, userId: number) {
     await this.ensureSchema();
-    const res = await dbService.execute(
-      `INSERT INTO product_addons (name, category, price, cost_price, image_url, is_available, stock_item_id, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        input.name.trim(),
-        input.category || 'Sides',
-        Number(input.price) || 0,
-        Number(input.cost_price) || 0,
-        input.image_url || null,
-        input.is_available !== false ? 1 : 0,
-        input.stock_item_id || null,
-        input.status || 'ACTIVE',
-      ]
-    );
+    // The add-on and the mapping that makes it global are one unit: without
+    // the mapping the add-on exists but appears on no dish.
+    return await dbService.transaction(async () => {
+      const res = await dbService.execute(
+        `INSERT INTO product_addons (name, category, price, cost_price, image_url, is_available, stock_id, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          input.name.trim(),
+          input.category || 'Sides',
+          Number(input.price) || 0,
+          Number(input.cost_price) || 0,
+          input.image_url || null,
+          input.is_available !== false ? 1 : 0,
+          input.stock_id || null,
+          input.status || 'ACTIVE',
+        ]
+      );
 
-    const created = await this.getAddonById(res.lastInsertRowid);
-    // Make global by default
-    await dbService.execute(
-      'INSERT IGNORE INTO product_addon_mappings (addon_id, is_global) VALUES (?, 1)',
-      [created.id]
-    );
+      const created = await this.getAddonById(res.lastInsertRowid);
+      // Make global by default
+      await dbService.execute(
+        'INSERT IGNORE INTO product_addon_mappings (addon_id, is_global) VALUES (?, 1)',
+        [created.id]
+      );
 
-    await AuditService.log({
-      userId,
-      action: 'ADDON_CREATED',
-      module: 'PRODUCTS',
-      recordId: String(created.id),
-      newValues: created,
+      await AuditService.log({
+        userId,
+        action: 'ADDON_CREATED',
+        module: 'PRODUCTS',
+        recordId: String(created.id),
+        newValues: created,
+      });
+
+      return created;
     });
-
-    return created;
   }
 
   public static async updateAddon(id: number, input: Partial<CreateAddonInput>, userId: number) {
@@ -281,14 +243,14 @@ export class AddonsCombosService {
     // the field being absent from the payload.
     const image_url = input.image_url !== undefined ? input.image_url || null : existing.image_url;
     const is_available = input.is_available !== undefined ? (input.is_available ? 1 : 0) : existing.is_available;
-    const stock_item_id = input.stock_item_id !== undefined ? input.stock_item_id : existing.stock_item_id;
+    const stock_id = input.stock_id !== undefined ? input.stock_id : existing.stock_id;
     const status = input.status !== undefined ? input.status : existing.status;
 
     await dbService.execute(
       `UPDATE product_addons 
-       SET name = ?, category = ?, price = ?, cost_price = ?, image_url = ?, is_available = ?, stock_item_id = ?, status = ?
+       SET name = ?, category = ?, price = ?, cost_price = ?, image_url = ?, is_available = ?, stock_id = ?, status = ?
        WHERE id = ?`,
-      [name, category, price, cost_price, image_url, is_available, stock_item_id, status, id]
+      [name, category, price, cost_price, image_url, is_available, stock_id, status, id]
     );
 
     const updated = await this.getAddonById(id);
@@ -391,46 +353,50 @@ export class AddonsCombosService {
     const comboPrice = Number(input.combo_price) || 0;
     const savings = Math.max(0, originalPrice - comboPrice);
 
-    const res = await dbService.execute(
-      `INSERT INTO combo_deals (combo_code, name, description, image_url, category_id, original_price, combo_price, savings_amount, is_available, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        code,
-        input.name.trim(),
-        input.description || null,
-        input.image_url || null,
-        input.category_id || null,
-        originalPrice,
-        comboPrice,
-        savings,
-        input.is_available !== false ? 1 : 0,
-        input.status || 'ACTIVE',
-      ]
-    );
+    // Header and its lines are one deal: a failure between them left a combo
+    // on the menu with no items, or only the first few.
+    return await dbService.transaction(async () => {
+      const res = await dbService.execute(
+        `INSERT INTO combo_deals (combo_code, name, description, image_url, category_id, original_price, combo_price, savings_amount, is_available, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          code,
+          input.name.trim(),
+          input.description || null,
+          input.image_url || null,
+          input.category_id || null,
+          originalPrice,
+          comboPrice,
+          savings,
+          input.is_available !== false ? 1 : 0,
+          input.status || 'ACTIVE',
+        ]
+      );
 
-    const comboId = res.lastInsertRowid;
+      const comboId = res.lastInsertRowid;
 
-    if (input.items && input.items.length > 0) {
-      for (let i = 0; i < input.items.length; i++) {
-        const item = input.items[i];
-        await dbService.execute(
-          `INSERT INTO combo_deal_items (combo_id, product_id, variant_id, quantity, display_order)
-           VALUES (?, ?, ?, ?, ?)`,
-          [comboId, item.product_id, item.variant_id || null, item.quantity || 1, i + 1]
-        );
+      if (input.items && input.items.length > 0) {
+        for (let i = 0; i < input.items.length; i++) {
+          const item = input.items[i];
+          await dbService.execute(
+            `INSERT INTO combo_deal_items (combo_id, product_id, variant_id, quantity, display_order)
+             VALUES (?, ?, ?, ?, ?)`,
+            [comboId, item.product_id, item.variant_id || null, item.quantity || 1, i + 1]
+          );
+        }
       }
-    }
 
-    const created = await this.getComboDealById(comboId);
-    await AuditService.log({
-      userId,
-      action: 'COMBO_CREATED',
-      module: 'PRODUCTS',
-      recordId: String(comboId),
-      newValues: created,
+      const created = await this.getComboDealById(comboId);
+      await AuditService.log({
+        userId,
+        action: 'COMBO_CREATED',
+        module: 'PRODUCTS',
+        recordId: String(comboId),
+        newValues: created,
+      });
+
+      return created;
     });
-
-    return created;
   }
 
   public static async updateComboDeal(id: number, input: Partial<CreateComboDealInput>, userId: number) {
@@ -446,36 +412,41 @@ export class AddonsCombosService {
     const isAvail = input.is_available !== undefined ? (input.is_available ? 1 : 0) : existing.is_available;
     const status = input.status !== undefined ? input.status : existing.status;
 
-    await dbService.execute(
-      `UPDATE combo_deals
-       SET name = ?, description = ?, image_url = ?, original_price = ?, combo_price = ?, savings_amount = ?, is_available = ?, status = ?
-       WHERE id = ?`,
-      [name, desc, img, originalPrice, comboPrice, savings, isAvail, status, id]
-    );
+    // The item list is replaced by clearing it first, so an failure between
+    // the DELETE and the re-INSERT emptied the combo outright. Grouped so it
+    // either swaps to the new list or keeps the old one.
+    return await dbService.transaction(async () => {
+      await dbService.execute(
+        `UPDATE combo_deals
+         SET name = ?, description = ?, image_url = ?, original_price = ?, combo_price = ?, savings_amount = ?, is_available = ?, status = ?
+         WHERE id = ?`,
+        [name, desc, img, originalPrice, comboPrice, savings, isAvail, status, id]
+      );
 
-    if (input.items !== undefined) {
-      await dbService.execute('DELETE FROM combo_deal_items WHERE combo_id = ?', [id]);
-      for (let i = 0; i < input.items.length; i++) {
-        const item = input.items[i];
-        await dbService.execute(
-          `INSERT INTO combo_deal_items (combo_id, product_id, variant_id, quantity, display_order)
-           VALUES (?, ?, ?, ?, ?)`,
-          [id, item.product_id, item.variant_id || null, item.quantity || 1, i + 1]
-        );
+      if (input.items !== undefined) {
+        await dbService.execute('DELETE FROM combo_deal_items WHERE combo_id = ?', [id]);
+        for (let i = 0; i < input.items.length; i++) {
+          const item = input.items[i];
+          await dbService.execute(
+            `INSERT INTO combo_deal_items (combo_id, product_id, variant_id, quantity, display_order)
+             VALUES (?, ?, ?, ?, ?)`,
+            [id, item.product_id, item.variant_id || null, item.quantity || 1, i + 1]
+          );
+        }
       }
-    }
 
-    const updated = await this.getComboDealById(id);
-    await AuditService.log({
-      userId,
-      action: 'COMBO_UPDATED',
-      module: 'PRODUCTS',
-      recordId: String(id),
-      oldValues: existing,
-      newValues: updated,
+      const updated = await this.getComboDealById(id);
+      await AuditService.log({
+        userId,
+        action: 'COMBO_UPDATED',
+        module: 'PRODUCTS',
+        recordId: String(id),
+        oldValues: existing,
+        newValues: updated,
+      });
+
+      return updated;
     });
-
-    return updated;
   }
 
   public static async deleteComboDeal(id: number, userId: number) {

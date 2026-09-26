@@ -40,10 +40,10 @@ export class DraftBillsService {
     }
 
     const items = await dbService.query(
-      `SELECT dbi.*, p.sku, p.image_url, s.current_stock
+      `SELECT dbi.*, p.sku, p.image_url, s.current_quantity AS current_stock
        FROM draft_bill_items dbi
        JOIN products p ON dbi.product_id = p.id
-       LEFT JOIN stock s ON p.id = s.product_id
+       LEFT JOIN stocks s ON p.stock_id = s.id
        WHERE dbi.draft_bill_id = ?`,
       [id]
     );

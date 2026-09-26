@@ -46,12 +46,12 @@ export class ReportsBiService {
            p.name                                                   AS product_name,
            p.sku,
            COALESCE(c.name, 'Uncategorised')                        AS category_name,
-           COALESCE((SELECT AVG(si.average_unit_price) FROM stock_items si WHERE si.id = p.stock_item_id), 0) AS cost_price,
+           COALESCE((SELECT AVG(si.average_unit_price) FROM stocks si WHERE si.id = p.stock_id), 0) AS cost_price,
            COALESCE((SELECT MIN(pv.selling_price) FROM product_variants pv WHERE pv.product_id = p.id), 0) AS selling_price,
            COALESCE(SUM(bi.quantity), 0)                            AS quantity_sold,
            COUNT(DISTINCT bi.bill_id)                               AS bills_count,
            COALESCE(SUM(bi.total_amount), 0)                        AS revenue,
-           COALESCE(SUM(bi.quantity * COALESCE((SELECT AVG(si.average_unit_price) FROM stock_items si WHERE si.id = p.stock_item_id), 0)), 0) AS cogs,
+           COALESCE(SUM(bi.quantity * COALESCE((SELECT AVG(si.average_unit_price) FROM stocks si WHERE si.id = p.stock_id), 0)), 0) AS cogs,
            COALESCE(SUM(bi.discount_amount), 0)                     AS discount_given,
            MIN(b.created_at)                                        AS first_sold_at,
            MAX(b.created_at)                                        AS last_sold_at
@@ -983,7 +983,7 @@ async function stockSnapshot() {
        COALESCE(SUM(si.current_value), 0)         AS total_value_at_cost,
        COALESCE(SUM(CASE WHEN si.current_quantity > 0 AND si.current_quantity <= si.min_stock_alert THEN 1 ELSE 0 END), 0) AS low_stock_count,
        COALESCE(SUM(CASE WHEN si.current_quantity <= 0 THEN 1 ELSE 0 END), 0) AS out_of_stock_count
-     FROM stock_items si
+     FROM stocks si
      WHERE si.status = 'active'`
   );
 

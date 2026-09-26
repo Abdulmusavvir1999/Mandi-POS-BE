@@ -74,11 +74,11 @@ export class DashboardService {
       total_products: number;
     }>(
       `SELECT
-         COALESCE(SUM(CASE WHEN p.status = 'ACTIVE' AND s.current_stock <= s.min_stock_alert AND s.current_stock > 0 THEN 1 ELSE 0 END), 0) as low_stock_count,
-         COALESCE(SUM(CASE WHEN p.status = 'ACTIVE' AND s.current_stock <= 0 THEN 1 ELSE 0 END), 0) as out_of_stock_count,
+         COALESCE(SUM(CASE WHEN p.status = 'ACTIVE' AND s.current_quantity <= s.min_stock_alert AND s.current_quantity > 0 THEN 1 ELSE 0 END), 0) as low_stock_count,
+         COALESCE(SUM(CASE WHEN p.status = 'ACTIVE' AND s.current_quantity <= 0 THEN 1 ELSE 0 END), 0) as out_of_stock_count,
          COUNT(p.id) as total_products
        FROM products p
-       LEFT JOIN stock s ON p.id = s.product_id
+       LEFT JOIN stocks s ON p.stock_id = s.id
        WHERE p.status = 'ACTIVE'`
     );
 

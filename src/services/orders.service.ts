@@ -206,6 +206,10 @@ export class OrdersService {
       const calculatedItems: any[] = [];
 
       for (const item of data.items) {
+        // `products.cost_price` no longer exists — cost lives on the stock
+        // ledger now. Without this join the order line was written with an
+        // undefined cost, which mysql2 stores as NULL, so every order silently
+        // lost its cost basis and margin reporting had nothing to read.
         const product = await dbService.queryOne<{
           id: number;
           name: string;
@@ -213,7 +217,13 @@ export class OrdersService {
           cost_price: number;
           tax_rate: number;
           status: string;
-        }>('SELECT * FROM products WHERE id = ?', [item.productId]);
+        }>(
+          `SELECT p.*, COALESCE(si.average_unit_price, 0) AS cost_price
+           FROM products p
+           LEFT JOIN stocks si ON si.id = p.stock_id
+           WHERE p.id = ?`,
+          [item.productId]
+        );
 
         if (!product) {
           throw AppError.badRequest(`Product ID ${item.productId} not found`);

@@ -238,7 +238,7 @@ export class CheckoutService {
         totalAmount: number;
         notes?: string;
         currentStock: number;
-        stockItemId: number | null;
+        stockId: number | null;
         isComplimentary: boolean;
         complimentaryReason: string | null;
         addonsData: string | null;
@@ -272,7 +272,7 @@ export class CheckoutService {
         }
 
         // Inventory check
-        const targetStockItemId = variant?.stock_item_id ?? product.stock_item_id;
+        const targetStockItemId = variant?.stock_id ?? product.stock_id;
         const stockConsumption = variant ? Number(variant.stock_consumption || 1) : 1.0;
         const requiredStock = stockConsumption * item.quantity;
 
@@ -281,16 +281,14 @@ export class CheckoutService {
 
         if (targetStockItemId) {
           stockItem = await dbService.queryOne<any>(
-            'SELECT * FROM stock_items WHERE id = ?',
+            'SELECT * FROM stocks WHERE id = ?',
             [targetStockItemId]
           );
           currentStock = stockItem ? Number(stockItem.current_quantity) : 0;
         } else {
-          const legacyStock = await dbService.queryOne<any>(
-            'SELECT current_stock FROM stock WHERE product_id = ?',
-            [product.id]
-          );
-          currentStock = legacyStock ? Number(legacyStock.current_stock) : Number(product.stock_quantity || 0);
+          // No ledger item behind this dish, so there is no balance to check
+          // against; products.stock_quantity is the only figure left.
+          currentStock = Number(product.stock_quantity || 0);
         }
 
         const allowNegativeStock = false;
@@ -332,7 +330,7 @@ export class CheckoutService {
           totalAmount: itemSubtotal,
           notes: item.notes,
           currentStock,
-          stockItemId: stockItem ? stockItem.id : null,
+          stockId: stockItem ? stockItem.id : null,
           isComplimentary: isComp,
           complimentaryReason: isComp ? (item.complimentaryReason || 'Staff Authorized Complimentary') : null,
           addonsData: item.selectedAddons && item.selectedAddons.length > 0 ? JSON.stringify(item.selectedAddons) : null,
@@ -471,16 +469,12 @@ export class CheckoutService {
           ]
         );
 
-        // Deduct inventory
-        if (item.stockItemId) {
+        // Deduct inventory from the ledger item behind the dish. A dish with
+        // no linked stock item carries no balance to draw down.
+        if (item.stockId) {
           await dbService.execute(
-            'UPDATE stock_items SET current_quantity = current_quantity - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-            [item.requiredStock, item.stockItemId]
-          );
-        } else {
-          await dbService.execute(
-            'UPDATE stock SET current_stock = current_stock - ?, updated_at = CURRENT_TIMESTAMP WHERE product_id = ?',
-            [item.requiredStock, item.productId]
+            'UPDATE stocks SET current_quantity = current_quantity - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            [item.requiredStock, item.stockId]
           );
         }
       }

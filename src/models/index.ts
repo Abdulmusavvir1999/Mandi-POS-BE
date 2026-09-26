@@ -49,7 +49,7 @@ export interface StockItemModel {
 export interface StockEntryModel {
   id: number;
   uuid: string;
-  stock_item_id: number;
+  stock_id: number;
   stock_item_name?: string;
   stock_code?: string;
   unit_type?: StockUnitType;
@@ -62,7 +62,6 @@ export interface StockEntryModel {
   unit_price: number;
   status: StockEntryStatus;
   supplier?: string | null;
-  invoice_number?: string | null;
   notes?: string | null;
   created_by?: number | null;
   created_by_name?: string;
@@ -73,7 +72,7 @@ export interface StockEntryModel {
 export interface StockMovementModel {
   id: number;
   uuid: string;
-  stock_item_id: number;
+  stock_id: number;
   stock_item_name?: string;
   stock_code?: string;
   unit_type?: StockUnitType;

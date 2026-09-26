@@ -276,8 +276,8 @@ UNION ALL SELECT 'role_permissions',  COUNT(*) FROM role_permissions
 UNION ALL SELECT 'users',             COUNT(*) FROM users
 UNION ALL SELECT 'categories',        COUNT(*) FROM categories
 UNION ALL SELECT 'products',          COUNT(*) FROM products
-UNION ALL SELECT 'stock_items',       COUNT(*) FROM stock_items
-UNION ALL SELECT 'stock_entries',     COUNT(*) FROM stock_entries
+UNION ALL SELECT 'stocks',       COUNT(*) FROM stocks
+UNION ALL SELECT 'stock_vendor_purchase',            COUNT(*) FROM stock_vendor_purchase
 UNION ALL SELECT 'stock_movements',   COUNT(*) FROM stock_movements
 UNION ALL SELECT 'dining_tables',     COUNT(*) FROM dining_tables
 UNION ALL SELECT 'customers',         COUNT(*) FROM customers

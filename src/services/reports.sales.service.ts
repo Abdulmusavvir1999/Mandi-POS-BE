@@ -20,10 +20,14 @@ export interface SalesReportOptions extends BillScope {
  * bill is the settled record — an order can be cancelled or re-rung and would
  * double-count. Voided bills are excluded by `ReportQuery.bills`.
  *
- * Cost and margin use `products.cost_price`, which is the product's *current*
- * cost, not the cost at the time of sale (`bill_items` carries no cost column).
- * Margin figures are therefore indicative: restating a product's cost price
- * retroactively shifts the margin on its history.
+ * Cost and margin are `quantity x stock_consumption x
+ * stocks.average_unit_price`, reached through `products.stock_id`.
+ * `products.cost_price` is gone — pricing moved onto `product_variants` and
+ * cost onto the stock ledger — and `bill_items` carries no cost column, so this
+ * is the weighted-average cost of the ledger item *today*, not the cost at the
+ * time of sale. Margin figures are therefore indicative: a later purchase that
+ * moves the weighted average shifts the margin on existing history. A dish not
+ * linked to a stock item contributes zero cost.
  */
 export class ReportsSalesService {
   /** Sales by product (optionally by portion variant), with margin and share of revenue. */
@@ -59,13 +63,14 @@ export class ReportsSalesService {
          COALESCE(SUM(bi.discount_amount), 0)                   AS discount_amount,
          COALESCE(SUM(bi.tax_amount), 0)                        AS tax_amount,
          COALESCE(SUM(bi.total_amount), 0)                      AS net_sales,
-         COALESCE(SUM(bi.quantity * COALESCE(p.cost_price, 0)), 0) AS total_cost,
-         COALESCE(SUM(bi.total_amount) - SUM(bi.quantity * COALESCE(p.cost_price, 0)), 0) AS gross_profit,
+         COALESCE(SUM(bi.quantity * COALESCE(bi.stock_consumption, 1) * COALESCE(si.average_unit_price, 0)), 0) AS total_cost,
+         COALESCE(SUM(bi.total_amount) - SUM(bi.quantity * COALESCE(bi.stock_consumption, 1) * COALESCE(si.average_unit_price, 0)), 0) AS gross_profit,
          COALESCE(AVG(bi.unit_price), 0)                        AS avg_selling_price,
          MAX(b.created_at)                                      AS last_sold_at
        FROM bill_items bi
        JOIN bills b ON bi.bill_id = b.id
        JOIN products p ON bi.product_id = p.id
+       LEFT JOIN stocks si ON si.id = p.stock_id
        LEFT JOIN categories c ON p.category_id = c.id
        ${filtered}
        GROUP BY p.id, p.name, p.sku, p.category_id, c.name${variantGroup}
@@ -124,11 +129,12 @@ export class ReportsSalesService {
          COALESCE(SUM(bi.discount_amount), 0)                   AS discount_amount,
          COALESCE(SUM(bi.tax_amount), 0)                        AS tax_amount,
          COALESCE(SUM(bi.total_amount), 0)                      AS net_sales,
-         COALESCE(SUM(bi.quantity * COALESCE(p.cost_price, 0)), 0) AS total_cost,
-         COALESCE(SUM(bi.total_amount) - SUM(bi.quantity * COALESCE(p.cost_price, 0)), 0) AS gross_profit
+         COALESCE(SUM(bi.quantity * COALESCE(bi.stock_consumption, 1) * COALESCE(si.average_unit_price, 0)), 0) AS total_cost,
+         COALESCE(SUM(bi.total_amount) - SUM(bi.quantity * COALESCE(bi.stock_consumption, 1) * COALESCE(si.average_unit_price, 0)), 0) AS gross_profit
        FROM bill_items bi
        JOIN bills b ON bi.bill_id = b.id
        JOIN products p ON bi.product_id = p.id
+       LEFT JOIN stocks si ON si.id = p.stock_id
        LEFT JOIN categories c ON p.category_id = c.id
        ${where}
        GROUP BY c.id, c.name, c.image_url

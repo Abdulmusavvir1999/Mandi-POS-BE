@@ -175,7 +175,11 @@ describe('Staff Track visibility scope', () => {
         if (found.some((id) => id !== selfUserId)) sawSomeoneElse++;
       }
       expect(sawSomeoneElse).toBeGreaterThan(0);
-    });
+      // Walks every Staff Track and report endpoint in turn, so on a database
+      // with real volume it runs 3-4s against Jest's 5s default and tipped
+      // over intermittently under full-suite load. The work is legitimate;
+      // the default budget was simply too tight.
+    }, 30000);
 
     it('names no other staff member in the live view', async () => {
       // `/live` takes no filter set at all, so it is scoped by its own clauses

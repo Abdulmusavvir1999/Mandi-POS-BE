@@ -764,10 +764,12 @@ export class ReportsFinanceService {
   /**
    * Profit: net revenue less cost of goods sold less operating expenses.
    *
-   * COGS is `quantity x products.cost_price` over the billed lines. Because
-   * `bill_items` stores no cost, this is the product's cost *today* — good
-   * enough to steer pricing, not an audited cost of sales. The caveat is
-   * returned on the payload as `cogs_basis` so a consumer can label it.
+   * COGS is `quantity x stock_consumption x stocks.average_unit_price`
+   * over the billed lines, reached through `products.stock_id`. Because
+   * `bill_items` stores no cost, this is the ledger item's weighted-average
+   * cost *today* — good enough to steer pricing, not an audited cost of sales.
+   * A dish with no linked stock item contributes zero. The caveat is returned
+   * on the payload as `cogs_basis` so a consumer can label it.
    */
   static async profit(options: FinanceReportOptions) {
     await ReportsSchema.ensure();
@@ -777,10 +779,11 @@ export class ReportsFinanceService {
     const previousRange = ReportQuery.previousRange(options.range);
 
     const cogsSql = (clause: string) => `
-      SELECT COALESCE(SUM(bi.quantity * COALESCE(p.cost_price, 0)), 0) AS cogs
+      SELECT COALESCE(SUM(bi.quantity * COALESCE(bi.stock_consumption, 1) * COALESCE(si.average_unit_price, 0)), 0) AS cogs
       FROM bill_items bi
       JOIN bills b ON bi.bill_id = b.id
       JOIN products p ON bi.product_id = p.id
+      LEFT JOIN stocks si ON si.id = p.stock_id
       ${clause}`;
 
     const previousScope = ReportQuery.bills('b', previousRange, options);
@@ -818,10 +821,11 @@ export class ReportsFinanceService {
         ),
         dbService.query(
           `SELECT ${bucket.label} AS period,
-                  COALESCE(SUM(bi.quantity * COALESCE(p.cost_price, 0)), 0) AS cogs
+                  COALESCE(SUM(bi.quantity * COALESCE(bi.stock_consumption, 1) * COALESCE(si.average_unit_price, 0)), 0) AS cogs
            FROM bill_items bi
            JOIN bills b ON bi.bill_id = b.id
            JOIN products p ON bi.product_id = p.id
+           LEFT JOIN stocks si ON si.id = p.stock_id
            ${where}
            GROUP BY period`,
           params
@@ -873,7 +877,7 @@ export class ReportsFinanceService {
       range: options.range,
       comparisonRange: previousRange,
       granularity,
-      cogs_basis: 'products.cost_price at report time; bill lines do not store historical cost',
+      cogs_basis: 'stocks.average_unit_price at report time via products.stock_id; bill lines do not store historical cost',
       summary: {
         gross_sales: ReportQuery.round(ReportQuery.num(sales?.gross_sales)),
         net_sales: netSales,

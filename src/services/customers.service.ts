@@ -231,35 +231,40 @@ export class CustomersService {
       throw AppError.conflict('Customer with this phone number already exists');
     }
 
-    const res = await dbService.execute(
-      `INSERT INTO customers (name, phone, email, address, image_url, status, total_visits, total_spent, customer_code)
-       VALUES (?, ?, ?, ?, ?, 'ACTIVE', 0, 0.0, ?)`,
-      [
-        data.name,
-        data.phone,
-        data.email || null,
-        data.address || null,
-        data.image_url || null,
-        data.customer_code || null,
-      ]
-    );
+    // The code is derived from the id, so it can only be set by a second
+    // statement. Grouped with the insert so a failure cannot leave a customer
+    // with a null customer_code that nothing ever fills in.
+    return await dbService.transaction(async () => {
+      const res = await dbService.execute(
+        `INSERT INTO customers (name, phone, email, address, image_url, status, total_visits, total_spent, customer_code)
+         VALUES (?, ?, ?, ?, ?, 'ACTIVE', 0, 0.0, ?)`,
+        [
+          data.name,
+          data.phone,
+          data.email || null,
+          data.address || null,
+          data.image_url || null,
+          data.customer_code || null,
+        ]
+      );
 
-    const insertedId = res.lastInsertRowid;
-    // Set customer_code if not supplied
-    if (!data.customer_code) {
-      const generatedCode = `CUST-${String(insertedId).padStart(4, '0')}`;
-      await dbService.execute('UPDATE customers SET customer_code = ? WHERE id = ?', [generatedCode, insertedId]);
-    }
+      const insertedId = res.lastInsertRowid;
+      // Set customer_code if not supplied
+      if (!data.customer_code) {
+        const generatedCode = `CUST-${String(insertedId).padStart(4, '0')}`;
+        await dbService.execute('UPDATE customers SET customer_code = ? WHERE id = ?', [generatedCode, insertedId]);
+      }
 
-    await AuditService.log({
-      userId,
-      action: 'CUSTOMER_CREATED',
-      module: 'CUSTOMERS',
-      recordId: insertedId,
-      newValues: data,
+      await AuditService.log({
+        userId,
+        action: 'CUSTOMER_CREATED',
+        module: 'CUSTOMERS',
+        recordId: insertedId,
+        newValues: data,
+      });
+
+      return await this.getById(insertedId);
     });
-
-    return await this.getById(insertedId);
   }
 
   static async update(

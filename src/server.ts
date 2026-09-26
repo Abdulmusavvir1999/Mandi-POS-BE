@@ -3,6 +3,7 @@ import { config } from './config/env';
 import { logger } from './config/logger';
 import { dbService } from './database/db';
 import { CheckoutService } from './services/checkout.service';
+import { StockService } from './services/stock.service';
 
 const startServer = async () => {
   try {
@@ -10,6 +11,9 @@ const startServer = async () => {
     //    (see src/database/mysql_migrator.ts), not created on every boot.
     await dbService.initialize();
     await CheckoutService.ensureSchema();
+    // Renames stock_entries -> stock_vendor_purchase on an older database before any
+    // product, report or stock query can reach for the new name.
+    await StockService.ensureSchema();
 
     // 2. Start Express App
     const app = createApp();

@@ -109,7 +109,7 @@ CREATE TABLE IF NOT EXISTS products (
   tax_rate DECIMAL(5,2) DEFAULT 5.00,
   stock_quantity INT DEFAULT 0,
   low_stock_threshold INT DEFAULT 10,
-  stock_item_id INT NULL,
+  stock_id INT NULL,
   variant_stock_mode ENUM('COMMON', 'EACH') NOT NULL DEFAULT 'COMMON',
   is_available TINYINT(1) DEFAULT 1,
   status ENUM('ACTIVE', 'INACTIVE') DEFAULT 'ACTIVE',
@@ -124,7 +124,7 @@ CREATE TABLE IF NOT EXISTS product_variants (
   id INT AUTO_INCREMENT PRIMARY KEY,
   product_id INT NOT NULL,
   name VARCHAR(80) NOT NULL,
-  stock_item_id INT NULL,
+  stock_id INT NULL,
   selling_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
   stock_consumption DECIMAL(12,3) NOT NULL DEFAULT 1.000,
   display_order INT DEFAULT 0,
@@ -143,7 +143,7 @@ CREATE TABLE IF NOT EXISTS product_variants (
 
 -- The stock master. reorder_level / reorder_quantity / max_stock_threshold and
 -- shelf_life_days drive the inventory alert screens.
-CREATE TABLE IF NOT EXISTS stock_items (
+CREATE TABLE IF NOT EXISTS stocks (
   id INT AUTO_INCREMENT PRIMARY KEY,
   uuid VARCHAR(36) NOT NULL UNIQUE,
   stock_code VARCHAR(50) NOT NULL UNIQUE,
@@ -156,40 +156,44 @@ CREATE TABLE IF NOT EXISTS stock_items (
   status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX idx_stock_items_code (stock_code),
-  INDEX idx_stock_items_status (status)
+  INDEX idx_stocks_code (stock_code),
+  INDEX idx_stocks_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Purchase / addition ledger. expiry_date and batch_number support the expiry
--- tracking screens.
-CREATE TABLE IF NOT EXISTS stock_entries (
+-- Purchase / addition ledger.
+--
+-- `vendor_id` records which vendor this particular purchase was bought from.
+-- It is nullable because a batch can be entered before the vendor is known, and
+-- the free-text `supplier` column remains for a note about where it came from.
+-- `invoice_number`, `expiry_date` and `batch_number` are not kept here.
+CREATE TABLE IF NOT EXISTS stock_vendor_purchase (
   id INT AUTO_INCREMENT PRIMARY KEY,
   uuid VARCHAR(36) NOT NULL UNIQUE,
-  stock_item_id INT NOT NULL,
+  stock_id INT NOT NULL,
+  vendor_id INT NULL,
   entry_number VARCHAR(50) NOT NULL UNIQUE,
   entry_date DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  expiry_date DATE NULL,
-  batch_number VARCHAR(100) NULL,
   quantity DECIMAL(12,3) NOT NULL,
   multiplier DECIMAL(12,3) NOT NULL DEFAULT 1.000,
   total_quantity DECIMAL(12,3) NOT NULL,
   total_price DECIMAL(14,2) NOT NULL,
   unit_price DECIMAL(14,4) NOT NULL,
   status ENUM('draft', 'posted', 'cancelled') NOT NULL DEFAULT 'posted',
-  supplier VARCHAR(150) NULL,
-  vendor_id INT NULL,
-  invoice_number VARCHAR(100) NULL,
+  -- Where the batch came from, not who: the vendor itself is vendor_id above.
+  -- 'Initial Setup' is the opening balance written when a stock item or a
+  -- product is created; 'Vendor' is a purchase, and then vendor_id is set.
+  supplier ENUM('Initial Setup', 'Vendor') NOT NULL DEFAULT 'Initial Setup',
   notes TEXT NULL,
   created_by INT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  FOREIGN KEY (stock_item_id) REFERENCES stock_items(id) ON DELETE CASCADE,
+  CONSTRAINT fk_svp_stock FOREIGN KEY (stock_id) REFERENCES stocks(id) ON DELETE CASCADE,
+  CONSTRAINT fk_svp_vendor FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE SET NULL,
   FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
-  INDEX idx_stock_entries_item (stock_item_id),
-  INDEX idx_stock_entries_number (entry_number),
-  INDEX idx_stock_entries_date (entry_date),
-  INDEX idx_stock_entries_expiry (expiry_date),
-  INDEX idx_stock_entries_vendor (vendor_id)
+  INDEX idx_svp_stock (stock_id),
+  INDEX idx_svp_vendor (vendor_id),
+  INDEX idx_svp_number (entry_number),
+  INDEX idx_svp_date (entry_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Append-only history. balance_quantity / balance_value are the running totals
@@ -197,7 +201,7 @@ CREATE TABLE IF NOT EXISTS stock_entries (
 CREATE TABLE IF NOT EXISTS stock_movements (
   id INT AUTO_INCREMENT PRIMARY KEY,
   uuid VARCHAR(36) NOT NULL UNIQUE,
-  stock_item_id INT NOT NULL,
+  stock_id INT NOT NULL,
   movement_type ENUM('in', 'out', 'adjustment', 'return', 'wastage', 'transfer_in', 'transfer_out') NOT NULL,
   reference_type VARCHAR(50) NOT NULL,
   reference_id VARCHAR(100) NULL,
@@ -210,24 +214,16 @@ CREATE TABLE IF NOT EXISTS stock_movements (
   notes TEXT NULL,
   created_by INT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (stock_item_id) REFERENCES stock_items(id) ON DELETE CASCADE,
+  FOREIGN KEY (stock_id) REFERENCES stocks(id) ON DELETE CASCADE,
   FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
-  INDEX idx_stock_movements_item (stock_item_id),
+  INDEX idx_stock_movements_item (stock_id),
   INDEX idx_stock_movements_type (movement_type),
   INDEX idx_stock_movements_date (movement_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Legacy per-product stock counters, kept for backward compatibility. New work
--- belongs in stock_items / stock_entries / stock_movements above.
-CREATE TABLE IF NOT EXISTS stock (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  product_id INT NOT NULL UNIQUE,
-  current_stock INT NOT NULL DEFAULT 0,
-  reserved_stock INT NOT NULL DEFAULT 0,
-  min_stock_alert INT DEFAULT 10,
-  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- (The legacy per-product `stock` counter table was removed. Every dish is
+-- backed by a row in stocks, which is the single source of a balance;
+-- keeping a second counter beside it only let the two disagree.)
 
 CREATE TABLE IF NOT EXISTS stock_transactions (
   id INT AUTO_INCREMENT PRIMARY KEY,
@@ -245,17 +241,8 @@ CREATE TABLE IF NOT EXISTS stock_transactions (
   FOREIGN KEY (created_by) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS stock_adjustments (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  product_id INT NOT NULL,
-  adjustment_type ENUM('INCREASE', 'DECREASE') NOT NULL,
-  quantity INT NOT NULL,
-  reason VARCHAR(255) NOT NULL,
-  approved_by INT,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (product_id) REFERENCES products(id),
-  FOREIGN KEY (approved_by) REFERENCES users(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- (`stock_adjustments` was removed. It was written on every adjustment and
+-- read by nothing; stock_movements already carries the audit trail.)
 
 
 -- ───────────────────────────────────────────────────────────────────────────
@@ -627,7 +614,7 @@ CREATE TABLE IF NOT EXISTS product_addons (
   cost_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
   image_url VARCHAR(255) NULL,
   is_available BOOLEAN DEFAULT TRUE,
-  stock_item_id INT NULL,
+  stock_id INT NULL,
   status ENUM('ACTIVE', 'INACTIVE') DEFAULT 'ACTIVE',
   is_deleted TINYINT(1) NOT NULL DEFAULT 0,
   deleted_at DATETIME NULL,
@@ -740,6 +727,21 @@ CREATE TABLE IF NOT EXISTS vendors (
   INDEX idx_vendors_is_deleted (is_deleted)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- A vendor supplies more than one kind of goods. `vendors.category` above is
+-- kept as the primary one (the first picked) because the vendor list header
+-- and the inventory purchases report read it; this table is the full set.
+CREATE TABLE IF NOT EXISTS vendor_categories (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  vendor_id INT NOT NULL,
+  category VARCHAR(100) NOT NULL,
+  display_order INT NOT NULL DEFAULT 0,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_vendor_category (vendor_id, category),
+  FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE CASCADE,
+  INDEX idx_vendor_categories_vendor (vendor_id),
+  INDEX idx_vendor_categories_category (category)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS vendor_purchases (
   id INT AUTO_INCREMENT PRIMARY KEY,
   uuid VARCHAR(64) NOT NULL UNIQUE,
@@ -785,25 +787,9 @@ CREATE TABLE IF NOT EXISTS vendor_payments (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
--- stock_entries.vendor_id is declared up in SECTION 3, but the constraint has to
--- wait until here: vendors does not exist yet at that point in this file.
--- Guarded so re-running the schema does not fail on an existing constraint.
-SET @fk_exists := (
-  SELECT COUNT(*) FROM information_schema.table_constraints
-  WHERE table_schema = DATABASE()
-    AND table_name = 'stock_entries'
-    AND constraint_name = 'fk_stock_entries_vendor'
-);
-SET @sql := IF(
-  @fk_exists = 0,
-  'ALTER TABLE stock_entries
-     ADD CONSTRAINT fk_stock_entries_vendor
-     FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE SET NULL',
-  'SELECT ''FK fk_stock_entries_vendor already present.'' AS note'
-);
-PREPARE stmt FROM @sql;
-EXECUTE stmt;
-DEALLOCATE PREPARE stmt;
+-- (stock_vendor_purchase.vendor_id is declared inline in SECTION 3 as
+-- fk_svp_vendor, forward-referencing this table. FOREIGN_KEY_CHECKS is off for
+-- the whole file, so the reference resolves once vendors exists above.)
 
 
 -- ───────────────────────────────────────────────────────────────────────────
@@ -956,8 +942,8 @@ WHERE table_schema = DATABASE()
   AND table_name IN (
     'roles', 'permissions', 'role_permissions', 'users',
     'categories', 'products', 'product_variants',
-    'stock_items', 'stock_entries', 'stock_movements',
-    'stock', 'stock_transactions', 'stock_adjustments',
+    'stocks', 'stock_vendor_purchase', 'stock_movements',
+    'stock_transactions',
     'customers', 'customer_notes',
     'dining_tables', 'table_reservations',
     'orders', 'order_items', 'order_status_history',

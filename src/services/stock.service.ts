@@ -10,7 +10,7 @@ export class StockService {
   private static schemaEnsured = false;
 
   /**
-   * Adds stock_items.default_vendor_id when an older database is missing it.
+   * Adds stocks.default_vendor_id when an older database is missing it.
    *
    * Schema here is managed out-of-band by stock_item_default_vendor.sql, but
    * createStockItem writes this column on every call, so a database the script
@@ -72,53 +72,181 @@ export class StockService {
       };
 
       /**
-       * Adds a column, and optionally its index, when the database predates it.
-       *
-       * `stock_entries.expiry_date`, `batch_number` and `vendor_id` are all in
-       * schema.sql and all written by createStockEntry, but mysql_migrator.ts
-       * built the table without them. Any database provisioned by the migrator
-       * therefore failed every stock-in and every entry listing with
-       * ER_BAD_FIELD_ERROR. Swallowed and logged like the drops above: a column
-       * that cannot be added must not take the stock screens down.
+       * Adds a column the current schema has but an older database does not,
+       * with the foreign key that goes with it when one is named. Guarded on
+       * the column and the key already being there, so it is a no-op once
+       * applied and safe to run on every stock request.
        */
-      const addColumnSafe = async (table: string, colName: string, ddl: string, indexName?: string) => {
+      const addColumnSafe = async (
+        table: string,
+        colName: string,
+        definition: string,
+        fk?: { refTable: string; name: string; onDelete: string }
+      ) => {
         try {
-          const colCheck = await dbService.queryOne<{ count: number }>(`
-            SELECT COUNT(*) as count
-            FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA = DATABASE()
-              AND TABLE_NAME = ?
-              AND COLUMN_NAME = ?
-          `, [table, colName]);
-          if (colCheck && colCheck.count > 0) return;
-
-          await dbService.execute(`ALTER TABLE \`${table}\` ADD COLUMN \`${colName}\` ${ddl}`);
-
-          if (indexName) {
-            try {
-              await dbService.execute(`ALTER TABLE \`${table}\` ADD INDEX \`${indexName}\` (\`${colName}\`)`);
-            } catch (_) {}
+          const col = await dbService.queryOne<{ c: number }>(
+            `SELECT COUNT(*) c FROM INFORMATION_SCHEMA.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+            [table, colName]
+          );
+          if (Number(col?.c ?? 0) === 0) {
+            await dbService.execute(
+              `ALTER TABLE \`${table}\` ADD COLUMN \`${colName}\` ${definition}`
+            );
+          }
+          if (fk) {
+            const existing = await dbService.queryOne<{ c: number }>(
+              `SELECT COUNT(*) c FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
+                 AND COLUMN_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL`,
+              [table, colName]
+            );
+            if (Number(existing?.c ?? 0) === 0) {
+              await dbService.execute(
+                `ALTER TABLE \`${table}\` ADD CONSTRAINT \`${fk.name}\`
+                 FOREIGN KEY (\`${colName}\`) REFERENCES \`${fk.refTable}\`(\`id\`)
+                 ON DELETE ${fk.onDelete}`
+              );
+            }
           }
         } catch (e) {
           logger.warn(`Could not add column ${colName} to ${table}:`, e);
         }
       };
 
-      await addColumnSafe('stock_entries', 'expiry_date', 'DATE NULL', 'idx_stock_entries_expiry');
-      await addColumnSafe('stock_entries', 'batch_number', 'VARCHAR(100) NULL');
-      await addColumnSafe('stock_entries', 'vendor_id', 'INT NULL', 'idx_stock_entries_vendor');
+      /**
+       * Drops a table that is no longer part of the schema, if it is still
+       * there. Swallowed and logged like the column drops: a table that cannot
+       * go must not take the stock screens down with it.
+       */
+      const dropTableSafe = async (table: string) => {
+        try {
+          await dbService.execute(`DROP TABLE IF EXISTS \`${table}\``);
+        } catch (e) {
+          logger.warn(`Could not drop table ${table}:`, e);
+        }
+      };
 
-      await dropColumnSafe('stock_items', 'reorder_level');
-      await dropColumnSafe('stock_items', 'reorder_quantity');
-      await dropColumnSafe('stock_items', 'max_stock_threshold');
-      await dropColumnSafe('stock_items', 'shelf_life_days');
-      await dropColumnSafe('stock_items', 'default_vendor_id');
-      await dropColumnSafe('stock_items', 'product_id');
-      await dropColumnSafe('stock_items', 'is_deleted');
-      await dropColumnSafe('stock_items', 'deleted_at');
-      await dropColumnSafe('stock_items', 'deleted_by');
+      /**
+       * Renames a table in place when the database still has the old name.
+       * Guarded both ways so it is a no-op once applied, and so it cannot fire
+       * if something has already created the new table.
+       */
+      const renameTableSafe = async (from: string, to: string) => {
+        try {
+          const has = async (t: string) =>
+            Number(
+              (
+                await dbService.queryOne<{ c: number }>(
+                  `SELECT COUNT(*) c FROM INFORMATION_SCHEMA.TABLES
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
+                  [t]
+                )
+              )?.c ?? 0
+            ) > 0;
+          if ((await has(from)) && !(await has(to))) {
+            await dbService.execute(`RENAME TABLE \`${from}\` TO \`${to}\``);
+            logger.info(`Renamed table ${from} -> ${to}`);
+          }
+        } catch (e) {
+          logger.warn(`Could not rename table ${from} to ${to}:`, e);
+        }
+      };
+
+      /**
+       * `supplier` used to be free text: a vendor name typed by hand, or the
+       * literal 'Initial Setup' for an opening row. The vendor belongs in
+       * vendor_id, so the column is narrowed to what it actually answers —
+       * where the batch came from, not who supplied it.
+       *
+       * Order matters. A typed name that matches a vendor is promoted to a
+       * real link first, so it survives as data rather than being flattened;
+       * a name that matches nothing is copied into `notes` before it is lost.
+       * Re-running is a no-op once the column is already an enum.
+       */
+      const convertSupplierToSource = async () => {
+        try {
+          const col = await dbService.queryOne<{ t: string }>(
+            `SELECT COLUMN_TYPE t FROM INFORMATION_SCHEMA.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'stock_vendor_purchase'
+               AND COLUMN_NAME = 'supplier'`
+          );
+          if (!col || String(col.t).toLowerCase().startsWith('enum')) return;
+
+          await dbService.execute(
+            `UPDATE stock_vendor_purchase se
+               JOIN vendors v ON v.name = TRIM(se.supplier)
+                SET se.vendor_id = v.id
+              WHERE se.vendor_id IS NULL
+                AND TRIM(COALESCE(se.supplier, '')) <> ''`
+          );
+
+          await dbService.execute(
+            `UPDATE stock_vendor_purchase
+                SET notes = CONCAT(
+                      COALESCE(notes, ''),
+                      CASE WHEN COALESCE(notes, '') = '' THEN '' ELSE ' - ' END,
+                      'Supplier: ', TRIM(supplier))
+              WHERE vendor_id IS NULL
+                AND TRIM(COALESCE(supplier, '')) NOT IN ('', 'Initial Setup')`
+          );
+
+          await dbService.execute(
+            `UPDATE stock_vendor_purchase
+                SET supplier = CASE WHEN vendor_id IS NOT NULL THEN 'Vendor' ELSE 'Initial Setup' END`
+          );
+
+          await dbService.execute(
+            `ALTER TABLE stock_vendor_purchase
+             MODIFY COLUMN supplier ENUM('Initial Setup', 'Vendor') NOT NULL DEFAULT 'Initial Setup'`
+          );
+          logger.info("Narrowed stock_vendor_purchase.supplier to ENUM('Initial Setup','Vendor')");
+        } catch (e) {
+          logger.warn('Could not convert stock_vendor_purchase.supplier to a source enum:', e);
+        }
+      };
+
+      await StockService.ensureStockTopology();
+
+      // `stock` held a second per-product counter beside stocks, which
+      // only let the two disagree; every dish is backed by a stock item now.
+      // `stock_adjustments` was written on every adjustment and read by
+      // nothing — stock_movements already carries that audit trail.
+      await dropTableSafe('stock_adjustments');
+      await dropTableSafe('stock');
+
+      // Each purchase entry records the vendor it was bought from. Nullable,
+      // because a batch can be entered before the vendor is known and because
+      // the rows written before this column existed have no vendor to name;
+      // ON DELETE SET NULL so removing a vendor keeps the purchase history.
+      await addColumnSafe('stock_vendor_purchase', 'vendor_id', 'INT NULL AFTER `stock_id`', {
+        refTable: 'vendors',
+        name: 'fk_svp_vendor',
+        onDelete: 'SET NULL',
+      });
+
+      // Runs after vendor_id exists, because it promotes typed supplier names
+      // into that column before narrowing what is left.
+      await convertSupplierToSource();
+
+      // The invoice, expiry and batch fields are not kept on an entry:
+      // dropColumnSafe clears the index and the foreign key first, so an
+      // existing database sheds them on the next stock request.
+      await dropColumnSafe('stock_vendor_purchase', 'invoice_number');
+      await dropColumnSafe('stock_vendor_purchase', 'expiry_date');
+      await dropColumnSafe('stock_vendor_purchase', 'batch_number');
+
+      await dropColumnSafe('stocks', 'reorder_level');
+      await dropColumnSafe('stocks', 'reorder_quantity');
+      await dropColumnSafe('stocks', 'max_stock_threshold');
+      await dropColumnSafe('stocks', 'shelf_life_days');
+      await dropColumnSafe('stocks', 'default_vendor_id');
+      await dropColumnSafe('stocks', 'product_id');
+      await dropColumnSafe('stocks', 'is_deleted');
+      await dropColumnSafe('stocks', 'deleted_at');
+      await dropColumnSafe('stocks', 'deleted_by');
     } catch (e) {
-      logger.warn('Could not ensure stock_items schema:', e);
+      logger.warn('Could not ensure stocks schema:', e);
     }
 
     this.schemaEnsured = true;
@@ -130,6 +258,123 @@ export class StockService {
    * Shared by createStockItem and createStockEntry so a blocked vendor is
    * refused identically whichever door the purchase comes through.
    */
+  /**
+   * Brings an existing database to the current stock topology:
+   *
+   *   stocks                 — the master item (stock_code, balance, avg cost)
+   *   stock_vendor_purchase  — the purchase ledger, stock_id -> stocks.id
+   *   stock_movements        — stock_id -> stocks.id
+   *
+   * Works from any earlier shape: the original `stock_items` / `stock_entries`
+   * pair, or the intermediate state where the two new names ended up on the
+   * wrong tables. Which table is which is decided by the columns it carries,
+   * not by its name, so this is safe to re-run and cannot mis-fire.
+   *
+   * MariaDB 10.4 has no `RENAME COLUMN`, so columns move with `CHANGE`.
+   */
+  private static async ensureStockTopology(): Promise<void> {
+    const tableExists = async (t: string): Promise<boolean> =>
+      Number(
+        (
+          await dbService.queryOne<{ c: number }>(
+            `SELECT COUNT(*) c FROM INFORMATION_SCHEMA.TABLES
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
+            [t]
+          )
+        )?.c ?? 0
+      ) > 0;
+
+    const columnExists = async (t: string, c: string): Promise<boolean> =>
+      Number(
+        (
+          await dbService.queryOne<{ c: number }>(
+            `SELECT COUNT(*) c FROM INFORMATION_SCHEMA.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+            [t, c]
+          )
+        )?.c ?? 0
+      ) > 0;
+
+    /** Drops every foreign key on `table` that sits on `column`. */
+    const dropFksOn = async (table: string, column: string) => {
+      const fks = await dbService.query<{ CONSTRAINT_NAME: string }>(
+        `SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
+           AND COLUMN_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL`,
+        [table, column]
+      );
+      for (const fk of fks) {
+        try {
+          await dbService.execute(`ALTER TABLE \`${table}\` DROP FOREIGN KEY \`${fk.CONSTRAINT_NAME}\``);
+        } catch (_) {}
+      }
+    };
+
+    const renameColumn = async (table: string, from: string, to: string, type: string) => {
+      if (!(await tableExists(table))) return;
+      if (!(await columnExists(table, from)) || (await columnExists(table, to))) return;
+      await dropFksOn(table, from);
+      await dbService.execute(`ALTER TABLE \`${table}\` CHANGE \`${from}\` \`${to}\` ${type}`);
+    };
+
+    const addFk = async (table: string, column: string, refTable: string, name: string) => {
+      if (!(await tableExists(table)) || !(await columnExists(table, column))) return;
+      const existing = await dbService.queryOne<{ c: number }>(
+        `SELECT COUNT(*) c FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
+           AND COLUMN_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL`,
+        [table, column]
+      );
+      if (Number(existing?.c ?? 0) > 0) return;
+      try {
+        await dbService.execute(
+          `ALTER TABLE \`${table}\` ADD CONSTRAINT \`${name}\`
+           FOREIGN KEY (\`${column}\`) REFERENCES \`${refTable}\`(\`id\`) ON DELETE CASCADE`
+        );
+      } catch (e) {
+        logger.warn(`Could not add foreign key ${name} on ${table}.${column}:`, e);
+      }
+    };
+
+    try {
+      // 1. Original names move to the new ones, if they are still around.
+      if ((await tableExists('stock_items')) && !(await tableExists('stocks'))) {
+        await dbService.execute('RENAME TABLE `stock_items` TO `stocks`');
+        logger.info('Renamed stock_items -> stocks');
+      }
+      if ((await tableExists('stock_entries')) && !(await tableExists('stock_vendor_purchase'))) {
+        await dbService.execute('RENAME TABLE `stock_entries` TO `stock_vendor_purchase`');
+        logger.info('Renamed stock_entries -> stock_vendor_purchase');
+      }
+
+      // 2. If the two names landed on the wrong tables, swap them. `stocks`
+      //    holding entry_number means it is the ledger, not the master.
+      const stocksIsLedger = await columnExists('stocks', 'entry_number');
+      const otherIsMaster = await columnExists('stock_vendor_purchase', 'stock_code');
+      if (stocksIsLedger && otherIsMaster) {
+        await dropFksOn('stocks', 'stock_item_id');
+        await dropFksOn('stock_movements', 'stock_item_id');
+        await dbService.execute(
+          'RENAME TABLE `stocks` TO `__stock_swap_tmp`, `stock_vendor_purchase` TO `stocks`, `__stock_swap_tmp` TO `stock_vendor_purchase`'
+        );
+        logger.info('Swapped stocks <-> stock_vendor_purchase so the master is `stocks`');
+      }
+
+      // 3. The link column is `stock_id` everywhere now.
+      await renameColumn('stock_vendor_purchase', 'stock_item_id', 'stock_id', 'INT NOT NULL');
+      await renameColumn('stock_movements', 'stock_item_id', 'stock_id', 'INT NOT NULL');
+      for (const t of ['products', 'product_variants', 'product_addons']) {
+        await renameColumn(t, 'stock_item_id', 'stock_id', 'INT NULL');
+      }
+
+      // 4. Re-establish the two owning references.
+      await addFk('stock_vendor_purchase', 'stock_id', 'stocks', 'fk_svp_stock');
+      await addFk('stock_movements', 'stock_id', 'stocks', 'fk_stock_movements_stock');
+    } catch (e) {
+      logger.warn('Could not ensure stock table topology:', e);
+    }
+  }
+
   private static async resolveVendor(vendorId: number) {
     const vendor = await dbService.queryOne<{ id: number; name: string; status: string }>(
       'SELECT id, name, status FROM vendors WHERE id = ?',
@@ -183,7 +428,7 @@ export class StockService {
 
     const countRes = await dbService.queryOne<{ total: number }>(
       `SELECT COUNT(*) as total
-       FROM stock_items si
+       FROM stocks si
        ${where}`,
       params
     );
@@ -200,7 +445,7 @@ export class StockService {
          COALESCE(SUM(si.current_quantity), 0) as total_units,
          COALESCE(SUM(si.current_value), 0) as total_valuation,
          COALESCE(SUM(CASE WHEN si.current_quantity <= si.min_stock_alert THEN 1 ELSE 0 END), 0) as low_stock_count
-       FROM stock_items si
+       FROM stocks si
        ${where}`,
       params
     );
@@ -209,7 +454,7 @@ export class StockService {
       `SELECT si.*,
               (si.current_quantity <= si.min_stock_alert) as is_low_stock,
               si.current_quantity as current_stock
-       FROM stock_items si
+       FROM stocks si
        ${where}
        ORDER BY (si.current_quantity <= si.min_stock_alert) DESC, si.name ASC
        LIMIT ? OFFSET ?`,
@@ -241,7 +486,7 @@ export class StockService {
 
     const item = await dbService.queryOne(
       `SELECT si.*
-       FROM stock_items si
+       FROM stocks si
        WHERE si.id = ?`,
       [id]
     );
@@ -253,9 +498,9 @@ export class StockService {
     // Recent entries
     const entries = await dbService.query(
       `SELECT se.*, u.name as created_by_name
-       FROM stock_entries se
+       FROM stock_vendor_purchase se
        LEFT JOIN users u ON se.created_by = u.id
-       WHERE se.stock_item_id = ?
+       WHERE se.stock_id = ?
        ORDER BY se.entry_date DESC
        LIMIT 10`,
       [id]
@@ -266,7 +511,7 @@ export class StockService {
       `SELECT sm.*, u.name as created_by_name
        FROM stock_movements sm
        LEFT JOIN users u ON sm.created_by = u.id
-       WHERE sm.stock_item_id = ?
+       WHERE sm.stock_id = ?
        ORDER BY sm.movement_date DESC
        LIMIT 15`,
       [id]
@@ -311,15 +556,35 @@ export class StockService {
     return await dbService.transaction(async () => {
       let code = data.stockCode;
       if (!code) {
-        const countRes = await dbService.queryOne<{ count: number }>('SELECT COUNT(*) as count FROM stock_items');
-        const nextNum = (countRes?.count || 0) + 1;
-        code = `STK-${String(nextNum).padStart(4, '0')}`;
-      }
-
-      // Check unique code
-      const existing = await dbService.queryOne('SELECT id FROM stock_items WHERE stock_code = ?', [code]);
-      if (existing) {
-        throw AppError.conflict(`Stock code "${code}" already exists`);
+        // Numbered from the highest code in use, not from COUNT(*). With the
+        // count, deleting any ledger item made the next number collide with a
+        // code already taken — STK-0042 with 41 rows — and every attempt to
+        // add a stock item failed with a 409 the operator could do nothing
+        // about. Only auto-generated codes are advanced here; a code typed by
+        // the user still conflicts loudly, which is correct.
+        const maxRes = await dbService.queryOne<{ max_num: number | null }>(
+          `SELECT MAX(CAST(SUBSTRING(stock_code, 5) AS UNSIGNED)) AS max_num
+           FROM stocks
+           WHERE stock_code REGEXP '^STK-[0-9]+$'`
+        );
+        let next = Number(maxRes?.max_num || 0) + 1;
+        // Belt and braces: skip anything already present (a hand-typed code
+        // could sit anywhere in the range).
+        for (let attempt = 0; attempt < 50; attempt++) {
+          const candidate = `STK-${String(next).padStart(4, '0')}`;
+          const taken = await dbService.queryOne('SELECT id FROM stocks WHERE stock_code = ?', [candidate]);
+          if (!taken) { code = candidate; break; }
+          next++;
+        }
+        if (!code) {
+          throw AppError.conflict('Could not allocate a free stock code. Supply one explicitly.');
+        }
+      } else {
+        // Check unique code
+        const existing = await dbService.queryOne('SELECT id FROM stocks WHERE stock_code = ?', [code]);
+        if (existing) {
+          throw AppError.conflict(`Stock code "${code}" already exists`);
+        }
       }
 
       const uuid = `stk-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`;
@@ -342,38 +607,38 @@ export class StockService {
       }
 
       const res = await dbService.execute(
-        `INSERT INTO stock_items (
+        `INSERT INTO stocks (
           uuid, stock_code, name, unit_type, current_quantity,
           current_value, average_unit_price, status, min_stock_alert
         ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
         [uuid, code, data.name, unitType, totalQty, totalPrice, unitPrice, minAlert]
       );
 
-      const stockItemId = res.lastInsertRowid;
+      const stockId = res.lastInsertRowid;
 
       // If initial stock provided, log entry and movement
       if (totalQty > 0) {
         const entryUuid = `entry-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`;
         const moveUuid = `move-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`;
-        const entryNumber = `STK-IN-${String(stockItemId).padStart(5, '0')}`;
+        const entryNumber = `STK-IN-${String(stockId).padStart(5, '0')}`;
 
-        // supplier carries the vendor's name as it reads today, matching how
-        // createStockEntry snapshots it: renaming the vendor later must not
-        // rewrite what this opening entry says the stock was bought from.
+        // An opening balance bought from a named vendor is still a purchase,
+        // so it is booked as one and carries the link; without a vendor it is
+        // the plain opening row.
         await dbService.execute(
-          `INSERT INTO stock_entries (
-            uuid, stock_item_id, entry_number, quantity, multiplier,
-            total_quantity, total_price, unit_price, status, supplier, vendor_id, notes, created_by
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'posted', ?, ?, 'Opening inventory entry', ?)`,
-          [entryUuid, stockItemId, entryNumber, baseQty, multiplier, totalQty, totalPrice, unitPrice, vendor?.name ?? 'Initial Setup', vendor?.id ?? null, userId]
+          `INSERT INTO stock_vendor_purchase (
+            uuid, stock_id, vendor_id, entry_number, quantity, multiplier,
+            total_quantity, total_price, unit_price, status, supplier, notes, created_by
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'posted', ?, 'Opening inventory entry', ?)`,
+          [entryUuid, stockId, vendor?.id ?? null, entryNumber, baseQty, multiplier, totalQty, totalPrice, unitPrice, vendor ? 'Vendor' : 'Initial Setup', userId]
         );
 
         await dbService.execute(
           `INSERT INTO stock_movements (
-            uuid, stock_item_id, movement_type, reference_type, reference_id,
+            uuid, stock_id, movement_type, reference_type, reference_id,
             quantity, unit_price, total_value, balance_quantity, balance_value, notes, created_by
           ) VALUES (?, ?, 'in', 'INITIAL_STOCK', ?, ?, ?, ?, ?, ?, 'Opening inventory initial stock', ?)`,
-          [moveUuid, stockItemId, entryNumber, totalQty, unitPrice, totalPrice, totalQty, totalPrice, userId]
+          [moveUuid, stockId, entryNumber, totalQty, unitPrice, totalPrice, totalQty, totalPrice, userId]
         );
       }
 
@@ -381,11 +646,11 @@ export class StockService {
         userId,
         action: 'STOCK_ITEM_CREATED',
         module: 'STOCK',
-        recordId: stockItemId,
+        recordId: stockId,
         newValues: { name: data.name, stockCode: code, unitType, baseQty, multiplier, totalQty, totalPrice, unitPrice, vendorId: vendor?.id ?? null, vendorName: vendor?.name ?? null },
       });
 
-      return await this.getStockItemById(stockItemId);
+      return await this.getStockItemById(stockId);
     });
   }
 
@@ -407,7 +672,7 @@ export class StockService {
     const current = await this.getStockItemById(id);
 
     await dbService.execute(
-      `UPDATE stock_items
+      `UPDATE stocks
        SET name = COALESCE(?, name),
            unit_type = COALESCE(?, unit_type),
            min_stock_alert = COALESCE(?, min_stock_alert),
@@ -439,23 +704,19 @@ export class StockService {
    * 5. Create Stock Purchase / Addition Entry (The Core 3-tier Transaction)
    * Quantity × Multiplier = Total Quantity
    * Total Price ÷ Total Quantity = Unit Price
-   * Append to stock_entries without updating old entries.
-   * Update stock_items balance & weighted average unit price.
+   * Append to stock_vendor_purchase without updating old entries.
+   * Update stocks balance & weighted average unit price.
    * Append to stock_movements audit trail.
    */
   static async createStockEntry(
     data: {
-      stockItemId?: number;
+      stockId?: number;
       productId?: number;
+      vendorId?: number | null;
       quantity: number;
       multiplier?: number;
       totalPrice?: number;
       unitPrice?: number;
-      supplier?: string;
-      vendorId?: number;
-      invoiceNumber?: string;
-      batchNumber?: string;
-      expiryDate?: string;
       notes?: string;
       entryDate?: string;
     },
@@ -468,10 +729,10 @@ export class StockService {
     return await dbService.transaction(async () => {
       // 1. Locate Target Stock Item
       let stockItem: any = null;
-      if (data.stockItemId) {
-        stockItem = await dbService.queryOne('SELECT * FROM stock_items WHERE id = ?', [data.stockItemId]);
+      if (data.stockId) {
+        stockItem = await dbService.queryOne('SELECT * FROM stocks WHERE id = ?', [data.stockId]);
       } else if (data.productId) {
-        stockItem = await dbService.queryOne('SELECT * FROM stock_items WHERE product_id = ?', [data.productId]);
+        stockItem = await dbService.queryOne('SELECT * FROM stocks WHERE product_id = ?', [data.productId]);
         if (!stockItem) {
           // If no stock_item exists yet for product, create or link one
           const product = await dbService.queryOne<{ id: number; name: string; sku: string; cost_price: number; stock_quantity: number }>(
@@ -489,7 +750,6 @@ export class StockService {
               productId: product.id,
               initialQuantity: product.stock_quantity || 0,
               initialPrice: product.cost_price || 0,
-              vendorId: data.vendorId,
             },
             userId
           );
@@ -517,37 +777,39 @@ export class StockService {
 
       const unitPrice = totalQuantity > 0 ? totalPrice / totalQuantity : 0;
 
-      // 2b. Resolve the vendor, when one was picked.
-      // supplier is kept as the name snapshot for this purchase: renaming or
-      // deleting a vendor later must not rewrite what this entry says it was
-      // bought from. A free-typed supplier with no vendor picked still works.
+      // 2b. The entry records which vendor this purchase came from. Resolving
+      // it here refuses a missing or blocked vendor before anything is written.
+      // `supplier` is only the source of the batch — the vendor's identity is
+      // vendor_id, so a rename is picked up by the join rather than frozen in
+      // a text column that then disagrees with the linked row.
       let vendorId: number | null = null;
-      let supplierName: string | null = data.supplier?.trim() || null;
-
-      if (data.vendorId) {
-        const vendor = await StockService.resolveVendor(data.vendorId);
+      let vendorName: string | null = null;
+      if (data.vendorId !== undefined && data.vendorId !== null) {
+        const vendor = await this.resolveVendor(Number(data.vendorId));
         vendorId = vendor.id;
-        supplierName = vendor.name;
+        vendorName = vendor.name;
       }
+      const source: 'Initial Setup' | 'Vendor' = vendorId !== null ? 'Vendor' : 'Initial Setup';
 
       // 3. Generate Sequential Entry Number (e.g. STK-IN-00001)
-      const countRes = await dbService.queryOne<{ count: number }>('SELECT COUNT(*) as count FROM stock_entries');
+      const countRes = await dbService.queryOne<{ count: number }>('SELECT COUNT(*) as count FROM stock_vendor_purchase');
       const nextSeq = (countRes?.count || 0) + 1;
       const entryNumber = `STK-IN-${String(nextSeq).padStart(5, '0')}`;
       const entryUuid = `entry-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`;
       const movementUuid = `move-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`;
       const entryDate = data.entryDate || new Date().toISOString().slice(0, 19).replace('T', ' ');
 
-      // 4. Insert into stock_entries
+      // 4. Insert into stock_vendor_purchase
       const entryRes = await dbService.execute(
-        `INSERT INTO stock_entries (
-          uuid, stock_item_id, entry_number, entry_date, quantity,
+        `INSERT INTO stock_vendor_purchase (
+          uuid, stock_id, vendor_id, entry_number, entry_date, quantity,
           multiplier, total_quantity, total_price, unit_price, status,
-          supplier, vendor_id, invoice_number, batch_number, expiry_date, notes, created_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'posted', ?, ?, ?, ?, ?, ?, ?)`,
+          supplier, notes, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'posted', ?, ?, ?)`,
         [
           entryUuid,
           stockItem.id,
+          vendorId,
           entryNumber,
           entryDate,
           baseQuantity,
@@ -555,11 +817,7 @@ export class StockService {
           totalQuantity,
           totalPrice,
           unitPrice,
-          supplierName,
-          vendorId,
-          data.invoiceNumber || null,
-          data.batchNumber || null,
-          data.expiryDate || null,
+          source,
           data.notes || null,
           userId,
         ]
@@ -578,7 +836,7 @@ export class StockService {
       // 6. Insert into stock_movements (Audit Record)
       await dbService.execute(
         `INSERT INTO stock_movements (
-          uuid, stock_item_id, movement_type, reference_type, reference_id,
+          uuid, stock_id, movement_type, reference_type, reference_id,
           quantity, unit_price, total_value, balance_quantity, balance_value,
           notes, created_by
         ) VALUES (?, ?, 'in', 'PURCHASE_ENTRY', ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -591,14 +849,14 @@ export class StockService {
           totalPrice,
           newQuantity,
           newValue,
-          data.notes || (supplierName ? `Purchase from ${supplierName}` : 'Stock Purchase Addition'),
+          data.notes || (vendorName ? `Purchase from ${vendorName}` : 'Stock Purchase Addition'),
           userId,
         ]
       );
 
-      // 7. Update stock_items Master
+      // 7. Update stocks Master
       await dbService.execute(
-        `UPDATE stock_items
+        `UPDATE stocks
          SET current_quantity = ?,
              current_value = ?,
              average_unit_price = ?,
@@ -649,7 +907,7 @@ export class StockService {
         module: 'STOCK',
         recordId: entryId,
         newValues: {
-          stockItemId: stockItem.id,
+          stockId: stockItem.id,
           stockItemName: stockItem.name,
           entryNumber,
           quantity: baseQuantity,
@@ -666,7 +924,7 @@ export class StockService {
       return {
         entryId,
         entryNumber,
-        stockItemId: stockItem.id,
+        stockId: stockItem.id,
         stockItemName: stockItem.name,
         stockCode: stockItem.stock_code,
         baseQuantity,
@@ -691,9 +949,9 @@ export class StockService {
   static async getStockEntries(
     page = 1,
     limit = 50,
-    stockItemId?: number,
+    stockId?: number,
     search?: string,
-    supplier?: string,
+    supplier?: 'Initial Setup' | 'Vendor',
     dateFrom?: string,
     dateTo?: string,
     vendorId?: number
@@ -702,27 +960,26 @@ export class StockService {
     let where = 'WHERE 1=1';
     const params: any[] = [];
 
-    if (stockItemId) {
-      where += ' AND se.stock_item_id = ?';
-      params.push(stockItemId);
+    if (stockId) {
+      where += ' AND se.stock_id = ?';
+      params.push(stockId);
     }
 
-    if (search) {
-      where += ' AND (se.entry_number LIKE ? OR si.name LIKE ? OR si.stock_code LIKE ? OR se.supplier LIKE ? OR v.name LIKE ? OR se.invoice_number LIKE ?)';
-      const term = ParamUtil.like(search);
-      params.push(term, term, term, term, term, term);
-    }
-
-    if (supplier) {
-      where += ' AND se.supplier LIKE ?';
-      params.push(ParamUtil.like(supplier));
-    }
-
-    // Exact match, unlike the supplier text filter above: once entries are
-    // linked, "show me everything from this vendor" has one right answer.
     if (vendorId) {
       where += ' AND se.vendor_id = ?';
       params.push(vendorId);
+    }
+
+    if (search) {
+      where +=
+        ' AND (se.entry_number LIKE ? OR si.name LIKE ? OR si.stock_code LIKE ? OR v.name LIKE ?)';
+      const term = ParamUtil.like(search);
+      params.push(term, term, term, term);
+    }
+
+    if (supplier) {
+      where += ' AND se.supplier = ?';
+      params.push(supplier);
     }
 
     if (dateFrom) {
@@ -737,8 +994,8 @@ export class StockService {
 
     const countRes = await dbService.queryOne<{ total: number }>(
       `SELECT COUNT(*) as total
-       FROM stock_entries se
-       JOIN stock_items si ON se.stock_item_id = si.id
+       FROM stock_vendor_purchase se
+       JOIN stocks si ON se.stock_id = si.id
        LEFT JOIN vendors v ON se.vendor_id = v.id
        ${where}`,
       params
@@ -752,10 +1009,9 @@ export class StockService {
               si.unit_type,
               v.name as vendor_name,
               v.vendor_code,
-              v.status as vendor_status,
               u.name as created_by_name
-       FROM stock_entries se
-       JOIN stock_items si ON se.stock_item_id = si.id
+       FROM stock_vendor_purchase se
+       JOIN stocks si ON se.stock_id = si.id
        LEFT JOIN vendors v ON se.vendor_id = v.id
        LEFT JOIN users u ON se.created_by = u.id
        ${where}
@@ -780,9 +1036,23 @@ export class StockService {
    */
   static async adjustStock(
     data: {
-      stockItemId?: number;
+      stockId?: number;
       productId?: number;
-      adjustmentType: 'INCREASE' | 'DECREASE' | 'adjustment' | 'wastage' | 'return' | 'in' | 'out';
+      /**
+       * `return` and `return_to_supplier` are opposite directions and must not
+       * be confused. `return` is a customer handing goods back, so stock comes
+       * in — that is what RefundsService.restock sends. `return_to_supplier` is
+       * goods going back to the vendor, so stock goes out.
+       */
+      adjustmentType:
+        | 'INCREASE'
+        | 'DECREASE'
+        | 'adjustment'
+        | 'wastage'
+        | 'return'
+        | 'return_to_supplier'
+        | 'in'
+        | 'out';
       quantity: number;
       multiplier?: number;
       totalPrice?: number;
@@ -798,10 +1068,10 @@ export class StockService {
 
     return await dbService.transaction(async () => {
       let stockItem: any = null;
-      if (data.stockItemId) {
-        stockItem = await dbService.queryOne('SELECT * FROM stock_items WHERE id = ?', [data.stockItemId]);
+      if (data.stockId) {
+        stockItem = await dbService.queryOne('SELECT * FROM stocks WHERE id = ?', [data.stockId]);
       } else if (data.productId) {
-        stockItem = await dbService.queryOne('SELECT * FROM stock_items WHERE product_id = ?', [data.productId]);
+        stockItem = await dbService.queryOne('SELECT * FROM stocks WHERE product_id = ?', [data.productId]);
       }
 
       if (!stockItem) {
@@ -825,7 +1095,9 @@ export class StockService {
       let movementType: StockMovementType = 'adjustment';
 
       if (data.adjustmentType === 'wastage') movementType = 'wastage';
-      else if (data.adjustmentType === 'return') movementType = 'return';
+      // Both are logged against the 'return' movement type; the direction is
+      // carried by the signed quantity, not by the label.
+      else if (data.adjustmentType === 'return' || data.adjustmentType === 'return_to_supplier') movementType = 'return';
       else if (data.adjustmentType === 'INCREASE' || data.adjustmentType === 'in') movementType = 'in';
       else if (data.adjustmentType === 'DECREASE' || data.adjustmentType === 'out') movementType = 'out';
 
@@ -867,7 +1139,7 @@ export class StockService {
       // Log movement
       await dbService.execute(
         `INSERT INTO stock_movements (
-          uuid, stock_item_id, movement_type, reference_type, reference_id,
+          uuid, stock_id, movement_type, reference_type, reference_id,
           quantity, unit_price, total_value, balance_quantity, balance_value,
           notes, created_by
         ) VALUES (?, ?, ?, 'MANUAL_ADJUSTMENT', ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -886,9 +1158,9 @@ export class StockService {
         ]
       );
 
-      // Update stock_items
+      // Update stocks
       await dbService.execute(
-        `UPDATE stock_items
+        `UPDATE stocks
          SET current_quantity = ?,
              current_value = ?,
              average_unit_price = ?,
@@ -897,22 +1169,12 @@ export class StockService {
         [newQuantity, newValue, newAvgPrice, stockItem.id]
       );
 
-      // Sync legacy tables if linked
+      // Keep the dish's own counter in step with the ledger item behind it.
       if (stockItem.product_id) {
-        await dbService.execute('UPDATE stock SET current_stock = ?, updated_at = CURRENT_TIMESTAMP WHERE product_id = ?', [
-          newQuantity,
-          stockItem.product_id,
-        ]);
         await dbService.execute('UPDATE products SET stock_quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [
           newQuantity,
           stockItem.product_id,
         ]);
-
-        await dbService.execute(
-          `INSERT INTO stock_adjustments (product_id, adjustment_type, quantity, reason, approved_by)
-           VALUES (?, ?, ?, ?, ?)`,
-          [stockItem.product_id, isIncrease ? 'INCREASE' : 'DECREASE', Math.abs(deltaQty), data.reason, userId]
-        );
 
         await dbService.execute(
           `INSERT INTO stock_transactions (
@@ -938,7 +1200,7 @@ export class StockService {
       });
 
       return {
-        stockItemId: stockItem.id,
+        stockId: stockItem.id,
         stockItemName: stockItem.name,
         previousQuantity: prevQuantity,
         newQuantity,
@@ -956,7 +1218,7 @@ export class StockService {
   static async getStockMovements(
     page = 1,
     limit = 50,
-    stockItemId?: number,
+    stockId?: number,
     movementType?: string,
     search?: string,
     dateFrom?: string,
@@ -966,9 +1228,9 @@ export class StockService {
     let where = 'WHERE 1=1';
     const params: any[] = [];
 
-    if (stockItemId) {
-      where += ' AND sm.stock_item_id = ?';
-      params.push(stockItemId);
+    if (stockId) {
+      where += ' AND sm.stock_id = ?';
+      params.push(stockId);
     }
 
     if (movementType && movementType !== 'all') {
@@ -995,7 +1257,7 @@ export class StockService {
     const countRes = await dbService.queryOne<{ total: number }>(
       `SELECT COUNT(*) as total
        FROM stock_movements sm
-       JOIN stock_items si ON sm.stock_item_id = si.id
+       JOIN stocks si ON sm.stock_id = si.id
        ${where}`,
       params
     );
@@ -1013,7 +1275,7 @@ export class StockService {
               (sm.balance_quantity - sm.quantity) as previous_stock,
               sm.movement_date as created_at
        FROM stock_movements sm
-       JOIN stock_items si ON sm.stock_item_id = si.id
+       JOIN stocks si ON sm.stock_id = si.id
        LEFT JOIN users u ON sm.created_by = u.id
        ${where}
        ORDER BY sm.movement_date DESC, sm.id DESC
@@ -1041,49 +1303,27 @@ export class StockService {
       `SELECT
          COUNT(DISTINCT CASE WHEN si.current_quantity <= 0 THEN si.id END) as out_of_stock_count,
          COUNT(DISTINCT CASE WHEN si.current_quantity > 0 AND si.current_quantity <= si.min_stock_alert THEN si.id END) as low_stock_count,
-         COUNT(DISTINCT CASE WHEN si.current_quantity <= si.min_stock_alert THEN si.id END) as min_stock_count,
-         COUNT(DISTINCT CASE WHEN se.expiry_date IS NOT NULL AND se.expiry_date < CURDATE() THEN si.id END) as expired_count,
-         COUNT(DISTINCT CASE WHEN se.expiry_date IS NOT NULL AND se.expiry_date >= CURDATE() AND se.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 30 DAY) THEN si.id END) as expiring_soon_count
-       FROM stock_items si
-       LEFT JOIN stock_entries se ON si.id = se.stock_item_id
+         COUNT(DISTINCT CASE WHEN si.current_quantity <= si.min_stock_alert THEN si.id END) as min_stock_count
+       FROM stocks si
        WHERE si.status = 'active'`
     );
 
     const itemsQuery = `
       SELECT
         si.*,
-        latest_exp.batch_number as latest_batch,
-        latest_exp.expiry_date as nearest_expiry_date,
-        DATEDIFF(latest_exp.expiry_date, CURDATE()) as days_until_expiry,
         CASE
           WHEN si.current_quantity <= 0 THEN 'OUT_OF_STOCK'
           WHEN si.current_quantity <= si.min_stock_alert THEN 'LOW_STOCK'
-          WHEN latest_exp.expiry_date IS NOT NULL AND latest_exp.expiry_date < CURDATE() THEN 'EXPIRED'
-          WHEN latest_exp.expiry_date IS NOT NULL AND latest_exp.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 30 DAY) THEN 'EXPIRING_SOON'
           ELSE 'NORMAL'
         END as alert_category,
         CASE
           WHEN si.current_quantity <= 0 THEN 'critical'
           WHEN si.current_quantity <= (si.min_stock_alert / 2) THEN 'critical'
-          WHEN latest_exp.expiry_date IS NOT NULL AND latest_exp.expiry_date < CURDATE() THEN 'critical'
           WHEN si.current_quantity <= si.min_stock_alert THEN 'warning'
-          WHEN latest_exp.expiry_date IS NOT NULL AND latest_exp.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 7 DAY) THEN 'warning'
-          WHEN latest_exp.expiry_date IS NOT NULL AND latest_exp.expiry_date <= DATE_ADD(CURDATE(), INTERVAL 30 DAY) THEN 'info'
           ELSE 'normal'
         END as severity,
         GREATEST(0, (COALESCE(si.min_stock_alert, 10) * 2 - si.current_quantity)) as suggested_reorder_quantity
-      FROM stock_items si
-      LEFT JOIN (
-        SELECT se1.stock_item_id, se1.batch_number, se1.expiry_date
-        FROM stock_entries se1
-        INNER JOIN (
-          SELECT stock_item_id, MIN(expiry_date) as min_exp
-          FROM stock_entries
-          WHERE expiry_date IS NOT NULL
-          GROUP BY stock_item_id
-        ) se2 ON se1.stock_item_id = se2.stock_item_id AND se1.expiry_date = se2.min_exp
-        GROUP BY se1.stock_item_id, se1.batch_number, se1.expiry_date
-      ) latest_exp ON si.id = latest_exp.stock_item_id
+      FROM stocks si
       WHERE si.status = 'active'
     `;
 
@@ -1108,8 +1348,6 @@ export class StockService {
           return Number(item.current_quantity) <= Number(item.reorder_level);
         case 'overstock':
           return Number(item.max_stock_threshold) > 0 && Number(item.current_quantity) > Number(item.max_stock_threshold);
-        case 'expiry':
-          return item.nearest_expiry_date && item.days_until_expiry <= 30;
         default:
           return item.alert_category !== 'NORMAL';
       }
@@ -1124,8 +1362,6 @@ export class StockService {
         minStock: Number(summary?.min_stock_count || 0),
         reorderLevel: Number(summary?.reorder_level_count || 0),
         overstock: Number(summary?.overstock_count || 0),
-        expired: Number(summary?.expired_count || 0),
-        expiringSoon: Number(summary?.expiring_soon_count || 0),
       },
     };
   }
@@ -1141,8 +1377,8 @@ export class StockService {
               c.name as category_name,
               si.current_quantity as current_stock,
               COALESCE((SELECT MIN(pv.selling_price) FROM product_variants pv WHERE pv.product_id = p.id), 0) as selling_price
-       FROM stock_items si
-       LEFT JOIN products p ON p.stock_item_id = si.id
+       FROM stocks si
+       LEFT JOIN products p ON p.stock_id = si.id
        LEFT JOIN categories c ON p.category_id = c.id
        WHERE si.status = 'active' AND si.current_quantity <= si.min_stock_alert
        ORDER BY si.current_quantity ASC`
@@ -1156,11 +1392,10 @@ export class StockService {
   static async stockIn(
     data: {
       productId?: number;
-      stockItemId?: number;
+      stockId?: number;
       quantity: number;
       multiplier?: number;
       totalPrice?: number;
-      supplier?: string;
       invoiceNumber?: string;
       notes?: string;
     },
@@ -1173,11 +1408,11 @@ export class StockService {
    * 11. Backward Compatibility - Get Transactions forwarding to Movements
    */
   static async getTransactions(page = 1, limit = 50, productId?: number, type?: string) {
-    let stockItemId: number | undefined;
+    let stockId: number | undefined;
     if (productId) {
-      const item = await dbService.queryOne<{ id: number }>('SELECT id FROM stock_items WHERE product_id = ?', [productId]);
-      stockItemId = item?.id;
+      const item = await dbService.queryOne<{ id: number }>('SELECT id FROM stocks WHERE product_id = ?', [productId]);
+      stockId = item?.id;
     }
-    return await this.getStockMovements(page, limit, stockItemId, type);
+    return await this.getStockMovements(page, limit, stockId, type);
   }
 }
