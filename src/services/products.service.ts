@@ -41,6 +41,58 @@ export class ProductsService {
     } catch (_) {}
   }
 
+  /**
+   * Loads every listed product's variants in one query and re-exposes the
+   * default variant's price as `product.selling_price`.
+   *
+   * Pricing moved off `products` onto `product_variants`, but the POS grid,
+   * the products list, the product detail page and the back-office order
+   * screen all still read `p.selling_price`, so dropping the column blanked
+   * the price everywhere at once. The column is gone for good; this is the
+   * compatibility shim that keeps those screens reading a price, taken from
+   * the variant marked default (falling back to the first by display order,
+   * which is the same row `getVariants` orders to the top).
+   */
+  private static async attachVariants(products: any[]) {
+    for (const p of products) p.variants = [];
+    if (products.length === 0) return;
+
+    const ids = products.map((p) => p.id);
+    let rows: any[] = [];
+    try {
+      rows = await dbService.query<any>(
+        `SELECT v.id, v.product_id, v.name, v.stock_item_id,
+                v.selling_price, v.stock_consumption, v.display_order, v.is_default, v.status,
+                si.name       AS stock_item_name,
+                si.stock_code AS stock_item_code,
+                si.unit_type  AS stock_item_unit,
+                si.current_quantity AS stock_item_quantity
+         FROM product_variants v
+         LEFT JOIN stock_items si ON si.id = v.stock_item_id
+         WHERE v.product_id IN (${ids.map(() => '?').join(',')})
+         ORDER BY v.display_order ASC, v.id ASC`,
+        ids
+      );
+    } catch {
+      return;
+    }
+
+    const byProduct = new Map<number, any[]>();
+    for (const row of rows) {
+      const list = byProduct.get(row.product_id) || [];
+      list.push(row);
+      byProduct.set(row.product_id, list);
+    }
+
+    for (const p of products) {
+      p.variants = byProduct.get(p.id) || [];
+      if (p.selling_price === undefined) {
+        const preferred = p.variants.find((v: any) => Number(v.is_default) === 1) || p.variants[0];
+        p.selling_price = preferred ? preferred.selling_price : null;
+      }
+    }
+  }
+
   static async getVariants(productId: number) {
     try {
       return await dbService.query(
@@ -156,9 +208,9 @@ export class ProductsService {
       [...params, limit, offset]
     );
 
-    for (const product of products) {
-      product.variants = await this.getVariants(product.id);
-    }
+    // One query for the whole page's variants rather than getVariants() per
+    // row, which was a round trip per product — fifty on a default page.
+    await this.attachVariants(products);
 
     return {
       data: products,
@@ -198,6 +250,14 @@ export class ProductsService {
     }
 
     product.variants = await this.getVariants(id);
+
+    // Same compatibility shim as the list endpoint — the View page and its
+    // margin figures read product.selling_price. See attachVariants().
+    if (product.selling_price === undefined) {
+      const preferred =
+        product.variants.find((v: any) => Number(v.is_default) === 1) || product.variants[0];
+      product.selling_price = preferred ? preferred.selling_price : null;
+    }
     return product;
   }
 

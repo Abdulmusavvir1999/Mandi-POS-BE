@@ -507,7 +507,11 @@ CREATE TABLE IF NOT EXISTS bills (
   INDEX idx_bills_order_type (order_type),
   INDEX idx_bills_payment_status (payment_status),
   INDEX idx_bills_offline_sync (offline_sync_id),
-  INDEX idx_bills_voided (is_voided)
+  INDEX idx_bills_voided (is_voided),
+  -- Every sales/finance/BI report filters on "still in the books, within this
+  -- window". Leading with the two flags and ending on created_at matches that
+  -- WHERE exactly; without it those reports scanned the table.
+  INDEX idx_bills_live_created (is_deleted, is_voided, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS bill_items (
@@ -536,7 +540,11 @@ CREATE TABLE IF NOT EXISTS bill_items (
   FOREIGN KEY (bill_id) REFERENCES bills(id) ON DELETE CASCADE,
   FOREIGN KEY (product_id) REFERENCES products(id),
   INDEX idx_bill_items_bill (bill_id),
-  INDEX idx_bill_items_product (product_id)
+  INDEX idx_bill_items_product (product_id),
+  -- Covering index for the reports: carrying product_id, quantity and
+  -- total_amount beside bill_id lets the bills x bill_items aggregation be
+  -- answered from the index alone, without reading the rows.
+  INDEX idx_bi_bill_cover (bill_id, product_id, quantity, total_amount)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS payments (

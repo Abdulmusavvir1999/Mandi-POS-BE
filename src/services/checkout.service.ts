@@ -640,7 +640,14 @@ export class CheckoutService {
       [billId]
     );
 
+    // The bill's own fields stay at the top level because that is the contract
+    // every existing caller was written against: the POS reads
+    // `res.data.bill_number` for the settled-bill toast and `res.data.id` to
+    // fetch the KOT, and both silently became undefined when this started
+    // returning only the nested form. `bill` and `items` are kept alongside so
+    // newer callers that want the line items still get them.
     return {
+      ...bill,
       bill,
       items,
     };

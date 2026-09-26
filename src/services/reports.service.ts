@@ -155,7 +155,7 @@ export class ReportsService {
       `SELECT
          c.id as category_id,
          c.name as category_name,
-         c.icon,
+         c.image_url,
          COUNT(DISTINCT bi.bill_id) as orders_count,
          SUM(bi.quantity) as total_units_sold,
          SUM(bi.total_amount) as total_revenue

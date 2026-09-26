@@ -71,6 +71,43 @@ export class StockService {
         }
       };
 
+      /**
+       * Adds a column, and optionally its index, when the database predates it.
+       *
+       * `stock_entries.expiry_date`, `batch_number` and `vendor_id` are all in
+       * schema.sql and all written by createStockEntry, but mysql_migrator.ts
+       * built the table without them. Any database provisioned by the migrator
+       * therefore failed every stock-in and every entry listing with
+       * ER_BAD_FIELD_ERROR. Swallowed and logged like the drops above: a column
+       * that cannot be added must not take the stock screens down.
+       */
+      const addColumnSafe = async (table: string, colName: string, ddl: string, indexName?: string) => {
+        try {
+          const colCheck = await dbService.queryOne<{ count: number }>(`
+            SELECT COUNT(*) as count
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = ?
+              AND COLUMN_NAME = ?
+          `, [table, colName]);
+          if (colCheck && colCheck.count > 0) return;
+
+          await dbService.execute(`ALTER TABLE \`${table}\` ADD COLUMN \`${colName}\` ${ddl}`);
+
+          if (indexName) {
+            try {
+              await dbService.execute(`ALTER TABLE \`${table}\` ADD INDEX \`${indexName}\` (\`${colName}\`)`);
+            } catch (_) {}
+          }
+        } catch (e) {
+          logger.warn(`Could not add column ${colName} to ${table}:`, e);
+        }
+      };
+
+      await addColumnSafe('stock_entries', 'expiry_date', 'DATE NULL', 'idx_stock_entries_expiry');
+      await addColumnSafe('stock_entries', 'batch_number', 'VARCHAR(100) NULL');
+      await addColumnSafe('stock_entries', 'vendor_id', 'INT NULL', 'idx_stock_entries_vendor');
+
       await dropColumnSafe('stock_items', 'reorder_level');
       await dropColumnSafe('stock_items', 'reorder_quantity');
       await dropColumnSafe('stock_items', 'max_stock_threshold');

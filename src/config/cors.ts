@@ -19,6 +19,18 @@ export const corsOptions: CorsOptions = {
   // header, so every Back-Office request is preflighted and has to be named
   // here; Authorization alone is not enough.
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Back-Office-Unlock'],
+
+  // How long the browser may reuse a preflight result for a given URL.
+  //
+  // The app runs on a different origin from the API and every call carries an
+  // Authorization header, so each one is preflighted. With no max-age Chrome
+  // keeps a preflight for ~5 seconds, which means an OPTIONS round trip in
+  // front of essentially every request — measured at half of all API round
+  // trips on a page load. Ten minutes is the ceiling Chrome honours (Firefox
+  // caps at 24h); the value only affects how soon a change to the CORS policy
+  // itself is picked up, never authentication, which is re-checked on every
+  // real request.
+  maxAge: 600,
 };
 
 export const corsMiddleware = cors(corsOptions);

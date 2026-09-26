@@ -56,27 +56,40 @@ export class OrdersService {
       params.push(dateTo);
     }
 
+    // Only `search` reaches outside `orders`, so the customers join is dead
+    // weight on an unfiltered count.
+    const filterJoins = search ? 'LEFT JOIN customers c ON o.customer_id = c.id' : '';
+
     const countRes = await dbService.queryOne<{ total: number }>(
       `SELECT COUNT(*) as total
        FROM orders o
-       LEFT JOIN customers c ON o.customer_id = c.id
+       ${filterJoins}
        ${where}`,
       params
     );
     const total = countRes?.total || 0;
 
+    // Deferred join, as in BillsService.getAll: page the ids off `orders`
+    // alone, then join and run the per-row item_count subquery for the page
+    // that survives instead of for every row scanned up to the offset.
     const orders = await dbService.query(
       `SELECT o.*, c.name as customer_name, c.phone as customer_phone,
               t.table_number, t.name as table_name,
               u.name as created_by_name,
               (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id) as item_count
-       FROM orders o
+       FROM (
+         SELECT o.id
+         FROM orders o
+         ${filterJoins}
+         ${where}
+         ORDER BY o.created_at DESC
+         LIMIT ? OFFSET ?
+       ) pg
+       JOIN orders o ON o.id = pg.id
        LEFT JOIN customers c ON o.customer_id = c.id
        LEFT JOIN dining_tables t ON o.dining_table_id = t.id
        LEFT JOIN users u ON o.created_by = u.id
-       ${where}
-       ORDER BY o.created_at DESC
-       LIMIT ? OFFSET ?`,
+       ORDER BY o.created_at DESC`,
       [...params, limit, offset]
     );
 

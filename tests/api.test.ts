@@ -327,6 +327,10 @@ describe(' Shop POS API Suite', () => {
         .set('Authorization', `Bearer ${cashierToken}`);
       const item = prodRes.body.data[0];
       const stockBefore = item.current_stock;
+      const linkedBefore = Number(item.linked_stock_quantity ?? 0);
+      const consumption = Number(
+        (item.variants || []).find((v: any) => Number(v.is_default) === 1)?.stock_consumption ?? 1
+      );
 
       const checkoutRes = await request(app)
         .post('/api/checkout')
@@ -349,11 +353,20 @@ describe(' Shop POS API Suite', () => {
       expect(checkoutRes.body.data).toHaveProperty('order_id');
       expect(checkoutRes.body.data.payment_status).toBe('PAID');
 
-      // Verify stock was decremented
+      // Verify stock was decremented, following the same branch CheckoutService
+      // takes: a dish linked to a stock item draws down that ledger item by
+      // quantity x the variant's consumption, and only an unlinked dish still
+      // moves the legacy per-product `stock.current_stock` counter.
       const updatedProdRes = await request(app)
         .get(`/api/products/${item.id}`)
         .set('Authorization', `Bearer ${cashierToken}`);
-      expect(updatedProdRes.body.data.current_stock).toBe(stockBefore - 2);
+      const updated = updatedProdRes.body.data;
+
+      if (item.stock_item_id) {
+        expect(Number(updated.linked_stock_quantity)).toBe(linkedBefore - 2 * consumption);
+      } else {
+        expect(updated.current_stock).toBe(stockBefore - 2);
+      }
     });
 
     it('should reject checkout when requested quantity exceeds available stock', async () => {

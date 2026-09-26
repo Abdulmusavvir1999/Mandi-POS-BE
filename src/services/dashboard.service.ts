@@ -6,7 +6,7 @@ export class DashboardService {
     await CheckoutService.ensureSchema();
 
     // 1. Today's & Lifetime Financials
-    const financialStats = await dbService.queryOne<{
+    const financialStatsP = dbService.queryOne<{
       today_sales: number;
       today_bills_count: number;
       today_tax: number;
@@ -26,7 +26,7 @@ export class DashboardService {
     );
 
     // 2. Order Statistics (Today + All-time)
-    const orderStats = await dbService.queryOne<{
+    const orderStatsP = dbService.queryOne<{
       today_orders: number;
       pending_orders: number;
       in_progress_orders: number;
@@ -53,7 +53,7 @@ export class DashboardService {
     );
 
     // 3. Table Occupancy
-    const tableStats = await dbService.queryOne<{
+    const tableStatsP = dbService.queryOne<{
       total_tables: number;
       occupied_tables: number;
       available_tables: number;
@@ -68,7 +68,7 @@ export class DashboardService {
     );
 
     // 4. Low Stock & Product Count
-    const stockStats = await dbService.queryOne<{
+    const stockStatsP = dbService.queryOne<{
       low_stock_count: number;
       out_of_stock_count: number;
       total_products: number;
@@ -83,39 +83,53 @@ export class DashboardService {
     );
 
     // 5. Customer Metrics
-    const customerStats = await dbService.queryOne<{ total_customers: number }>(
+    const customerStatsP = dbService.queryOne<{ total_customers: number }>(
       `SELECT COUNT(id) as total_customers FROM customers WHERE status = 'ACTIVE'`
     );
 
     // 6. Active Kitchen Queue Tokens
-    const queueStats = await dbService.queryOne<{ active_tokens: number }>(
+    const queueStatsP = dbService.queryOne<{ active_tokens: number }>(
       `SELECT COUNT(id) as active_tokens FROM queue WHERE status IN ('PENDING', 'IN_PROGRESS')`
     );
 
     // 7. Sales by Category
-    const categorySales = await dbService.query(
-      `SELECT c.id, c.name as category_name, c.icon,
-              COALESCE(SUM(bi.quantity), 0) as total_quantity,
-              COALESCE(SUM(bi.total_amount), 0) as total_revenue
+    //
+    // Both this and the top-sellers list below want the same thing: sold
+    // quantity and revenue per product, counting only invoices still in the
+    // books. Aggregating that once in a derived table and joining to it beats
+    // what was here before, which put `EXISTS (SELECT 1 FROM bills ...)` in the
+    // bill_items join condition — a correlated subquery re-run for every one of
+    // the 100k line items, costing ~4.4s on its own against 40k invoices.
+    //
+    // `c.id` is a tiebreaker, not a reordering: every category with no sales
+    // ties at 0 revenue, and without it MySQL is free to return those in a
+    // different order on each call.
+    const PRODUCT_SALES = `
+      SELECT bi.product_id, SUM(bi.quantity) AS qty, SUM(bi.total_amount) AS revenue
+      FROM bill_items bi
+      JOIN bills b ON b.id = bi.bill_id AND b.is_deleted = 0
+      GROUP BY bi.product_id`;
+
+    const categorySalesP = dbService.query(
+      `SELECT c.id, c.name as category_name, c.image_url,
+              COALESCE(SUM(s.qty), 0) as total_quantity,
+              COALESCE(SUM(s.revenue), 0) as total_revenue
        FROM categories c
        LEFT JOIN products p ON c.id = p.category_id
-       LEFT JOIN bill_items bi ON p.id = bi.product_id
-         AND EXISTS (SELECT 1 FROM bills b WHERE b.id = bi.bill_id AND b.is_deleted = 0)
+       LEFT JOIN (${PRODUCT_SALES}) s ON s.product_id = p.id
        GROUP BY c.id
-       ORDER BY total_revenue DESC`
+       ORDER BY total_revenue DESC, c.id ASC`
     );
 
     // 8. Top 6 Selling Delicacies
-    const topProducts = await dbService.query(
+    const topProductsP = dbService.query(
       `SELECT p.id, p.name as product_name, p.sku, c.name as category_name,
-              COALESCE(SUM(bi.quantity), 0) as total_sold,
-              COALESCE(SUM(bi.total_amount), 0) as total_revenue
+              COALESCE(s.qty, 0) as total_sold,
+              COALESCE(s.revenue, 0) as total_revenue
        FROM products p
-       JOIN bill_items bi ON p.id = bi.product_id
-       JOIN bills b ON bi.bill_id = b.id AND b.is_deleted = 0
+       JOIN (${PRODUCT_SALES}) s ON s.product_id = p.id
        JOIN categories c ON p.category_id = c.id
-       GROUP BY p.id
-       ORDER BY total_sold DESC, total_revenue DESC
+       ORDER BY total_sold DESC, total_revenue DESC, p.id ASC
        LIMIT 6`
     );
 
@@ -123,7 +137,7 @@ export class DashboardService {
     // Payment rows survive a withdrawal — they are the record of money taken —
     // so the bill join is what keeps a withdrawn invoice out of the tender
     // split rather than the payment row's own absence.
-    let paymentBreakdown = await dbService.query(
+    const paymentBreakdownP = dbService.query(
       `SELECT p.payment_method,
               COUNT(p.id) as transaction_count,
               COALESCE(SUM(p.amount), 0) as total_amount
@@ -132,19 +146,8 @@ export class DashboardService {
        WHERE DATE(p.created_at) = CURDATE()
        GROUP BY p.payment_method`
     );
-    if (!paymentBreakdown || paymentBreakdown.length === 0) {
-      paymentBreakdown = await dbService.query(
-        `SELECT p.payment_method,
-                COUNT(p.id) as transaction_count,
-                COALESCE(SUM(p.amount), 0) as total_amount
-         FROM payments p
-         JOIN bills b ON p.bill_id = b.id AND b.is_deleted = 0
-         GROUP BY p.payment_method`
-      );
-    }
-
     // 10. Recent Orders (Latest 8)
-    const recentOrders = await dbService.query(
+    const recentOrdersP = dbService.query(
       `SELECT o.id, o.order_number, o.order_type, o.status, o.total_amount, o.created_at,
               COALESCE(c.name, 'Walk-in Guest') as customer_name,
               t.table_number, t.name as table_name
@@ -155,6 +158,48 @@ export class DashboardService {
        ORDER BY o.created_at DESC
        LIMIT 8`
     );
+
+    // Nothing above depends on anything else above, so the ten queries go to
+    // the pool together instead of one after another. Sequentially the
+    // dashboard cost the sum of every query (~7.5s on 40k invoices); in
+    // parallel it costs the slowest one. Safe outside a transaction: only
+    // dbService.transaction() pins a single connection, and this is all reads.
+    const [
+      financialStats,
+      orderStats,
+      tableStats,
+      stockStats,
+      customerStats,
+      queueStats,
+      categorySales,
+      topProducts,
+      recentOrders,
+    ] = await Promise.all([
+      financialStatsP,
+      orderStatsP,
+      tableStatsP,
+      stockStatsP,
+      customerStatsP,
+      queueStatsP,
+      categorySalesP,
+      topProductsP,
+      recentOrdersP,
+    ]);
+
+    // Today's tender split, falling back to all-time when nothing has been
+    // taken yet today — unchanged, but the fallback only costs a round trip on
+    // the days it is actually needed.
+    let paymentBreakdown = await paymentBreakdownP;
+    if (!paymentBreakdown || paymentBreakdown.length === 0) {
+      paymentBreakdown = await dbService.query(
+        `SELECT p.payment_method,
+                COUNT(p.id) as transaction_count,
+                COALESCE(SUM(p.amount), 0) as total_amount
+         FROM payments p
+         JOIN bills b ON p.bill_id = b.id AND b.is_deleted = 0
+         GROUP BY p.payment_method`
+      );
+    }
 
     // Calculations
     const todaySales = financialStats?.today_sales || 0;

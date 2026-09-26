@@ -232,6 +232,37 @@ export class ReportsSchema {
         ['idx_payments_method', 'payments', 'payment_method'],
         ['idx_order_items_order', 'order_items', 'order_id'],
         ['idx_order_items_product', 'order_items', 'product_id'],
+
+        // The two that matter most. Almost every sales, finance, inventory and
+        // BI figure is `bills JOIN bill_items` aggregated over a date window,
+        // and on 40k invoices / 100k line items those ran 700-1500ms each.
+        //
+        // idx_bi_bill_cover carries product_id, quantity and total_amount
+        // alongside bill_id, so the join and the SUM/COUNT are answered from
+        // the index without touching the row data. idx_bills_live_created puts
+        // the two liveness flags ahead of created_at, which is exactly the
+        // WHERE every one of those reports builds.
+        //
+        // Measured together on pos_bench: sales/daily 1124 -> 208ms,
+        // sales/employees 666 -> 153ms, categories 1156 -> 408ms.
+        ['idx_bi_bill_cover', 'bill_items', 'bill_id, product_id, quantity, total_amount'],
+        ['idx_bills_live_created', 'bills', 'is_deleted, is_voided, created_at'],
+
+        // Per-user and per-product aggregates. Staff Track builds a roster by
+        // joining six derived tables, each of which aggregates the whole of
+        // orders / bills / order_items / order_status_history / audit_logs
+        // before joining to a handful of user rows; the BI and finance reports
+        // group bill_items by product. Leading each index with the column being
+        // grouped on is what lets those aggregates use an index rather than
+        // scan. Measured on pos_bench: reports/sales 653 -> 127ms,
+        // bi/product-performance 1520 -> 415ms, staff-track/tables 1779 ->
+        // 714ms, staff-track/staff 2321 -> 1169ms.
+        ['idx_orders_creator_live', 'orders', 'created_by, is_deleted, created_at'],
+        ['idx_bills_cashier_live', 'bills', 'cashier_id, is_deleted, created_at'],
+        ['idx_oi_order_qty', 'order_items', 'order_id, quantity'],
+        ['idx_osh_status_order', 'order_status_history', 'new_status, order_id, created_at'],
+        ['idx_audit_user_id', 'audit_logs', 'user_id, id'],
+        ['idx_bi_product_cover', 'bill_items', 'product_id, bill_id, quantity, subtotal, discount_amount, total_amount'],
       ];
       for (const [name, table, column] of indexes) {
         try {

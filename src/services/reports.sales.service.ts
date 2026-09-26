@@ -116,7 +116,7 @@ export class ReportsSalesService {
       `SELECT
          c.id                                                   AS category_id,
          COALESCE(c.name, 'Uncategorised')                      AS category_name,
-         c.icon,
+         c.image_url,
          COUNT(DISTINCT bi.bill_id)                             AS bills_count,
          COUNT(DISTINCT p.id)                                   AS distinct_products,
          COALESCE(SUM(bi.quantity), 0)                          AS quantity_sold,
@@ -131,7 +131,7 @@ export class ReportsSalesService {
        JOIN products p ON bi.product_id = p.id
        LEFT JOIN categories c ON p.category_id = c.id
        ${where}
-       GROUP BY c.id, c.name, c.icon
+       GROUP BY c.id, c.name, c.image_url
        ORDER BY net_sales DESC`,
       params
     );

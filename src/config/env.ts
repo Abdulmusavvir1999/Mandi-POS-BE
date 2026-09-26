@@ -10,7 +10,6 @@ export const config = {
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '8h',
   jwtRefreshSecret: process.env.JWT_REFRESH_SECRET || 'default_jwt_refresh_secret__pos_2026',
   jwtRefreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
-  databasePath: process.env.DATABASE_PATH || './data/_pos.db',
   corsOrigins: (process.env.CORS_ORIGIN || 'http://localhost:4200,http://localhost:3000').split(','),
   db: {
     host: process.env.LOC_DB_HOST || '192.168.10.15',
