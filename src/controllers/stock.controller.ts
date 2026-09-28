@@ -128,6 +128,19 @@ export class StockController {
   }
 
   /**
+   * 8B. Get Vendor Stock Items for Return to Supplier
+   */
+  static async getVendorReturnItems(req: Request, res: Response, next: NextFunction) {
+    try {
+      const vendorId = ParamUtil.id(req.params.vendorId, 'vendorId');
+      const items = await StockService.getVendorReturnItems(vendorId);
+      ResponseUtil.success(res, items, 'Vendor stock items fetched successfully');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  /**
    * 9. Inventory Alerts (Out of stock, Low stock, Minimum stock, Reorder level, Expiry, Overstock)
    */
   static async getStockAlerts(req: Request, res: Response, next: NextFunction) {

@@ -26,6 +26,7 @@ router.post('/entries', authenticate, requirePermission('stock.manage'), validat
 router.get('/movements', authenticate, requirePermission('stock.view'), StockController.getStockMovements);
 
 // 4. Stock Adjustments & Alerts
+router.get('/vendor-items/:vendorId', authenticate, requirePermission('stock.view'), StockController.getVendorReturnItems);
 router.post('/adjust', authenticate, requirePermission('stock.manage'), validateBody(stockAdjustSchema), StockController.adjustStock);
 router.get('/alerts', authenticate, requirePermission('stock.view'), StockController.getStockAlerts);
 router.get('/low-stock', authenticate, requirePermission('stock.view'), StockController.getLowStock);

@@ -21,11 +21,22 @@ export type PaymentMethod = 'CASH' | 'CARD' | 'UPI' | 'ONLINE' | 'OTHER';
 
 export type PaymentStatus = 'PAID' | 'PENDING' | 'FAILED' | 'REFUNDED' | 'VOIDED';
 
-export type StockTransactionType = 'STOCK_IN' | 'SALE' | 'ADJUSTMENT' | 'RETURN';
-
 export type StockUnitType = 'piece' | 'kg' | 'liter' | 'gram' | 'box' | 'packet' | 'portion' | 'other';
 export type StockEntryStatus = 'draft' | 'posted' | 'cancelled';
 export type StockMovementType = 'in' | 'out' | 'adjustment' | 'return' | 'wastage' | 'transfer_in' | 'transfer_out';
+
+/** What caused a stock movement. Mirrors the stock_movements.reference_type ENUM. */
+export type StockReferenceType =
+  | 'INITIAL_STOCK'
+  | 'PURCHASE_ENTRY'
+  | 'MANUAL_ADJUSTMENT'
+  | 'RETURN_TO_SUPPLIER'
+  | 'REFUND'
+  | 'SALE'
+  | 'BILL_VOID'
+  | 'BILL_DELETE'
+  | 'BILL_RESTORE'
+  | 'LEDGER_OPENING';
 
 export interface StockItemModel {
   id: number;
@@ -73,11 +84,12 @@ export interface StockMovementModel {
   id: number;
   uuid: string;
   stock_id: number;
+  stock_vendor_purchase_id?: number | null;
   stock_item_name?: string;
   stock_code?: string;
   unit_type?: StockUnitType;
   movement_type: StockMovementType;
-  reference_type: string;
+  reference_type: StockReferenceType;
   reference_id?: string | null;
   quantity: number;
   unit_price: number;

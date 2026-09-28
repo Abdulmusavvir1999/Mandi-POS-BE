@@ -37,18 +37,7 @@ export interface CreateVendorInput {
   outstanding_balance?: number;
 }
 
-export interface RecordPurchaseInput {
-  invoice_number: string;
-  order_date: string;
-  due_date?: string;
-  total_amount: number;
-  paid_amount?: number;
-  items_summary?: string;
-  notes?: string;
-}
-
 export interface RecordPaymentInput {
-  purchase_id?: number;
   payment_number?: string;
   payment_date: string;
   amount: number;
@@ -145,37 +134,10 @@ export class VendorsService {
       `);
 
       await dbService.execute(`
-        CREATE TABLE IF NOT EXISTS vendor_purchases (
-          id INT AUTO_INCREMENT PRIMARY KEY,
-          uuid VARCHAR(64) NOT NULL UNIQUE,
-          vendor_id INT NOT NULL,
-          invoice_number VARCHAR(100) NOT NULL,
-          order_date DATETIME NOT NULL,
-          due_date DATETIME NULL,
-          total_amount DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
-          paid_amount DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
-          balance_amount DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
-          payment_status ENUM('PAID', 'PARTIAL', 'UNPAID', 'OVERDUE') NOT NULL DEFAULT 'UNPAID',
-          delivery_status ENUM('RECEIVED', 'PENDING', 'CANCELLED') NOT NULL DEFAULT 'RECEIVED',
-          items_summary TEXT NULL,
-          notes TEXT NULL,
-          created_by INT NULL,
-          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-          INDEX idx_vp_vendor_id (vendor_id),
-          INDEX idx_vp_invoice (invoice_number),
-          INDEX idx_vp_payment_status (payment_status),
-          INDEX idx_vp_order_date (order_date),
-          FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE CASCADE
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-      `);
-
-      await dbService.execute(`
         CREATE TABLE IF NOT EXISTS vendor_payments (
           id INT AUTO_INCREMENT PRIMARY KEY,
           uuid VARCHAR(64) NOT NULL UNIQUE,
           vendor_id INT NOT NULL,
-          purchase_id INT NULL,
           payment_number VARCHAR(100) NOT NULL UNIQUE,
           payment_date DATETIME NOT NULL,
           amount DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
@@ -185,10 +147,8 @@ export class VendorsService {
           created_by INT NULL,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           INDEX idx_vpay_vendor_id (vendor_id),
-          INDEX idx_vpay_purchase_id (purchase_id),
           INDEX idx_vpay_date (payment_date),
-          FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE CASCADE,
-          FOREIGN KEY (purchase_id) REFERENCES vendor_purchases(id) ON DELETE SET NULL
+          FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
       `);
 
@@ -196,8 +156,8 @@ export class VendorsService {
       await dbService.execute(`
         INSERT IGNORE INTO permissions (code, module, description)
         VALUES 
-          ('vendor.view', 'VENDORS', 'View vendor list, profiles and purchase records'),
-          ('vendor.manage', 'VENDORS', 'Create, edit, delete vendors and record purchases and payments');
+          ('vendor.view', 'VENDORS', 'View vendor list, profiles and payment records'),
+          ('vendor.manage', 'VENDORS', 'Create, edit, delete vendors and record payments');
       `);
 
       await dbService.execute(`
@@ -356,9 +316,6 @@ export class VendorsService {
     const vendors = await dbService.query<any>(
       `SELECT vendors.*,
               COALESCE((SELECT SUM(amount) FROM vendor_payments WHERE vendor_id = vendors.id), 0) AS total_paid_amount,
-              COALESCE((SELECT SUM(total_amount) FROM vendor_purchases WHERE vendor_id = vendors.id), 0) AS total_purchases_amount,
-              COALESCE((SELECT COUNT(*) FROM vendor_purchases WHERE vendor_id = vendors.id), 0) AS total_purchases_count,
-              (SELECT order_date FROM vendor_purchases WHERE vendor_id = vendors.id ORDER BY order_date DESC LIMIT 1) AS last_purchase_date,
               (SELECT payment_date FROM vendor_payments WHERE vendor_id = vendors.id ORDER BY payment_date DESC LIMIT 1) AS last_payment_date
        FROM vendors
        ${where}
@@ -396,25 +353,6 @@ export class VendorsService {
       WHERE is_deleted = 0
     `);
 
-    const purchasesSummary = await dbService.queryOne<{
-      total_purchases: number;
-    }>(`
-      SELECT COALESCE(SUM(total_amount), 0) as total_purchases
-      FROM vendor_purchases
-    `);
-
-    // Overdue summary
-    const overdueRes = await dbService.queryOne<{
-      overdue_count: number;
-      overdue_amount: number;
-    }>(`
-      SELECT 
-        COUNT(*) as overdue_count,
-        COALESCE(SUM(balance_amount), 0) as overdue_amount
-      FROM vendor_purchases
-      WHERE payment_status != 'PAID' AND due_date IS NOT NULL AND due_date < NOW()
-    `);
-
     // Distinct categories, counted across every category a vendor supplies —
     // so a vendor listed under three appears in all three tallies. The UNION
     // picks up vendors that predate the join table and have only the primary.
@@ -441,9 +379,6 @@ export class VendorsService {
       totalVendors: summary?.total_vendors || 0,
       activeVendors: summary?.active_vendors || 0,
       totalOutstanding: summary?.total_outstanding || 0,
-      totalPurchases: purchasesSummary?.total_purchases || 0,
-      overdueCount: overdueRes?.overdue_count || 0,
-      overdueAmount: overdueRes?.overdue_amount || 0,
       categories: categories.map((c) => ({ name: c.category, count: c.count })),
     };
   }
@@ -458,11 +393,6 @@ export class VendorsService {
 
     await this.attachCategories([vendor]);
 
-    const purchases = await dbService.query(
-      `SELECT * FROM vendor_purchases WHERE vendor_id = ? ORDER BY order_date DESC LIMIT 50`,
-      [id]
-    );
-
     const payments = await dbService.query(
       `SELECT * FROM vendor_payments WHERE vendor_id = ? ORDER BY payment_date DESC LIMIT 50`,
       [id]
@@ -470,19 +400,13 @@ export class VendorsService {
 
     const auditLogs = await this.getAuditLogs(id);
 
-    const totalPurchasesAmount = (purchases as any[]).reduce((sum: number, p: any) => sum + Number(p.total_amount || 0), 0);
     const totalPaidAmount = (payments as any[]).reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0);
-    const lastPurchaseDate = (purchases as any[]).length > 0 ? (purchases as any[])[0].order_date : null;
     const lastPaymentDate = (payments as any[]).length > 0 ? (payments as any[])[0].payment_date : null;
 
     return {
       ...(vendor as any),
-      total_purchases_amount: totalPurchasesAmount,
       total_paid_amount: totalPaidAmount,
-      total_purchases_count: (purchases as any[]).length,
-      last_purchase_date: lastPurchaseDate,
       last_payment_date: lastPaymentDate,
-      purchases,
       payments,
       audit_logs: auditLogs,
     };
@@ -731,121 +655,6 @@ export class VendorsService {
   }
 
   /**
-   * Purchase History & Recording
-   */
-  static async getPurchases(vendorId: number, page = 1, limit = 50) {
-    await this.ensureSchema();
-    const offset = (page - 1) * limit;
-
-    const countRes = await dbService.queryOne<{ total: number }>(
-      'SELECT COUNT(*) as total FROM vendor_purchases WHERE vendor_id = ?',
-      [vendorId]
-    );
-    const total = countRes?.total || 0;
-
-    const purchases = await dbService.query(
-      `SELECT * FROM vendor_purchases WHERE vendor_id = ? ORDER BY order_date DESC LIMIT ? OFFSET ?`,
-      [vendorId, limit, offset]
-    );
-
-    return {
-      data: purchases,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit) || 1,
-      },
-    };
-  }
-
-  static async recordPurchase(vendorId: number, data: RecordPurchaseInput, userId: number) {
-    await this.ensureSchema();
-    const vendor = await this.getById(vendorId);
-
-    const totalAmount = Number(data.total_amount) || 0;
-    const paidAmount = Number(data.paid_amount) || 0;
-    const balanceAmount = Math.max(0, totalAmount - paidAmount);
-
-    let paymentStatus: 'PAID' | 'PARTIAL' | 'UNPAID' = 'UNPAID';
-    if (paidAmount >= totalAmount && totalAmount > 0) {
-      paymentStatus = 'PAID';
-    } else if (paidAmount > 0) {
-      paymentStatus = 'PARTIAL';
-    }
-
-    const uuid = uuidv4();
-
-    return await dbService.transaction(async () => {
-      // 1. Insert purchase invoice
-      const res = await dbService.execute(`
-        INSERT INTO vendor_purchases (
-          uuid, vendor_id, invoice_number, order_date, due_date,
-          total_amount, paid_amount, balance_amount, payment_status,
-          delivery_status, items_summary, notes, created_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'RECEIVED', ?, ?, ?)
-      `, [
-        uuid,
-        vendorId,
-        data.invoice_number.trim(),
-        data.order_date,
-        data.due_date || null,
-        totalAmount,
-        paidAmount,
-        balanceAmount,
-        paymentStatus,
-        data.items_summary || null,
-        data.notes || null,
-        userId,
-      ]);
-
-      const purchaseId = res.lastInsertRowid;
-
-      // 2. If immediate partial or full payment was recorded, log the payment
-      if (paidAmount > 0) {
-        const payNum = `PAY-${Date.now()}`;
-        await dbService.execute(`
-          INSERT INTO vendor_payments (
-            uuid, vendor_id, purchase_id, payment_number, payment_date,
-            amount, payment_method, reference_number, notes, created_by
-          ) VALUES (?, ?, ?, ?, ?, ?, 'BANK_TRANSFER', ?, 'Initial payment on purchase invoice', ?)
-        `, [
-          uuidv4(),
-          vendorId,
-          purchaseId,
-          payNum,
-          data.order_date,
-          paidAmount,
-          `AUTO-PAY-${data.invoice_number}`,
-          userId,
-        ]);
-      }
-
-      // 3. Atomically update vendor balances
-      await dbService.execute(`
-        UPDATE vendors
-        SET 
-          outstanding_balance = outstanding_balance + ?,
-          updated_at = NOW()
-        WHERE id = ?
-      `, [
-        balanceAmount,
-        vendorId,
-      ]);
-
-      await AuditService.log({
-        userId,
-        action: 'VENDOR_PURCHASE_RECORDED',
-        module: 'VENDORS',
-        recordId: purchaseId,
-        newValues: { invoice: data.invoice_number, amount: totalAmount, vendorId },
-      });
-
-      return await this.getById(vendorId);
-    });
-  }
-
-  /**
    * Payments & Balance Clearance
    */
   static async getPayments(vendorId: number, page = 1, limit = 50) {
@@ -859,9 +668,8 @@ export class VendorsService {
     const total = countRes?.total || 0;
 
     const payments = await dbService.query(
-      `SELECT vp.*, p.invoice_number 
+      `SELECT vp.*
        FROM vendor_payments vp
-       LEFT JOIN vendor_purchases p ON p.id = vp.purchase_id
        WHERE vp.vendor_id = ?
        ORDER BY vp.payment_date DESC
        LIMIT ? OFFSET ?`,
@@ -888,19 +696,25 @@ export class VendorsService {
       throw AppError.badRequest('Payment amount must be greater than zero');
     }
 
+    const currentOutstanding = Number(vendor.outstanding_balance) || 0;
+    if (paymentAmount > currentOutstanding) {
+      throw AppError.badRequest(
+        `Disbursement amount cannot exceed vendor outstanding balance of ${currentOutstanding.toFixed(2)}`
+      );
+    }
+
     const payNumber = data.payment_number?.trim() || `PAY-VND-${Date.now()}`;
 
     return await dbService.transaction(async () => {
       // 1. Insert payment record
       const res = await dbService.execute(`
         INSERT INTO vendor_payments (
-          uuid, vendor_id, purchase_id, payment_number, payment_date,
+          uuid, vendor_id, payment_number, payment_date,
           amount, payment_method, reference_number, notes, created_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         uuidv4(),
         vendorId,
-        data.purchase_id || null,
         payNumber,
         data.payment_date,
         paymentAmount,
@@ -910,29 +724,7 @@ export class VendorsService {
         userId,
       ]);
 
-      // 2. If tied to a specific purchase invoice, update its payment and balance status
-      if (data.purchase_id) {
-        const purchase = await dbService.queryOne<{
-          id: number;
-          total_amount: number;
-          paid_amount: number;
-          balance_amount: number;
-        }>('SELECT * FROM vendor_purchases WHERE id = ? AND vendor_id = ?', [data.purchase_id, vendorId]);
-
-        if (purchase) {
-          const newPaid = Math.min(purchase.total_amount, Number(purchase.paid_amount) + paymentAmount);
-          const newBal = Math.max(0, Number(purchase.total_amount) - newPaid);
-          const newStatus = newBal === 0 ? 'PAID' : (newPaid > 0 ? 'PARTIAL' : 'UNPAID');
-
-          await dbService.execute(`
-            UPDATE vendor_purchases
-            SET paid_amount = ?, balance_amount = ?, payment_status = ?, updated_at = NOW()
-            WHERE id = ?
-          `, [newPaid, newBal, newStatus, data.purchase_id]);
-        }
-      }
-
-      // 3. Atomically decrease vendor outstanding balance
+      // 2. Atomically decrease vendor outstanding balance
       await dbService.execute(`
         UPDATE vendors
         SET 
@@ -964,7 +756,19 @@ export class VendorsService {
     }
 
     const newAmount = data.amount !== undefined ? Number(data.amount) : Number(currentPayment.amount);
+    if (newAmount <= 0) {
+      throw AppError.badRequest('Payment amount must be greater than zero');
+    }
+
+    const vendor = await this.getById(vendorId);
+    const currentOutstanding = Number(vendor.outstanding_balance) || 0;
     const amountDiff = newAmount - Number(currentPayment.amount);
+
+    if (amountDiff > currentOutstanding) {
+      throw AppError.badRequest(
+        `Updated disbursement amount exceeds vendor remaining outstanding balance of ${currentOutstanding.toFixed(2)}`
+      );
+    }
 
     return await dbService.transaction(async () => {
       await dbService.execute(`
@@ -1028,129 +832,12 @@ export class VendorsService {
         WHERE id = ?
       `, [amount, vendorId]);
 
-      // If linked to a purchase, reverse the purchase paid amount
-      if (currentPayment.purchase_id) {
-        const purchase = await dbService.queryOne<any>(
-          'SELECT * FROM vendor_purchases WHERE id = ? AND vendor_id = ?',
-          [currentPayment.purchase_id, vendorId]
-        );
-        if (purchase) {
-          const newPaid = Math.max(0, Number(purchase.paid_amount) - amount);
-          const newBal = Number(purchase.total_amount) - newPaid;
-          const newStatus = newBal === 0 ? 'PAID' : (newPaid > 0 ? 'PARTIAL' : 'UNPAID');
-
-          await dbService.execute(`
-            UPDATE vendor_purchases
-            SET paid_amount = ?, balance_amount = ?, payment_status = ?, updated_at = NOW()
-            WHERE id = ?
-          `, [newPaid, newBal, newStatus, currentPayment.purchase_id]);
-        }
-      }
-
       await AuditService.log({
         userId,
         action: 'VENDOR_PAYMENT_DELETED',
         module: 'VENDORS',
         recordId: paymentId,
         oldValues: { amount, paymentNumber: currentPayment.payment_number, vendorId },
-      });
-
-      return await this.getById(vendorId);
-    });
-  }
-
-  static async updatePurchase(vendorId: number, purchaseId: number, data: Partial<RecordPurchaseInput>, userId: number) {
-    await this.ensureSchema();
-    const currentPurchase = await dbService.queryOne<any>(
-      'SELECT * FROM vendor_purchases WHERE id = ? AND vendor_id = ?',
-      [purchaseId, vendorId]
-    );
-    if (!currentPurchase) {
-      throw AppError.notFound('Purchase record not found');
-    }
-
-    const newTotal = data.total_amount !== undefined ? Number(data.total_amount) : Number(currentPurchase.total_amount);
-    const paidAmount = Number(currentPurchase.paid_amount);
-    const newBal = Math.max(0, newTotal - paidAmount);
-    const balanceDiff = newBal - Number(currentPurchase.balance_amount);
-    const newStatus = newBal === 0 ? 'PAID' : (paidAmount > 0 ? 'PARTIAL' : 'UNPAID');
-
-    return await dbService.transaction(async () => {
-      await dbService.execute(`
-        UPDATE vendor_purchases
-        SET 
-          invoice_number = COALESCE(?, invoice_number),
-          order_date = COALESCE(?, order_date),
-          due_date = COALESCE(?, due_date),
-          total_amount = ?,
-          balance_amount = ?,
-          payment_status = ?,
-          items_summary = COALESCE(?, items_summary),
-          notes = COALESCE(?, notes),
-          updated_at = NOW()
-        WHERE id = ? AND vendor_id = ?
-      `, [
-        data.invoice_number ?? null,
-        data.order_date ?? null,
-        data.due_date ?? null,
-        newTotal,
-        newBal,
-        newStatus,
-        data.items_summary ?? null,
-        data.notes ?? null,
-        purchaseId,
-        vendorId,
-      ]);
-
-      if (balanceDiff !== 0) {
-        await dbService.execute(`
-          UPDATE vendors
-          SET outstanding_balance = GREATEST(0.00, outstanding_balance + ?), updated_at = NOW()
-          WHERE id = ?
-        `, [balanceDiff, vendorId]);
-      }
-
-      await AuditService.log({
-        userId,
-        action: 'VENDOR_PURCHASE_UPDATED',
-        module: 'VENDORS',
-        recordId: purchaseId,
-        newValues: { total_amount: newTotal, vendorId },
-      });
-
-      return await this.getById(vendorId);
-    });
-  }
-
-  static async deletePurchase(vendorId: number, purchaseId: number, userId: number) {
-    await this.ensureSchema();
-    const currentPurchase = await dbService.queryOne<any>(
-      'SELECT * FROM vendor_purchases WHERE id = ? AND vendor_id = ?',
-      [purchaseId, vendorId]
-    );
-    if (!currentPurchase) {
-      throw AppError.notFound('Purchase record not found');
-    }
-
-    const balanceAmount = Number(currentPurchase.balance_amount);
-
-    return await dbService.transaction(async () => {
-      await dbService.execute('DELETE FROM vendor_purchases WHERE id = ? AND vendor_id = ?', [purchaseId, vendorId]);
-
-      if (balanceAmount > 0) {
-        await dbService.execute(`
-          UPDATE vendors
-          SET outstanding_balance = GREATEST(0.00, outstanding_balance - ?), updated_at = NOW()
-          WHERE id = ?
-        `, [balanceAmount, vendorId]);
-      }
-
-      await AuditService.log({
-        userId,
-        action: 'VENDOR_PURCHASE_DELETED',
-        module: 'VENDORS',
-        recordId: purchaseId,
-        oldValues: { invoice: currentPurchase.invoice_number, amount: currentPurchase.total_amount, vendorId },
       });
 
       return await this.getById(vendorId);

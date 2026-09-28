@@ -125,8 +125,8 @@ CREATE TABLE IF NOT EXISTS product_variants (
   product_id INT NOT NULL,
   name VARCHAR(80) NOT NULL,
   stock_id INT NULL,
-  selling_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
   stock_consumption DECIMAL(12,3) NOT NULL DEFAULT 1.000,
+  selling_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
   display_order INT DEFAULT 0,
   is_default TINYINT(1) NOT NULL DEFAULT 0,
   status ENUM('ACTIVE', 'INACTIVE') DEFAULT 'ACTIVE',
@@ -149,6 +149,7 @@ CREATE TABLE IF NOT EXISTS stocks (
   stock_code VARCHAR(50) NOT NULL UNIQUE,
   name VARCHAR(255) NOT NULL,
   unit_type VARCHAR(50) NOT NULL DEFAULT 'piece',
+  default_multiplier DECIMAL(12,3) NOT NULL DEFAULT 1.000,
   current_quantity DECIMAL(12,3) NOT NULL DEFAULT 0.000,
   current_value DECIMAL(14,2) NOT NULL DEFAULT 0.00,
   average_unit_price DECIMAL(14,4) NOT NULL DEFAULT 0.0000,
@@ -198,12 +199,32 @@ CREATE TABLE IF NOT EXISTS stock_vendor_purchase (
 
 -- Append-only history. balance_quantity / balance_value are the running totals
 -- after the movement, so a ledger can be rebuilt without replaying arithmetic.
+--
+-- quantity is signed: stock in is positive, stock out negative, so
+-- SUM(quantity) per stock_id is the item's balance. movement_type says what
+-- kind of move it was and reference_type / reference_id what caused it:
+--
+--   in      INITIAL_STOCK, PURCHASE_ENTRY, MANUAL_ADJUSTMENT
+--   out     SALE (reference_id = bill number), BILL_RESTORE, MANUAL_ADJUSTMENT
+--   return  REFUND (+, reference_id = refund number), RETURN_TO_SUPPLIER (-),
+--           BILL_VOID (+), BILL_DELETE (+), MANUAL_ADJUSTMENT
+--   adjustment / wastage   MANUAL_ADJUSTMENT (-)
+--   transfer_in / transfer_out   reserved for moves between locations;
+--                                nothing writes them yet
+--   in / out LEDGER_OPENING   one catch-up row per item, written by
+--                             "for_existing system.sql" section 4
 CREATE TABLE IF NOT EXISTS stock_movements (
   id INT AUTO_INCREMENT PRIMARY KEY,
   uuid VARCHAR(36) NOT NULL UNIQUE,
   stock_id INT NOT NULL,
+  stock_vendor_purchase_id INT NULL DEFAULT NULL,
+  -- Mirrors StockMovementType in src/models/index.ts; add to both together.
   movement_type ENUM('in', 'out', 'adjustment', 'return', 'wastage', 'transfer_in', 'transfer_out') NOT NULL,
-  reference_type VARCHAR(50) NOT NULL,
+  -- Mirrors StockReferenceType in src/models/index.ts; add to both together.
+  reference_type ENUM(
+    'INITIAL_STOCK', 'PURCHASE_ENTRY', 'MANUAL_ADJUSTMENT', 'RETURN_TO_SUPPLIER',
+    'REFUND', 'SALE', 'BILL_VOID', 'BILL_DELETE', 'BILL_RESTORE', 'LEDGER_OPENING'
+  ) NOT NULL,
   reference_id VARCHAR(100) NULL,
   quantity DECIMAL(12,3) NOT NULL,
   unit_price DECIMAL(14,4) NOT NULL DEFAULT 0.0000,
@@ -215,8 +236,10 @@ CREATE TABLE IF NOT EXISTS stock_movements (
   created_by INT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (stock_id) REFERENCES stocks(id) ON DELETE CASCADE,
+  CONSTRAINT fk_sm_stock_vendor_purchase FOREIGN KEY (stock_vendor_purchase_id) REFERENCES stock_vendor_purchase(id) ON DELETE SET NULL,
   FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
   INDEX idx_stock_movements_item (stock_id),
+  INDEX idx_stock_movements_svp (stock_vendor_purchase_id),
   INDEX idx_stock_movements_type (movement_type),
   INDEX idx_stock_movements_date (movement_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -225,21 +248,11 @@ CREATE TABLE IF NOT EXISTS stock_movements (
 -- backed by a row in stocks, which is the single source of a balance;
 -- keeping a second counter beside it only let the two disagree.)
 
-CREATE TABLE IF NOT EXISTS stock_transactions (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  product_id INT NOT NULL,
-  transaction_type ENUM('STOCK_IN', 'SALE', 'ADJUSTMENT', 'RETURN') NOT NULL,
-  quantity INT NOT NULL,
-  previous_stock INT NOT NULL,
-  new_stock INT NOT NULL,
-  reference_id VARCHAR(100),
-  reference_type VARCHAR(50),
-  notes TEXT,
-  created_by INT,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (product_id) REFERENCES products(id),
-  FOREIGN KEY (created_by) REFERENCES users(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- (`stock_transactions` was removed. It was a second, per-product ledger with
+-- integer quantities, written beside stock_movements and read by nothing.
+-- stock_movements is the one stock ledger: every sale, void, refund, purchase
+-- and adjustment writes a row there, and SUM(quantity) per stock_id equals
+-- stocks.current_quantity.)
 
 -- (`stock_adjustments` was removed. It was written on every adjustment and
 -- read by nothing; stock_movements already carries the audit trail.)
@@ -482,6 +495,10 @@ CREATE TABLE IF NOT EXISTS bills (
   reopened_at DATETIME NULL,
   offline_sync_id VARCHAR(100) NULL,
   printed_count INT DEFAULT 0,
+  -- Soft delete from the back office; idx_bills_live_created below leads on it.
+  is_deleted TINYINT(1) NOT NULL DEFAULT 0,
+  deleted_at DATETIME NULL,
+  deleted_by INT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (order_id) REFERENCES orders(id),
@@ -627,21 +644,19 @@ CREATE TABLE IF NOT EXISTS product_addons (
   INDEX idx_addon_is_deleted (is_deleted)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- An add-on reaches the till through one of three routes: pinned to a product,
--- to a whole category, or marked global.
+-- Direct product-to-addon mappings supporting Free and Paid (Amount) add-ons
 CREATE TABLE IF NOT EXISTS product_addon_mappings (
   id INT AUTO_INCREMENT PRIMARY KEY,
   addon_id INT NOT NULL,
-  product_id INT NULL,
-  category_id INT NULL,
-  is_global BOOLEAN DEFAULT FALSE,
+  product_id INT NOT NULL,
+  is_free ENUM('Free', 'Amount') NOT NULL DEFAULT 'Amount',
+  amount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+  free_limit INT NULL DEFAULT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_pam_addon (addon_id),
   INDEX idx_pam_product (product_id),
-  INDEX idx_pam_category (category_id),
   FOREIGN KEY (addon_id) REFERENCES product_addons(id) ON DELETE CASCADE,
-  FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
-  FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
+  FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS combo_deals (
@@ -742,35 +757,10 @@ CREATE TABLE IF NOT EXISTS vendor_categories (
   INDEX idx_vendor_categories_category (category)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS vendor_purchases (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  uuid VARCHAR(64) NOT NULL UNIQUE,
-  vendor_id INT NOT NULL,
-  invoice_number VARCHAR(100) NOT NULL,
-  order_date DATETIME NOT NULL,
-  due_date DATETIME NULL,
-  total_amount DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
-  paid_amount DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
-  balance_amount DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
-  payment_status ENUM('PAID', 'PARTIAL', 'UNPAID', 'OVERDUE') NOT NULL DEFAULT 'UNPAID',
-  delivery_status ENUM('RECEIVED', 'PENDING', 'CANCELLED') NOT NULL DEFAULT 'RECEIVED',
-  items_summary TEXT NULL,
-  notes TEXT NULL,
-  created_by INT NULL,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  INDEX idx_vp_vendor_id (vendor_id),
-  INDEX idx_vp_invoice (invoice_number),
-  INDEX idx_vp_payment_status (payment_status),
-  INDEX idx_vp_order_date (order_date),
-  FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
 CREATE TABLE IF NOT EXISTS vendor_payments (
   id INT AUTO_INCREMENT PRIMARY KEY,
   uuid VARCHAR(64) NOT NULL UNIQUE,
   vendor_id INT NOT NULL,
-  purchase_id INT NULL,
   payment_number VARCHAR(100) NOT NULL UNIQUE,
   payment_date DATETIME NOT NULL,
   amount DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
@@ -780,10 +770,8 @@ CREATE TABLE IF NOT EXISTS vendor_payments (
   created_by INT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_vpay_vendor_id (vendor_id),
-  INDEX idx_vpay_purchase_id (purchase_id),
   INDEX idx_vpay_date (payment_date),
-  FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE CASCADE,
-  FOREIGN KEY (purchase_id) REFERENCES vendor_purchases(id) ON DELETE SET NULL
+  FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -943,7 +931,6 @@ WHERE table_schema = DATABASE()
     'roles', 'permissions', 'role_permissions', 'users',
     'categories', 'products', 'product_variants',
     'stocks', 'stock_vendor_purchase', 'stock_movements',
-    'stock_transactions',
     'customers', 'customer_notes',
     'dining_tables', 'table_reservations',
     'orders', 'order_items', 'order_status_history',
@@ -951,7 +938,7 @@ WHERE table_schema = DATABASE()
     'payments', 'pos_day_closings', 'queue',
     'product_addons', 'product_addon_mappings',
     'combo_deals', 'combo_deal_items',
-    'vendors', 'vendor_purchases', 'vendor_payments',
+    'vendors', 'vendor_payments',
     'expense_categories', 'expenses', 'refunds', 'refund_items',
     'settings', 'audit_logs'
   );

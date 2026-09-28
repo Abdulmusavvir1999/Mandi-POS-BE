@@ -89,51 +89,6 @@ export class VendorsController {
     }
   }
 
-  static async getPurchases(req: Request, res: Response, next: NextFunction) {
-    try {
-      const id = ParamUtil.id(req.params.id, 'id');
-      const page = ParamUtil.page(req.query.page);
-      const limit = ParamUtil.limit(req.query.limit, 50);
-
-      const result = await VendorsService.getPurchases(id, page, limit);
-      ResponseUtil.paginated(res, result, 'Vendor purchase history retrieved successfully');
-    } catch (err) {
-      next(err);
-    }
-  }
-
-  static async recordPurchase(req: Request, res: Response, next: NextFunction) {
-    try {
-      const id = ParamUtil.id(req.params.id, 'id');
-      const vendor = await VendorsService.recordPurchase(id, req.body, req.user!.id);
-      ResponseUtil.created(res, vendor, 'Purchase invoice recorded successfully');
-    } catch (err) {
-      next(err);
-    }
-  }
-
-  static async updatePurchase(req: Request, res: Response, next: NextFunction) {
-    try {
-      const id = ParamUtil.id(req.params.id, 'id');
-      const purchaseId = ParamUtil.id(req.params.purchaseId, 'purchaseId');
-      const vendor = await VendorsService.updatePurchase(id, purchaseId, req.body, req.user!.id);
-      ResponseUtil.success(res, vendor, 'Purchase invoice updated successfully');
-    } catch (err) {
-      next(err);
-    }
-  }
-
-  static async deletePurchase(req: Request, res: Response, next: NextFunction) {
-    try {
-      const id = ParamUtil.id(req.params.id, 'id');
-      const purchaseId = ParamUtil.id(req.params.purchaseId, 'purchaseId');
-      const vendor = await VendorsService.deletePurchase(id, purchaseId, req.user!.id);
-      ResponseUtil.success(res, vendor, 'Purchase invoice deleted successfully');
-    } catch (err) {
-      next(err);
-    }
-  }
-
   static async getPayments(req: Request, res: Response, next: NextFunction) {
     try {
       const id = ParamUtil.id(req.params.id, 'id');

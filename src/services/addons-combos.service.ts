@@ -95,13 +95,13 @@ export class AddonsCombosService {
         CREATE TABLE IF NOT EXISTS product_addon_mappings (
           id INT AUTO_INCREMENT PRIMARY KEY,
           addon_id INT NOT NULL,
-          product_id INT NULL,
-          category_id INT NULL,
-          is_global BOOLEAN DEFAULT FALSE,
+          product_id INT NOT NULL,
+          is_free ENUM('Free', 'Amount') NOT NULL DEFAULT 'Amount',
+          amount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+          free_limit INT NULL DEFAULT NULL,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           INDEX idx_pam_addon (addon_id),
-          INDEX idx_pam_product (product_id),
-          INDEX idx_pam_category (category_id)
+          INDEX idx_pam_product (product_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
       `);
 
@@ -140,9 +140,7 @@ export class AddonsCombosService {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
       `);
 
-      // 5. product_addons predates add-on photos, so a till that already has
-      // the table gets the column added rather than recreated. combo_deals was
-      // declared with image_url from the start and needs none.
+      // 5. product_addons image_url column migration
       const addonImageCol = await dbService.queryOne<{ count: number }>(
         `SELECT COUNT(*) as count
            FROM INFORMATION_SCHEMA.COLUMNS
@@ -154,6 +152,68 @@ export class AddonsCombosService {
         await dbService.execute(
           'ALTER TABLE product_addons ADD COLUMN image_url VARCHAR(255) NULL AFTER cost_price'
         );
+      }
+
+      // 6. Ensure product_addon_mappings has category_id and is_global dropped, and is_free/amount/free_limit added
+      const pamCols = await dbService.query<{ COLUMN_NAME: string }>(
+        `SELECT COLUMN_NAME
+           FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'product_addon_mappings'`
+      );
+      const colNames = (pamCols || []).map((c: any) => c.COLUMN_NAME?.toLowerCase());
+      if (colNames.includes('category_id')) {
+        try {
+          const fkRow = await dbService.queryOne<{ CONSTRAINT_NAME: string }>(
+            `SELECT CONSTRAINT_NAME
+               FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME = 'product_addon_mappings'
+                AND COLUMN_NAME = 'category_id'
+                AND REFERENCED_TABLE_NAME IS NOT NULL
+              LIMIT 1`
+          );
+          if (fkRow && fkRow.CONSTRAINT_NAME) {
+            await dbService.execute(`ALTER TABLE product_addon_mappings DROP FOREIGN KEY \`${fkRow.CONSTRAINT_NAME}\``);
+          }
+          await dbService.execute('ALTER TABLE product_addon_mappings DROP COLUMN category_id');
+        } catch (e) {
+          logger.warn('Could not drop category_id from product_addon_mappings:', e);
+        }
+      }
+      if (colNames.includes('is_global')) {
+        try {
+          await dbService.execute('ALTER TABLE product_addon_mappings DROP COLUMN is_global');
+        } catch (e) {
+          logger.warn('Could not drop is_global from product_addon_mappings:', e);
+        }
+      }
+      if (!colNames.includes('is_free')) {
+        try {
+          await dbService.execute("ALTER TABLE product_addon_mappings ADD COLUMN is_free ENUM('Free', 'Amount') NOT NULL DEFAULT 'Amount' AFTER product_id");
+        } catch (e) {
+          logger.warn('Could not add is_free to product_addon_mappings:', e);
+        }
+      }
+      if (!colNames.includes('amount')) {
+        try {
+          await dbService.execute('ALTER TABLE product_addon_mappings ADD COLUMN amount DECIMAL(10,2) NOT NULL DEFAULT 0.00 AFTER is_free');
+        } catch (e) {
+          logger.warn('Could not add amount to product_addon_mappings:', e);
+        }
+      }
+      if (!colNames.includes('free_limit')) {
+        try {
+          await dbService.execute('ALTER TABLE product_addon_mappings ADD COLUMN free_limit INT NULL DEFAULT NULL AFTER amount');
+        } catch (e) {
+          logger.warn('Could not add free_limit to product_addon_mappings:', e);
+        }
+      } else {
+        try {
+          await dbService.execute('ALTER TABLE product_addon_mappings MODIFY COLUMN free_limit INT NULL DEFAULT NULL');
+        } catch (e) {
+          logger.warn('Could not modify free_limit to NULL in product_addon_mappings:', e);
+        }
       }
 
       this.schemaEnsured = true;
@@ -194,8 +254,6 @@ export class AddonsCombosService {
 
   public static async createAddon(input: CreateAddonInput, userId: number) {
     await this.ensureSchema();
-    // The add-on and the mapping that makes it global are one unit: without
-    // the mapping the add-on exists but appears on no dish.
     return await dbService.transaction(async () => {
       const res = await dbService.execute(
         `INSERT INTO product_addons (name, category, price, cost_price, image_url, is_available, stock_id, status)
@@ -213,11 +271,6 @@ export class AddonsCombosService {
       );
 
       const created = await this.getAddonById(res.lastInsertRowid);
-      // Make global by default
-      await dbService.execute(
-        'INSERT IGNORE INTO product_addon_mappings (addon_id, is_global) VALUES (?, 1)',
-        [created.id]
-      );
 
       await AuditService.log({
         userId,
@@ -284,18 +337,96 @@ export class AddonsCombosService {
 
   public static async getProductAddons(productId: number) {
     await this.ensureSchema();
-    // Fetch add-ons mapped directly to this product OR globally mapped
     const addons = await dbService.query(`
-      SELECT DISTINCT a.*
-      FROM product_addons a
-      JOIN product_addon_mappings pam ON a.id = pam.addon_id
-      WHERE (pam.product_id = ? OR pam.is_global = 1)
+      SELECT 
+        pam.id AS mapping_id,
+        pam.product_id,
+        pam.addon_id,
+        pam.is_free,
+        pam.amount,
+        pam.free_limit,
+        pam.free_limit AS free_quantity,
+        a.id,
+        a.name,
+        a.category,
+        a.price AS default_price,
+        IF(pam.is_free = 'Free', 0.00, COALESCE(pam.amount, a.price)) AS price,
+        a.cost_price,
+        a.image_url,
+        a.is_available,
+        a.stock_id,
+        a.status,
+        a.created_at,
+        a.updated_at
+      FROM product_addon_mappings pam
+      JOIN product_addons a ON pam.addon_id = a.id
+      WHERE pam.product_id = ?
         AND a.status = 'ACTIVE'
         AND a.is_available = 1
-      ORDER BY a.category ASC, a.price ASC
+      ORDER BY a.category ASC, a.name ASC
     `, [productId]);
 
     return addons;
+  }
+
+  public static async setProductAddons(productId: number, mappings: any[], userId: number) {
+    await this.ensureSchema();
+    return await dbService.transaction(async () => {
+      // Clear existing mappings for this product
+      await dbService.execute('DELETE FROM product_addon_mappings WHERE product_id = ?', [productId]);
+
+      // Insert new direct product mappings
+      if (Array.isArray(mappings) && mappings.length > 0) {
+        for (const item of mappings) {
+          const addonId = typeof item === 'object' ? Number(item.addon_id ?? item.addonId ?? item.id) : Number(item);
+          if (!addonId) continue;
+
+          let isFree: 'Free' | 'Amount' = 'Amount';
+          if (typeof item === 'object' && item.is_free) {
+            isFree = String(item.is_free).toLowerCase() === 'free' ? 'Free' : 'Amount';
+          }
+
+          let amount = 0;
+          if (isFree === 'Amount') {
+            if (typeof item === 'object' && item.amount !== undefined && item.amount !== null && item.amount !== '') {
+              amount = Number(item.amount) || 0;
+            } else if (typeof item === 'object' && item.price !== undefined && item.price !== null && item.price !== '') {
+              amount = Number(item.price) || 0;
+            } else {
+              const addon = await dbService.queryOne<any>('SELECT price FROM product_addons WHERE id = ?', [addonId]);
+              amount = addon ? Number(addon.price) || 0 : 0;
+            }
+          }
+
+          let freeLimit: number | null = null;
+          if (isFree === 'Free') {
+            const rawLimit = typeof item === 'object' ? (item.free_limit ?? item.free_quantity ?? item.freeLimit) : undefined;
+            if (rawLimit !== undefined && rawLimit !== null && rawLimit !== '' && rawLimit !== 'Unlimited') {
+              const parsed = Number(rawLimit);
+              freeLimit = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null;
+            } else {
+              freeLimit = null; // Unlimited free
+            }
+          }
+
+          await dbService.execute(
+            `INSERT INTO product_addon_mappings (addon_id, product_id, is_free, amount, free_limit)
+             VALUES (?, ?, ?, ?, ?)`,
+            [addonId, productId, isFree, amount, freeLimit]
+          );
+        }
+      }
+
+      await AuditService.log({
+        userId,
+        action: 'PRODUCT_ADDONS_UPDATED',
+        module: 'PRODUCTS',
+        recordId: String(productId),
+        newValues: { mappings },
+      });
+
+      return await this.getProductAddons(productId);
+    });
   }
 
   // ═════════════════════════════════════════════════════════════════════════════

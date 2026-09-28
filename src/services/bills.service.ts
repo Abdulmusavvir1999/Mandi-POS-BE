@@ -2,6 +2,7 @@ import { dbService } from '../database/db';
 import { AppError } from '../errors/AppError';
 import { AuditService } from './audit.service';
 import { SettingsService } from './settings.service';
+import { StockService } from './stock.service';
 import { PaymentMethod, OrderType } from '../models';
 import { decorateDocument, decorateDocuments } from '../utils/document-sequence.util';
 import { ParamUtil } from '../utils/param.util';
@@ -269,22 +270,17 @@ export class BillsService {
         );
       }
 
-      // 3. Return stock for each item
-      for (const item of bill.items) {
-        const stockQty = Number(item.stock_consumption || 1) * Number(item.quantity);
-
-        // Check if item was linked to stock_item
-        const product = await dbService.queryOne<{ stock_id: number | null }>(
-          'SELECT stock_id FROM products WHERE id = ?',
-          [item.product_id]
-        );
-
-        if (product?.stock_id) {
-          await dbService.execute(
-            'UPDATE stocks SET current_quantity = current_quantity + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-            [stockQty, product.stock_id]
-          );
-        }
+      // 3. Return stock for each item, to the same stock items the sale drew on
+      for (const usage of await StockService.billStockUsage(id)) {
+        await StockService.recordMovement({
+          stockId: usage.stockId,
+          quantity: usage.quantity,
+          movementType: 'return',
+          referenceType: 'BILL_VOID',
+          referenceId: bill.bill_number,
+          notes: `Bill ${bill.bill_number} voided: ${reason.trim()}`,
+          userId,
+        });
       }
 
       // 4. Adjust customer statistics if registered

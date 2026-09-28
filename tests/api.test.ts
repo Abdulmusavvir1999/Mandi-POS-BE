@@ -327,10 +327,7 @@ describe(' Shop POS API Suite', () => {
         .set('Authorization', `Bearer ${cashierToken}`);
       const item = prodRes.body.data[0];
       const stockBefore = item.current_stock;
-      const linkedBefore = Number(item.linked_stock_quantity ?? 0);
-      const consumption = Number(
-        (item.variants || []).find((v: any) => Number(v.is_default) === 1)?.stock_consumption ?? 1
-      );
+      const consumption = 1;
 
       const checkoutRes = await request(app)
         .post('/api/checkout')

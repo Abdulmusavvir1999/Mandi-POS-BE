@@ -9,10 +9,15 @@ export interface ProductVariantInput {
   name: string;
   /** Ledger item this portion draws from; null falls back to the dish's own. */
   stockId?: number | null;
-  sellingPrice?: number;
+  stock_id?: number | null;
   stockConsumption?: number;
+  stock_consumption?: number;
+  sellingPrice?: number;
+  selling_price?: number;
   displayOrder?: number;
-  isDefault?: boolean;
+  display_order?: number;
+  isDefault?: boolean | number;
+  is_default?: boolean | number;
   status?: string;
 }
 
@@ -37,6 +42,21 @@ export class ProductsService {
           }
         } catch (_) {}
       }
+
+      // Ensure stock_consumption in product_variants
+      try {
+        const pvColCheck = await dbService.queryOne<{ count: number }>(`
+          SELECT COUNT(*) as count 
+          FROM INFORMATION_SCHEMA.COLUMNS 
+          WHERE TABLE_SCHEMA = DATABASE() 
+            AND TABLE_NAME = 'product_variants' 
+            AND COLUMN_NAME = 'stock_consumption'
+        `);
+        if (!pvColCheck || pvColCheck.count === 0) {
+          await dbService.execute('ALTER TABLE product_variants ADD COLUMN `stock_consumption` DECIMAL(12,3) NOT NULL DEFAULT 1.000 AFTER `stock_id`');
+        }
+      } catch (_) {}
+
       this.schemaEnsured = true;
     } catch (_) {}
   }
@@ -61,8 +81,8 @@ export class ProductsService {
     let rows: any[] = [];
     try {
       rows = await dbService.query<any>(
-        `SELECT v.id, v.product_id, v.name, v.stock_id,
-                v.selling_price, v.stock_consumption, v.display_order, v.is_default, v.status,
+        `SELECT v.id, v.product_id, v.name, v.stock_id, v.stock_consumption,
+                v.selling_price, v.display_order, v.is_default, v.status,
                 si.name       AS stock_item_name,
                 si.stock_code AS stock_item_code,
                 si.unit_type  AS stock_item_unit,
@@ -96,8 +116,8 @@ export class ProductsService {
   static async getVariants(productId: number) {
     try {
       return await dbService.query(
-        `SELECT v.id, v.product_id, v.name, v.stock_id,
-                v.selling_price, v.stock_consumption, v.display_order, v.is_default, v.status,
+        `SELECT v.id, v.product_id, v.name, v.stock_id, v.stock_consumption,
+                v.selling_price, v.display_order, v.is_default, v.status,
                 si.name       AS stock_item_name,
                 si.stock_code AS stock_item_code,
                 si.unit_type  AS stock_item_unit,
@@ -125,29 +145,47 @@ export class ProductsService {
     await dbService.execute('DELETE FROM product_variants WHERE product_id = ?', [productId]);
 
     const rows = variants.filter((v) => v && String(v.name || '').trim().length > 0);
-    let defaulted = false;
+    if (rows.length === 0) return;
+
+    if (rows.length < 2) {
+      throw AppError.badRequest('At least 2 variants are required when configuring variants for a product.');
+    }
+
+    // Validate display order uniqueness
+    const displayOrders = rows.map((v, i) =>
+      v.displayOrder !== undefined && v.displayOrder !== null
+        ? Number(v.displayOrder)
+        : v.display_order !== undefined && v.display_order !== null
+        ? Number(v.display_order)
+        : i + 1
+    );
+    if (new Set(displayOrders).size !== displayOrders.length) {
+      throw AppError.badRequest('Variant display orders cannot be duplicated for the same product.');
+    }
+
+    // Determine default: exact matching or first item
+    const explicitDefaultIndex = rows.findIndex((v) => Boolean(v.isDefault || v.is_default));
+    const targetDefaultIndex = explicitDefaultIndex >= 0 ? explicitDefaultIndex : 0;
 
     for (let i = 0; i < rows.length; i++) {
       const v = rows[i];
-      const consumption = Number(v.stockConsumption);
-      if (!Number.isFinite(consumption) || consumption <= 0) {
-        throw AppError.badRequest(`Variant "${v.name}" must consume more than 0 stock.`);
-      }
-
-      // Exactly one default, so the POS always has something to fall back on.
-      const isDefault = !defaulted && (v.isDefault || i === rows.length - 1 ? true : false);
-      if (isDefault) defaulted = true;
+      const isDefault = i === targetDefaultIndex;
+      const stockUsage = v.stockConsumption !== undefined && v.stockConsumption !== null
+        ? Number(v.stockConsumption)
+        : v.stock_consumption !== undefined && v.stock_consumption !== null
+        ? Number(v.stock_consumption)
+        : 1.0;
 
       await dbService.execute(
-        `INSERT INTO product_variants (product_id, name, stock_id, selling_price, stock_consumption, display_order, is_default, status)
+        `INSERT INTO product_variants (product_id, name, stock_id, stock_consumption, selling_price, display_order, is_default, status)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           productId,
           String(v.name).trim(),
-          v.stockId ? Number(v.stockId) : null,
-          Number(v.sellingPrice) || 0,
-          consumption,
-          v.displayOrder !== undefined ? Number(v.displayOrder) : i,
+          v.stockId ? Number(v.stockId) : (v.stock_id ? Number(v.stock_id) : null),
+          stockUsage > 0 ? stockUsage : 1.0,
+          Number(v.sellingPrice ?? v.selling_price) || 0,
+          displayOrders[i],
           isDefault ? 1 : 0,
           v.status || 'ACTIVE',
         ]
@@ -269,7 +307,6 @@ export class ProductsService {
     description?: string;
     imageUrl?: string;
     taxRate?: number;
-    initialStock?: number;
     lowStockThreshold?: number;
     status?: string;
     stockId?: number | null;
@@ -296,53 +333,17 @@ export class ProductsService {
           data.description || null,
           data.imageUrl || null,
           data.taxRate !== undefined ? data.taxRate : 5.0,
-          data.initialStock || 0,
+          0,
           data.lowStockThreshold || 10,
           data.status || 'ACTIVE',
         ]
       );
 
       const productId = res.lastInsertRowid;
-      const initialStock = Number(data.initialStock) || 0;
-
-      // 1. Create 3-Tier Stock Master record
-      const stockCode = `STK-${String(productId).padStart(4, '0')}`;
-      const itemUuid = `item-${productId}-${Date.now().toString(36)}`;
-      const stkRes = await dbService.execute(
-        `INSERT INTO stocks (uuid, stock_code, name, unit_type, current_quantity, current_value, average_unit_price, status, min_stock_alert)
-         VALUES (?, ?, ?, 'piece', ?, 0, 0, 'active', ?)`,
-        [itemUuid, stockCode, data.name, initialStock, data.lowStockThreshold || 10]
-      );
-      const stockId = stkRes.lastInsertRowid;
-
-      if (initialStock > 0) {
-        const entryNum = `ENT-${String(productId).padStart(4, '0')}-INIT`;
-        const entryUuid = `entry-${productId}-${Date.now().toString(36)}`;
-        const moveUuid = `move-${productId}-${Date.now().toString(36)}`;
-
-        await dbService.execute(
-          `INSERT INTO stock_vendor_purchase (uuid, stock_id, entry_number, quantity, multiplier, total_quantity, total_price, unit_price, status, supplier, notes, created_by)
-           VALUES (?, ?, ?, ?, 1.0, ?, 0, 0, 'posted', 'Initial Setup', 'Initial product inventory', ?)`,
-          [entryUuid, stockId, entryNum, initialStock, initialStock, userId]
-        );
-
-        await dbService.execute(
-          `INSERT INTO stock_movements (uuid, stock_id, movement_type, reference_type, reference_id, quantity, unit_price, total_value, balance_quantity, balance_value, notes, created_by)
-           VALUES (?, ?, 'in', 'INITIAL_STOCK', ?, ?, 0, 0, ?, 0, 'Initial inventory stock addition', ?)`,
-          [moveUuid, stockId, entryNum, initialStock, initialStock, userId]
-        );
-      }
-
-      if (initialStock > 0) {
-        await dbService.execute(
-          `INSERT INTO stock_transactions (
-            product_id, transaction_type, quantity, previous_stock, new_stock, reference_id, reference_type, notes, created_by
-          ) VALUES (?, 'STOCK_IN', ?, 0, ?, 'INITIAL-CREATION', 'INITIAL_STOCK', 'Initial product inventory', ?)`,
-          [productId, initialStock, initialStock, userId]
-        );
-      }
-
-      const assignedStockItemId = data.stockId ? Number(data.stockId) : stockId;
+      // A dish only points at a stock item (products.stock_id); it never
+      // creates or changes one. Stock items are made and filled in the Stock
+      // Ledger, and a dish with none picked simply draws no stock when sold.
+      const assignedStockItemId = data.stockId ? Number(data.stockId) : null;
       await dbService.execute(
         'UPDATE products SET stock_id = ?, variant_stock_mode = COALESCE(?, variant_stock_mode) WHERE id = ?',
         [assignedStockItemId, data.variantStockMode || null, productId]
@@ -386,11 +387,11 @@ export class ProductsService {
       }
     }
 
-    // One edit touches products, stock, stocks and product_variants.
-    // Ungrouped, a failure part-way left a dish renamed but its ledger item
-    // still on the old name, or — worse — its variants deleted and not put
-    // back, which is what replaceVariants does first. Same grouping `create`
-    // already uses, audit included.
+    // One edit touches products and product_variants. Ungrouped, a failure
+    // part-way left a dish's variants deleted and not put back, which is what
+    // replaceVariants does first. Same grouping `create` already uses, audit
+    // included. The linked stock item is never changed from here: several
+    // dishes can share it, so it is edited only in the Stock Ledger.
     const updated = await dbService.transaction(async () => {
       await dbService.execute(
         `UPDATE products
@@ -419,10 +420,6 @@ export class ProductsService {
         ]
       );
 
-      if (data.lowStockThreshold !== undefined) {
-        await dbService.execute('UPDATE stocks si JOIN products p ON p.stock_id = si.id SET si.min_stock_alert = ? WHERE p.id = ?', [data.lowStockThreshold, id]);
-      }
-
       if (data.stockId !== undefined || data.variantStockMode !== undefined) {
         await dbService.execute(
           `UPDATE products
@@ -439,15 +436,6 @@ export class ProductsService {
       }
 
       await this.replaceVariants(id, data.variants);
-
-      if (data.name) {
-        await dbService.execute('UPDATE stocks si JOIN products p ON p.stock_id = si.id SET si.name = ? WHERE p.id = ?', [data.name, id]);
-      }
-
-      if (data.status) {
-        const stockStatus = data.status.toLowerCase() === 'active' ? 'active' : 'inactive';
-        await dbService.execute('UPDATE stocks si JOIN products p ON p.stock_id = si.id SET si.status = ? WHERE p.id = ?', [stockStatus, id]);
-      }
 
       await AuditService.log({
         userId,
@@ -484,7 +472,6 @@ export class ProductsService {
     if (billItemsCount && billItemsCount.count > 0) {
       // Soft-delete by setting status to INACTIVE so audit and historical sales remain valid
       await dbService.execute("UPDATE products SET status = 'INACTIVE', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [id]);
-      await dbService.execute("UPDATE stocks si JOIN products p ON p.stock_id = si.id SET si.status = 'inactive', si.updated_at = CURRENT_TIMESTAMP WHERE p.id = ?", [id]);
       await AuditService.log({
         userId,
         action: 'PRODUCT_DEACTIVATED',
@@ -496,16 +483,10 @@ export class ProductsService {
       return { success: true, message: 'Product has previous sales records; status marked as INACTIVE' };
     }
 
-    await dbService.transaction(async () => {
-      const prod = await dbService.queryOne<{ stock_id: number }>('SELECT stock_id FROM products WHERE id = ?', [id]);
-      if (prod?.stock_id) {
-        await dbService.execute('DELETE FROM stock_movements WHERE stock_id = ?', [prod.stock_id]);
-        await dbService.execute('DELETE FROM stock_vendor_purchase WHERE stock_id = ?', [prod.stock_id]);
-        await dbService.execute('DELETE FROM stocks WHERE id = ?', [prod.stock_id]);
-      }
-      await dbService.execute('DELETE FROM stock_transactions WHERE product_id = ?', [id]);
-      await dbService.execute('DELETE FROM products WHERE id = ?', [id]);
-    });
+    // Only the dish goes. Its stock item, ledger and purchase entries stay:
+    // other dishes may draw on the same item, and purchases already sit on
+    // vendor balances.
+    await dbService.execute('DELETE FROM products WHERE id = ?', [id]);
 
     await AuditService.log({
       userId,
@@ -516,5 +497,20 @@ export class ProductsService {
     });
 
     return { success: true, message: 'Product deleted permanently' };
+  }
+
+  static async checkSkuUnique(sku: string, excludeId?: number): Promise<{ isUnique: boolean; existingProduct?: { id: number; name: string; sku: string } | null }> {
+    if (!sku || !sku.trim()) return { isUnique: true, existingProduct: null };
+    let query = 'SELECT id, name, sku FROM products WHERE LOWER(sku) = LOWER(?)';
+    const params: any[] = [sku.trim()];
+    if (excludeId) {
+      query += ' AND id != ?';
+      params.push(excludeId);
+    }
+    const existing = await dbService.queryOne<{ id: number; name: string; sku: string }>(query, params);
+    return {
+      isUnique: !existing,
+      existingProduct: existing || null,
+    };
   }
 }

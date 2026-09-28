@@ -432,8 +432,7 @@ export class ReportsInventoryService {
   }
 
   /**
-   * Purchases: the `stock_vendor_purchase` ledger, plus the invoice-level view from
-   * `vendor_purchases` when the vendor module has been migrated.
+   * Purchases: the `stock_vendor_purchase` ledger.
    */
   static async purchase(options: InventoryReportOptions) {
     await ReportsSchema.ensure();
@@ -448,7 +447,7 @@ export class ReportsInventoryService {
       args.push(options.stockId);
     }
 
-    const [totals, byItem, bySupplier, series, entries, vendorView] = await Promise.all([
+    const [totals, byItem, bySupplier, series, entries] = await Promise.all([
       dbService.queryOne(
         `SELECT
            COUNT(se.id)                           AS entries_count,
@@ -534,7 +533,6 @@ export class ReportsInventoryService {
          LIMIT ?`,
         [...args, options.limit ?? 200]
       ),
-      this.vendorPurchaseSummary(options.range),
     ]);
 
     const totalSpend = ReportQuery.round(ReportQuery.num(totals?.total_spend));
@@ -581,7 +579,6 @@ export class ReportsInventoryService {
         'unit_price',
         'total_price',
       ]),
-      vendorInvoices: vendorView,
     };
   }
 
@@ -977,14 +974,20 @@ export class ReportsInventoryService {
   /**
    * Stock adjustments: manual corrections, by item, reason and operator.
    *
-   * Scoped to `movement_type = 'adjustment'` — a wastage write-off is an
-   * adjustment mechanically but has its own report, and lumping the two
-   * together would hide deliberate write-offs inside audit corrections.
+   * Scoped to MANUAL_ADJUSTMENT rows booked as in, out or adjustment: the
+   * stock screen's INCREASE / DECREASE corrections are written as in / out,
+   * so filtering on movement_type = 'adjustment' alone missed all of them.
+   * A wastage write-off is an adjustment mechanically but has its own
+   * report, and lumping the two together would hide deliberate write-offs
+   * inside audit corrections.
    */
   static async adjustments(options: InventoryReportOptions) {
     await ReportsSchema.ensure();
     const granularity = options.granularity ?? 'day';
-    const scope = this.movementScope(options, "sm.movement_type = 'adjustment'");
+    const scope = this.movementScope(
+      options,
+      "sm.reference_type = 'MANUAL_ADJUSTMENT' AND sm.movement_type IN ('in', 'out', 'adjustment')"
+    );
     const bucket = ReportQuery.bucket('sm', granularity, 'movement_date');
 
     const [totals, byItem, byReason, byUser, series, recent] = await Promise.all([
@@ -1172,61 +1175,6 @@ export class ReportsInventoryService {
         sold_value: ReportQuery.round(items.reduce((s, r) => s + r.sold_value, 0)),
       },
     };
-  }
-
-  /**
-   * Invoice-level purchases from the vendor module. Returns null when that
-   * migration has not been applied, rather than failing the whole report.
-   */
-  private static async vendorPurchaseSummary(range: ReportRange) {
-    try {
-      const { where, params } = ReportQuery.dateRange('vp', range, 'order_date');
-      const totals = await dbService.queryOne(
-        `SELECT
-           COUNT(vp.id)                           AS invoices_count,
-           COUNT(DISTINCT vp.vendor_id)           AS vendors_count,
-           COALESCE(SUM(vp.total_amount), 0)      AS total_amount,
-           COALESCE(SUM(vp.paid_amount), 0)       AS paid_amount,
-           COALESCE(SUM(vp.total_amount - vp.paid_amount), 0) AS outstanding_amount
-         FROM vendor_purchases vp
-         ${where}`,
-        params
-      );
-      const byVendor = await dbService.query(
-        `SELECT
-           v.id                                   AS vendor_id,
-           v.name                                 AS vendor_name,
-           v.category,
-           COUNT(vp.id)                           AS invoices_count,
-           COALESCE(SUM(vp.total_amount), 0)      AS total_amount,
-           COALESCE(SUM(vp.paid_amount), 0)       AS paid_amount,
-           COALESCE(SUM(vp.total_amount - vp.paid_amount), 0) AS outstanding_amount
-         FROM vendor_purchases vp
-         JOIN vendors v ON vp.vendor_id = v.id
-         ${where}
-         GROUP BY v.id, v.name, v.category
-         ORDER BY total_amount DESC`,
-        params
-      );
-
-      return {
-        summary: {
-          invoices_count: Number(totals?.invoices_count ?? 0),
-          vendors_count: Number(totals?.vendors_count ?? 0),
-          total_amount: ReportQuery.round(ReportQuery.num(totals?.total_amount)),
-          paid_amount: ReportQuery.round(ReportQuery.num(totals?.paid_amount)),
-          outstanding_amount: ReportQuery.round(ReportQuery.num(totals?.outstanding_amount)),
-        },
-        byVendor: ReportQuery.numbers(byVendor, [
-          'invoices_count',
-          'total_amount',
-          'paid_amount',
-          'outstanding_amount',
-        ]),
-      };
-    } catch {
-      return null;
-    }
   }
 
   /**

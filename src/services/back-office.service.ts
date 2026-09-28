@@ -2,6 +2,7 @@ import { dbService } from '../database/db';
 import { AppError } from '../errors/AppError';
 import { AuditService } from './audit.service';
 import { SettingsService } from './settings.service';
+import { StockService } from './stock.service';
 import { OrdersService } from './orders.service';
 import { DocumentSequence, ORDER_DOCUMENT, BILL_DOCUMENT, decorateDocuments, decorateDeletedDocuments } from '../utils/document-sequence.util';
 import { BillsService } from './bills.service';
@@ -324,26 +325,16 @@ export class BackOfficeService {
     const alreadyVoided = Boolean(bill.is_voided) || bill.payment_status === 'VOIDED';
 
     if (!alreadyVoided) {
-      const items = await dbService.query<any>(
-        'SELECT product_id, quantity, stock_consumption FROM bill_items WHERE bill_id = ?',
-        [billId]
-      );
-
-      for (const item of items) {
-        const stockQty = Number(item.stock_consumption || 1) * Number(item.quantity || 0);
-        if (stockQty <= 0) continue;
-
-        const product = await dbService.queryOne<{ stock_id: number | null }>(
-          'SELECT stock_id FROM products WHERE id = ?',
-          [item.product_id]
-        );
-
-        if (product?.stock_id) {
-          await dbService.execute(
-            'UPDATE stocks SET current_quantity = current_quantity + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-            [stockQty, product.stock_id]
-          );
-        }
+      for (const usage of await StockService.billStockUsage(billId)) {
+        await StockService.recordMovement({
+          stockId: usage.stockId,
+          quantity: usage.quantity,
+          movementType: 'return',
+          referenceType: 'BILL_DELETE',
+          referenceId: bill.bill_number,
+          notes: `Bill ${bill.bill_number} withdrawn from the books${reason ? `: ${reason}` : ''}`,
+          userId,
+        });
       }
 
       if (bill.customer_id) {
@@ -735,26 +726,26 @@ export class BackOfficeService {
     const wasVoided = Boolean(bill.is_voided) || bill.payment_status === 'VOIDED';
 
     if (!wasVoided) {
-      const items = await dbService.query<any>(
-        'SELECT product_id, quantity, stock_consumption FROM bill_items WHERE bill_id = ?',
-        [billId]
-      );
-
-      for (const item of items) {
-        const stockQty = Number(item.stock_consumption || 1) * Number(item.quantity || 0);
-        if (stockQty <= 0) continue;
-
-        const product = await dbService.queryOne<{ stock_id: number | null }>(
-          'SELECT stock_id FROM products WHERE id = ?',
-          [item.product_id]
-        );
-
-        if (product?.stock_id) {
-          await dbService.execute(
-            'UPDATE stocks SET current_quantity = current_quantity - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-            [stockQty, product.stock_id]
-          );
-        }
+      // A withdrawn bill may have released its number; delete_json keeps the
+      // one it held, so the delete and restore movements share a reference.
+      let heldNumber: string | null = null;
+      try {
+        const snapshot = typeof bill.delete_json === 'string' ? JSON.parse(bill.delete_json) : bill.delete_json;
+        heldNumber = snapshot?.number ?? null;
+      } catch {
+        heldNumber = null;
+      }
+      const billRef = bill.bill_number ?? heldNumber ?? `BILL-${billId}`;
+      for (const usage of await StockService.billStockUsage(billId)) {
+        await StockService.recordMovement({
+          stockId: usage.stockId,
+          quantity: -usage.quantity,
+          movementType: 'out',
+          referenceType: 'BILL_RESTORE',
+          referenceId: billRef,
+          notes: `Bill ${billRef} restored to the books`,
+          userId,
+        });
       }
 
       if (bill.customer_id) {

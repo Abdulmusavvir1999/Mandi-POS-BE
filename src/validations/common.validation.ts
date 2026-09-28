@@ -126,6 +126,7 @@ export const stockAdjustSchema = z
     multiplier: z.coerce.number().positive('Multiplier must be greater than 0').optional(),
     totalPrice: z.coerce.number().min(0, 'Total cost cannot be negative').optional(),
     unitPrice: z.coerce.number().min(0, 'Unit cost cannot be negative').optional(),
+    vendorId: z.coerce.number().int().positive().optional().nullable(),
     reason: nonEmpty('Adjustment reason'),
   })
   .passthrough();

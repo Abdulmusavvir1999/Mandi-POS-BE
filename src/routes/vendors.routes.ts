@@ -11,12 +11,6 @@ router.get('/stats', authenticate, VendorsController.getStats);
 router.get('/', authenticate, VendorsController.getAll);
 router.get('/:id', authenticate, VendorsController.getById);
 
-// Purchase History & Recording
-router.get('/:id/purchases', authenticate, VendorsController.getPurchases);
-router.post('/:id/purchases', authenticate, requirePermission('vendor.manage'), VendorsController.recordPurchase);
-router.put('/:id/purchases/:purchaseId', authenticate, requirePermission('vendor.manage'), VendorsController.updatePurchase);
-router.delete('/:id/purchases/:purchaseId', authenticate, requirePermission('vendor.manage'), VendorsController.deletePurchase);
-
 // Payments & Recording
 router.get('/:id/payments', authenticate, VendorsController.getPayments);
 router.post('/:id/payments', authenticate, requirePermission('vendor.manage'), VendorsController.recordPayment);

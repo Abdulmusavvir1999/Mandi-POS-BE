@@ -22,7 +22,9 @@ router.delete('/combo-deals/:id', authenticate, requirePermission('product.manag
 
 // Products
 router.get('/', authenticate, ProductsController.getAll);
+router.get('/check-sku', authenticate, ProductsController.checkSku);
 router.get('/:id/addons', authenticate, ProductsController.getProductAddons);
+router.post('/:id/addons', authenticate, requirePermission('product.manage'), ProductsController.setProductAddons);
 router.get('/:id', authenticate, ProductsController.getById);
 router.post('/image', authenticate, requirePermission('product.manage'), ProductsController.uploadImage);
 router.post('/', authenticate, requirePermission('product.manage'), validateBody(createProductSchema), ProductsController.create);

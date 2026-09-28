@@ -73,6 +73,17 @@ export class ProductsController {
     }
   }
 
+  static async checkSku(req: Request, res: Response, next: NextFunction) {
+    try {
+      const sku = req.query.sku as string;
+      const excludeId = req.query.excludeId ? Number(req.query.excludeId) : undefined;
+      const result = await ProductsService.checkSkuUnique(sku, excludeId);
+      ResponseUtil.success(res, result, 'SKU unique check completed');
+    } catch (err) {
+      next(err);
+    }
+  }
+
   // ── Add-ons ──
   static async getAddons(req: Request, res: Response, next: NextFunction) {
     try {
@@ -128,6 +139,19 @@ export class ProductsController {
       const id = ParamUtil.id(req.params.id, 'id');
       const addons = await AddonsCombosService.getProductAddons(id);
       ResponseUtil.success(res, addons, 'Product add-ons retrieved successfully');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async setProductAddons(req: Request, res: Response, next: NextFunction) {
+    try {
+      const id = ParamUtil.id(req.params.id, 'id');
+      const mappings = Array.isArray(req.body.mappings)
+        ? req.body.mappings
+        : (Array.isArray(req.body.addonIds) ? req.body.addonIds : (Array.isArray(req.body) ? req.body : []));
+      const addons = await AddonsCombosService.setProductAddons(id, mappings, req.user!.id);
+      ResponseUtil.success(res, addons, 'Product add-ons updated successfully');
     } catch (err) {
       next(err);
     }

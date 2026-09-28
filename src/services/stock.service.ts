@@ -1,8 +1,9 @@
+import { randomUUID } from 'crypto';
 import { dbService } from '../database/db';
 import { AppError } from '../errors/AppError';
 import { AuditService } from './audit.service';
 import { SettingsService } from './settings.service';
-import { StockUnitType, StockMovementType } from '../models';
+import { StockUnitType, StockMovementType, StockReferenceType } from '../models';
 import { logger } from '../config/logger';
 import { ParamUtil } from '../utils/param.util';
 
@@ -225,6 +226,13 @@ export class StockService {
         onDelete: 'SET NULL',
       });
 
+      // Movements can optionally reference the specific stock_vendor_purchase entry
+      await addColumnSafe('stock_movements', 'stock_vendor_purchase_id', 'INT NULL DEFAULT NULL AFTER `stock_id`', {
+        refTable: 'stock_vendor_purchase',
+        name: 'fk_sm_stock_vendor_purchase',
+        onDelete: 'SET NULL',
+      });
+
       // Runs after vendor_id exists, because it promotes typed supplier names
       // into that column before narrowing what is left.
       await convertSupplierToSource();
@@ -234,7 +242,7 @@ export class StockService {
       // existing database sheds them on the next stock request.
       await dropColumnSafe('stock_vendor_purchase', 'invoice_number');
       await dropColumnSafe('stock_vendor_purchase', 'expiry_date');
-      await dropColumnSafe('stock_vendor_purchase', 'batch_number');
+      await addColumnSafe('stocks', 'default_multiplier', 'DECIMAL(12,3) NOT NULL DEFAULT 1.000 AFTER `unit_type`');
 
       await dropColumnSafe('stocks', 'reorder_level');
       await dropColumnSafe('stocks', 'reorder_quantity');
@@ -608,10 +616,10 @@ export class StockService {
 
       const res = await dbService.execute(
         `INSERT INTO stocks (
-          uuid, stock_code, name, unit_type, current_quantity,
+          uuid, stock_code, name, unit_type, default_multiplier, current_quantity,
           current_value, average_unit_price, status, min_stock_alert
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
-        [uuid, code, data.name, unitType, totalQty, totalPrice, unitPrice, minAlert]
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
+        [uuid, code, data.name, unitType, multiplier, totalQty, totalPrice, unitPrice, minAlert]
       );
 
       const stockId = res.lastInsertRowid;
@@ -625,20 +633,21 @@ export class StockService {
         // An opening balance bought from a named vendor is still a purchase,
         // so it is booked as one and carries the link; without a vendor it is
         // the plain opening row.
-        await dbService.execute(
+        const purchaseRes = await dbService.execute(
           `INSERT INTO stock_vendor_purchase (
             uuid, stock_id, vendor_id, entry_number, quantity, multiplier,
             total_quantity, total_price, unit_price, status, supplier, notes, created_by
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'posted', ?, 'Opening inventory entry', ?)`,
           [entryUuid, stockId, vendor?.id ?? null, entryNumber, baseQty, multiplier, totalQty, totalPrice, unitPrice, vendor ? 'Vendor' : 'Initial Setup', userId]
         );
+        const purchaseId = purchaseRes.lastInsertRowid;
 
         await dbService.execute(
           `INSERT INTO stock_movements (
-            uuid, stock_id, movement_type, reference_type, reference_id,
+            uuid, stock_id, stock_vendor_purchase_id, movement_type, reference_type, reference_id,
             quantity, unit_price, total_value, balance_quantity, balance_value, notes, created_by
-          ) VALUES (?, ?, 'in', 'INITIAL_STOCK', ?, ?, ?, ?, ?, ?, 'Opening inventory initial stock', ?)`,
-          [moveUuid, stockId, entryNumber, totalQty, unitPrice, totalPrice, totalQty, totalPrice, userId]
+          ) VALUES (?, ?, ?, 'in', 'INITIAL_STOCK', ?, ?, ?, ?, ?, ?, 'Opening inventory initial stock', ?)`,
+          [moveUuid, stockId, purchaseId, entryNumber, totalQty, unitPrice, totalPrice, totalQty, totalPrice, userId]
         );
       }
 
@@ -732,7 +741,7 @@ export class StockService {
       if (data.stockId) {
         stockItem = await dbService.queryOne('SELECT * FROM stocks WHERE id = ?', [data.stockId]);
       } else if (data.productId) {
-        stockItem = await dbService.queryOne('SELECT * FROM stocks WHERE product_id = ?', [data.productId]);
+        stockItem = await this.findByProduct(data.productId);
         if (!stockItem) {
           // If no stock_item exists yet for product, create or link one
           const product = await dbService.queryOne<{ id: number; name: string; sku: string; cost_price: number; stock_quantity: number }>(
@@ -754,6 +763,12 @@ export class StockService {
             userId
           );
           stockItem = itemRes;
+          // createStockItem does not know the dish; link it here, or the next
+          // entry for this product would create yet another stock item.
+          await dbService.execute('UPDATE products SET stock_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [
+            stockItem.id,
+            product.id,
+          ]);
         }
       }
 
@@ -836,13 +851,14 @@ export class StockService {
       // 6. Insert into stock_movements (Audit Record)
       await dbService.execute(
         `INSERT INTO stock_movements (
-          uuid, stock_id, movement_type, reference_type, reference_id,
+          uuid, stock_id, stock_vendor_purchase_id, movement_type, reference_type, reference_id,
           quantity, unit_price, total_value, balance_quantity, balance_value,
           notes, created_by
-        ) VALUES (?, ?, 'in', 'PURCHASE_ENTRY', ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, 'in', 'PURCHASE_ENTRY', ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           movementUuid,
           stockItem.id,
+          entryId,
           entryNumber,
           totalQuantity,
           unitPrice,
@@ -860,44 +876,19 @@ export class StockService {
          SET current_quantity = ?,
              current_value = ?,
              average_unit_price = ?,
+             default_multiplier = ?,
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ?`,
-        [newQuantity, newValue, newAverageUnitPrice, stockItem.id]
+        [newQuantity, newValue, newAverageUnitPrice, multiplier, stockItem.id]
       );
 
-      // 8. Backward Compatibility & Synchronization with Products table
-      if (stockItem.product_id) {
+      // 8. A purchase from a vendor is owed to that vendor: the entry's total
+      // price goes onto their outstanding balance, which vendor payments then
+      // clear. Same transaction, so the stock and the payable move together.
+      if (vendorId !== null && totalPrice > 0) {
         await dbService.execute(
-          `UPDATE products
-           SET stock_quantity = ?,
-               cost_price = ?,
-               updated_at = CURRENT_TIMESTAMP
-           WHERE id = ?`,
-          [newQuantity, newAverageUnitPrice, stockItem.product_id]
-        );
-
-        await dbService.execute(
-          `UPDATE stock
-           SET current_stock = ?,
-               updated_at = CURRENT_TIMESTAMP
-           WHERE product_id = ?`,
-          [newQuantity, stockItem.product_id]
-        );
-
-        await dbService.execute(
-          `INSERT INTO stock_transactions (
-            product_id, transaction_type, quantity, previous_stock, new_stock,
-            reference_id, reference_type, notes, created_by
-          ) VALUES (?, 'STOCK_IN', ?, ?, ?, ?, 'PURCHASE_ENTRY', ?, ?)`,
-          [
-            stockItem.product_id,
-            totalQuantity,
-            prevQuantity,
-            newQuantity,
-            entryNumber,
-            data.notes || `Stock In via Entry ${entryNumber}`,
-            userId,
-          ]
+          'UPDATE vendors SET outstanding_balance = outstanding_balance + ?, updated_at = NOW() WHERE id = ?',
+          [totalPrice, vendorId]
         );
       }
 
@@ -909,6 +900,8 @@ export class StockService {
         newValues: {
           stockId: stockItem.id,
           stockItemName: stockItem.name,
+          vendorId,
+          vendorName,
           entryNumber,
           quantity: baseQuantity,
           multiplier,
@@ -1032,6 +1025,62 @@ export class StockService {
   }
 
   /**
+   * Get stock items associated with a vendor for Return to Supplier,
+   * calculating vendor purchased total, previously returned total,
+   * vendor remaining returnable quantity, and available stock.
+   */
+  static async getVendorReturnItems(vendorId: number) {
+    await this.ensureSchema();
+    return await dbService.query(
+      `SELECT 
+        s.id,
+        s.name,
+        s.stock_code,
+        s.unit_type,
+        s.average_unit_price,
+        COALESCE(svp.vendor_total_quantity, 0) AS vendor_total_quantity,
+        COALESCE(ret.previously_returned_qty, 0) AS previously_returned_quantity,
+        GREATEST(0, COALESCE(svp.vendor_total_quantity, 0) - COALESCE(ret.previously_returned_qty, 0)) AS vendor_returnable_quantity,
+        COALESCE(sm.current_available_stock, s.current_quantity, 0) AS current_available_stock,
+        LEAST(
+          GREATEST(0, COALESCE(svp.vendor_total_quantity, 0) - COALESCE(ret.previously_returned_qty, 0)),
+          COALESCE(sm.current_available_stock, s.current_quantity, 0)
+        ) AS max_return_allowed
+       FROM stocks s
+       JOIN (
+         SELECT stock_id, SUM(total_quantity) AS vendor_total_quantity
+         FROM stock_vendor_purchase
+         WHERE vendor_id = ?
+         GROUP BY stock_id
+         HAVING SUM(total_quantity) > 0
+       ) svp ON s.id = svp.stock_id
+       LEFT JOIN (
+         SELECT 
+           sm.stock_id,
+           SUM(ABS(sm.quantity)) AS previously_returned_qty
+         FROM stock_movements sm
+         LEFT JOIN stock_vendor_purchase svp2 ON sm.stock_vendor_purchase_id = svp2.id
+         WHERE (sm.reference_type = 'RETURN_TO_SUPPLIER' OR (sm.movement_type = 'return' AND sm.quantity < 0))
+           AND (
+             svp2.vendor_id = ?
+             OR sm.notes LIKE CONCAT('%Vendor: ', (SELECT name FROM vendors WHERE id = ?), '%')
+             OR sm.notes LIKE CONCAT('%(', (SELECT vendor_code FROM vendors WHERE id = ?), ')%')
+           )
+         GROUP BY sm.stock_id
+       ) ret ON s.id = ret.stock_id
+       LEFT JOIN (
+         SELECT stock_id, SUM(quantity) AS current_available_stock
+         FROM stock_movements
+         GROUP BY stock_id
+       ) sm ON s.id = sm.stock_id
+       WHERE COALESCE(sm.current_available_stock, s.current_quantity, 0) > 0
+         AND GREATEST(0, COALESCE(svp.vendor_total_quantity, 0) - COALESCE(ret.previously_returned_qty, 0)) > 0
+       ORDER BY s.name ASC`,
+      [vendorId, vendorId, vendorId, vendorId]
+    );
+  }
+
+  /**
    * 7. Stock Adjustments (Audit, Wastage, Returns, Spoilage)
    */
   static async adjustStock(
@@ -1057,10 +1106,16 @@ export class StockService {
       multiplier?: number;
       totalPrice?: number;
       unitPrice?: number;
+      vendorId?: number | null;
       reason: string;
       notes?: string;
     },
-    userId: number
+    userId: number,
+    /**
+     * What caused the adjustment, when it is not the stock screen. A separate
+     * argument rather than a field of `data`, which is the request body.
+     */
+    reference?: { type: StockReferenceType; id: string }
   ) {
     if (data.quantity <= 0) {
       throw AppError.badRequest('Quantity must be greater than 0');
@@ -1071,7 +1126,7 @@ export class StockService {
       if (data.stockId) {
         stockItem = await dbService.queryOne('SELECT * FROM stocks WHERE id = ?', [data.stockId]);
       } else if (data.productId) {
-        stockItem = await dbService.queryOne('SELECT * FROM stocks WHERE product_id = ?', [data.productId]);
+        stockItem = await this.findByProduct(data.productId);
       }
 
       if (!stockItem) {
@@ -1088,6 +1143,68 @@ export class StockService {
       const totalQuantity = baseQuantity * multiplier;
       if (totalQuantity <= 0) {
         throw AppError.badRequest('Quantity x Multiplier must be greater than 0');
+      }
+
+      // Return to Supplier validations against stock_vendor_purchase and stock_movements
+      let linkedPurchaseId: number | null = null;
+      if (data.adjustmentType === 'return_to_supplier') {
+        if (!data.vendorId) {
+          throw AppError.badRequest('Supplier / Vendor is required when performing Return to Supplier');
+        }
+        const vendorId = Number(data.vendorId);
+
+        // 1. Check stock_vendor_purchase for total supplied by this vendor
+        const purchaseRecord = await dbService.queryOne<{ total_purchased: number; latest_purchase_id: number | null }>(
+          `SELECT COALESCE(SUM(total_quantity), 0) AS total_purchased,
+                  MAX(id) AS latest_purchase_id
+           FROM stock_vendor_purchase
+           WHERE vendor_id = ? AND stock_id = ?`,
+          [vendorId, stockItem.id]
+        );
+
+        const totalPurchasedFromVendor = Number(purchaseRecord?.total_purchased || 0);
+        if (totalPurchasedFromVendor <= 0) {
+          throw AppError.badRequest(`This stock item (${stockItem.name}) has no purchase records with the selected vendor.`);
+        }
+        linkedPurchaseId = purchaseRecord?.latest_purchase_id || null;
+
+        // 2. Subtract previously returned quantity to this vendor
+        const prevReturnCalc = await dbService.queryOne<{ previously_returned_qty: number }>(
+          `SELECT COALESCE(SUM(ABS(sm.quantity)), 0) AS previously_returned_qty
+           FROM stock_movements sm
+           LEFT JOIN stock_vendor_purchase svp2 ON sm.stock_vendor_purchase_id = svp2.id
+           WHERE sm.stock_id = ?
+             AND (sm.reference_type = 'RETURN_TO_SUPPLIER' OR (sm.movement_type = 'return' AND sm.quantity < 0))
+             AND (
+               svp2.vendor_id = ?
+               OR sm.notes LIKE CONCAT('%Vendor: ', (SELECT name FROM vendors WHERE id = ?), '%')
+               OR sm.notes LIKE CONCAT('%(', (SELECT vendor_code FROM vendors WHERE id = ?), ')%')
+             )`,
+          [stockItem.id, vendorId, vendorId, vendorId]
+        );
+        const previouslyReturnedQty = Number(prevReturnCalc?.previously_returned_qty || 0);
+        const vendorReturnableQty = Math.max(0, totalPurchasedFromVendor - previouslyReturnedQty);
+
+        if (totalQuantity > vendorReturnableQty) {
+          throw AppError.badRequest(
+            `Cannot return ${totalQuantity} ${stockItem.unit_type}. Maximum returnable quantity for this vendor is ${vendorReturnableQty} ${stockItem.unit_type} (Vendor Supplied: ${totalPurchasedFromVendor} ${stockItem.unit_type}, Previously Returned: ${previouslyReturnedQty} ${stockItem.unit_type}).`
+          );
+        }
+
+        // 3. Calculate current available stock from stock_movements
+        const movementCalc = await dbService.queryOne<{ available_qty: number }>(
+          `SELECT COALESCE(SUM(quantity), 0) AS available_qty
+           FROM stock_movements
+           WHERE stock_id = ?`,
+          [stockItem.id]
+        );
+        const availableStockFromMovements = Number(movementCalc?.available_qty ?? stockItem.current_quantity ?? 0);
+
+        if (totalQuantity > availableStockFromMovements) {
+          throw AppError.badRequest(
+            `Cannot return ${totalQuantity} ${stockItem.unit_type}. Available stock quantity from movements is only ${availableStockFromMovements} ${stockItem.unit_type}.`
+          );
+        }
       }
 
       const isIncrease = data.adjustmentType === 'INCREASE' || data.adjustmentType === 'in' || data.adjustmentType === 'return';
@@ -1133,27 +1250,44 @@ export class StockService {
         newValue = Math.max(0, newQuantity * avgPrice);
       }
 
-      const moveUuid = `move-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`;
-      const adjRef = `ADJ-${Date.now().toString().slice(-6)}`;
+      let vendorNote = '';
+      if (data.vendorId) {
+        const vendor = await dbService.queryOne<{ name: string; vendor_code: string }>(
+          'SELECT name, vendor_code FROM vendors WHERE id = ?',
+          [data.vendorId]
+        );
+        if (vendor) {
+          vendorNote = ` [Vendor: ${vendor.name}${vendor.vendor_code ? ` (${vendor.vendor_code})` : ''}]`;
+        }
+      }
 
-      // Log movement
+      const moveUuid = `move-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 7)}`;
+      const adjRef = reference?.id ?? (data.adjustmentType === 'return_to_supplier'
+        ? `RET-${Date.now().toString().slice(-6)}`
+        : `ADJ-${Date.now().toString().slice(-6)}`);
+      const refType: StockReferenceType = reference?.type
+        ?? (data.adjustmentType === 'return_to_supplier' ? 'RETURN_TO_SUPPLIER' : 'MANUAL_ADJUSTMENT');
+
+      // Log movement with linked stock_vendor_purchase_id if applicable
       await dbService.execute(
         `INSERT INTO stock_movements (
-          uuid, stock_id, movement_type, reference_type, reference_id,
+          uuid, stock_id, stock_vendor_purchase_id, movement_type, reference_type, reference_id,
           quantity, unit_price, total_value, balance_quantity, balance_value,
           notes, created_by
-        ) VALUES (?, ?, ?, 'MANUAL_ADJUSTMENT', ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           moveUuid,
           stockItem.id,
+          linkedPurchaseId,
           movementType,
+          refType,
           adjRef,
           deltaQty,
           unitCost,
           movementValue,
           newQuantity,
           newValue,
-          data.reason + (data.notes ? ` - ${data.notes}` : ''),
+          data.reason + vendorNote + (data.notes ? ` - ${data.notes}` : ''),
           userId,
         ]
       );
@@ -1169,18 +1303,14 @@ export class StockService {
         [newQuantity, newValue, newAvgPrice, stockItem.id]
       );
 
-      // Keep the dish's own counter in step with the ledger item behind it.
-      if (stockItem.product_id) {
-        await dbService.execute('UPDATE products SET stock_quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [
-          newQuantity,
-          stockItem.product_id,
-        ]);
-
+      // Goods sent back to the vendor are no longer owed for: their value comes
+      // off the vendor's outstanding balance, the mirror of the purchase entry
+      // adding it. Floored at 0, as a payment is. Only this reason touches the
+      // vendor; every other adjustment is internal.
+      if (data.adjustmentType === 'return_to_supplier' && data.vendorId && movementValue > 0) {
         await dbService.execute(
-          `INSERT INTO stock_transactions (
-            product_id, transaction_type, quantity, previous_stock, new_stock, reference_id, reference_type, notes, created_by
-          ) VALUES (?, 'ADJUSTMENT', ?, ?, ?, 'STOCK-ADJUST', 'INVENTORY_AUDIT', ?, ?)`,
-          [stockItem.product_id, deltaQty, prevQuantity, newQuantity, data.reason, userId]
+          'UPDATE vendors SET outstanding_balance = GREATEST(0.00, outstanding_balance - ?), updated_at = NOW() WHERE id = ?',
+          [movementValue, Number(data.vendorId)]
         );
       }
 
@@ -1410,9 +1540,102 @@ export class StockService {
   static async getTransactions(page = 1, limit = 50, productId?: number, type?: string) {
     let stockId: number | undefined;
     if (productId) {
-      const item = await dbService.queryOne<{ id: number }>('SELECT id FROM stocks WHERE product_id = ?', [productId]);
+      const item = await this.findByProduct(productId);
       stockId = item?.id;
     }
     return await this.getStockMovements(page, limit, stockId, type);
+  }
+
+  /**
+   * The stock item behind a dish. The link is products.stock_id; stocks has
+   * no product_id column.
+   */
+  static async findByProduct(productId: number): Promise<any> {
+    return await dbService.queryOne(
+      'SELECT s.* FROM stocks s JOIN products p ON p.stock_id = s.id WHERE p.id = ?',
+      [productId]
+    );
+  }
+
+  /**
+   * Moves a stock item's balance by a signed quantity and writes the
+   * stock_movements row that explains it, so SUM(quantity) over an item's
+   * ledger always equals its current_quantity.
+   *
+   * For sales and their reversals: the move is costed at the item's weighted
+   * average and never re-averages it, the same rule adjustStock applies to
+   * stock going out. Must be called inside a transaction; the row lock keeps
+   * balance_quantity right when two tills sell the same item at once.
+   */
+  static async recordMovement(move: {
+    stockId: number;
+    quantity: number;
+    movementType: StockMovementType;
+    referenceType: StockReferenceType;
+    referenceId: string | null;
+    notes: string;
+    userId: number | null;
+  }): Promise<void> {
+    if (!move.quantity) return;
+
+    const item = await dbService.queryOne<{ current_quantity: number; current_value: number; average_unit_price: number }>(
+      'SELECT current_quantity, current_value, average_unit_price FROM stocks WHERE id = ? FOR UPDATE',
+      [move.stockId]
+    );
+    if (!item) return;
+
+    const avgPrice = Number(item.average_unit_price) || 0;
+    const newQuantity = (Number(item.current_quantity) || 0) + move.quantity;
+    const newValue = move.quantity < 0
+      ? Math.max(0, newQuantity * avgPrice)
+      : Math.max(0, (Number(item.current_value) || 0) + move.quantity * avgPrice);
+
+    await dbService.execute(
+      `INSERT INTO stock_movements (
+        uuid, stock_id, movement_type, reference_type, reference_id,
+        quantity, unit_price, total_value, balance_quantity, balance_value,
+        notes, created_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        randomUUID(),
+        move.stockId,
+        move.movementType,
+        move.referenceType,
+        move.referenceId,
+        move.quantity,
+        avgPrice,
+        Math.abs(move.quantity) * avgPrice,
+        newQuantity,
+        newValue,
+        move.notes,
+        move.userId,
+      ]
+    );
+
+    await dbService.execute(
+      'UPDATE stocks SET current_quantity = ?, current_value = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [newQuantity, newValue, move.stockId]
+    );
+  }
+
+  /**
+   * The stock a bill's lines drew on, per stock item. Resolved the way
+   * checkout resolves it: a variant with its own stock item draws on that
+   * one, otherwise the dish's, at stock_consumption per unit sold.
+   */
+  static async billStockUsage(billId: number): Promise<{ stockId: number; quantity: number }[]> {
+    const rows = await dbService.query<{ stock_id: number; quantity: number }>(
+      `SELECT COALESCE(v.stock_id, p.stock_id) AS stock_id,
+              SUM(COALESCE(bi.stock_consumption, 1) * bi.quantity) AS quantity
+       FROM bill_items bi
+       JOIN products p ON p.id = bi.product_id
+       LEFT JOIN product_variants v ON v.id = bi.variant_id
+       WHERE bi.bill_id = ? AND COALESCE(v.stock_id, p.stock_id) IS NOT NULL
+       GROUP BY COALESCE(v.stock_id, p.stock_id)`,
+      [billId]
+    );
+    return rows
+      .map((r) => ({ stockId: Number(r.stock_id), quantity: Number(r.quantity) || 0 }))
+      .filter((r) => r.quantity > 0);
   }
 }

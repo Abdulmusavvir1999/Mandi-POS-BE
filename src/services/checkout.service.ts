@@ -2,6 +2,7 @@ import { dbService } from '../database/db';
 import { AppError } from '../errors/AppError';
 import { SettingsService } from './settings.service';
 import { AuditService } from './audit.service';
+import { StockService } from './stock.service';
 import { OrderType, PaymentMethod } from '../models';
 import { SequenceUtil } from '../utils/sequence.util';
 import { DocumentSequence, ORDER_DOCUMENT, BILL_DOCUMENT } from '../utils/document-sequence.util';
@@ -273,7 +274,9 @@ export class CheckoutService {
 
         // Inventory check
         const targetStockItemId = variant?.stock_id ?? product.stock_id;
-        const stockConsumption = variant ? Number(variant.stock_consumption || 1) : 1.0;
+        const stockConsumption = variant?.stock_consumption !== undefined && variant?.stock_consumption !== null
+          ? Number(variant.stock_consumption)
+          : 1.0;
         const requiredStock = stockConsumption * item.quantity;
 
         let currentStock = 0;
@@ -469,18 +472,26 @@ export class CheckoutService {
           ]
         );
 
-        // Deduct inventory from the ledger item behind the dish. A dish with
-        // no linked stock item carries no balance to draw down.
-        if (item.stockId) {
-          await dbService.execute(
-            'UPDATE stocks SET current_quantity = current_quantity - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-            [item.requiredStock, item.stockId]
-          );
-        }
       }
 
       // 6. Generate Sequential Bill Number
       const billNumber = await SequenceUtil.nextDailyNumber('bills', 'bill_number', 'INV');
+
+      // Deduct inventory from the ledger item behind each dish, as a sale
+      // movement against the bill. A dish with no linked stock item carries no
+      // balance to draw down.
+      for (const item of verifiedItems) {
+        if (!item.stockId) continue;
+        await StockService.recordMovement({
+          stockId: item.stockId,
+          quantity: -item.requiredStock,
+          movementType: 'out',
+          referenceType: 'SALE',
+          referenceId: billNumber,
+          notes: `Sold on ${billNumber}: ${item.quantity} x ${item.productName}${item.variantName ? ` (${item.variantName})` : ''}`,
+          userId: cashierId,
+        });
+      }
 
       // 7. Create Bill Record
       const billRes = await dbService.execute(
