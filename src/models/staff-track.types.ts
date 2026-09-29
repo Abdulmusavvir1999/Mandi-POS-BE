@@ -8,7 +8,7 @@
  * the waiter who took it while the bill records the `cashier_id` of whoever
  * settled it. Collapsing those into one "staff" number would credit the wrong
  * person, so `ordersTaken` (orders.created_by), `revenue` (bills.cashier_id)
- * and the lifecycle actors (order_status_history.changed_by) never mix.
+ * and the lifecycle actors (ORDER_STATUS_CHANGED audit entries) never mix.
  */
 
 /** Fields the POS does not record, kept here so the UI can say so explicitly. */
@@ -67,7 +67,7 @@ export interface StaffTrackRow {
   activeTables: number;
   tablesAttended: number;
 
-  /** order_status_history: created_at → COMPLETED, in seconds. */
+  /** created_at → bill time (or last update when unbilled), in seconds. */
   averageServiceSeconds: number | null;
 }
 
@@ -104,7 +104,7 @@ export interface OrderTimelineEntry {
   at: string;
   actor: StaffRef | null;
   action: string;
-  source: 'ORDER' | 'ORDER_STATUS_HISTORY' | 'BILL' | 'PAYMENT' | 'AUDIT';
+  source: 'ORDER' | 'BILL' | 'PAYMENT' | 'AUDIT';
   detail?: string | null;
 }
 

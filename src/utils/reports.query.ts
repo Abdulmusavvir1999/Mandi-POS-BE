@@ -1,4 +1,5 @@
 import { AppError } from '../errors/AppError';
+import { billPaidWithSql } from './payment-split.sql';
 
 /**
  * Shared query plumbing for the reporting suite.
@@ -188,8 +189,9 @@ export class ReportQuery {
       where += ` AND ${alias}.is_voided = 0`;
     }
     if (scope.paymentMethod) {
-      where += ` AND ${alias}.payment_method = ?`;
-      params.push(scope.paymentMethod);
+      // Split bills ("CASH+UPI") match either of their modes.
+      where += ` AND ${billPaidWithSql(alias)}`;
+      params.push(scope.paymentMethod, scope.paymentMethod);
     }
     if (scope.orderType) {
       where += ` AND ${alias}.order_type = ?`;

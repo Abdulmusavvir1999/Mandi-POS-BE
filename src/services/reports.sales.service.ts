@@ -2,6 +2,7 @@ import { dbService } from '../database/db';
 import { ReportsSchema } from '../database/reports.schema';
 import { BillScope, Granularity, ReportQuery, ReportRange } from '../utils/reports.query';
 import { LINE_UNIT_STOCK_COST } from '../utils/stock-cost.sql';
+import { billMethodAmountSql } from '../utils/payment-split.sql';
 
 export interface SalesReportOptions extends BillScope {
   range: ReportRange;
@@ -203,7 +204,7 @@ export class ReportsSalesService {
          COALESCE(SUM(CASE WHEN b.is_voided = 0 THEN b.total_amount ELSE 0 END), 0)           AS net_sales,
          COALESCE(SUM(CASE WHEN b.is_voided = 1 THEN 1 ELSE 0 END), 0)                        AS void_count,
          COALESCE(SUM(CASE WHEN b.is_voided = 1 THEN b.total_amount ELSE 0 END), 0)           AS void_amount,
-         COALESCE(SUM(CASE WHEN b.is_voided = 0 AND b.payment_method = 'CASH' THEN b.total_amount ELSE 0 END), 0) AS cash_sales,
+         COALESCE(SUM(CASE WHEN b.is_voided = 0 THEN ${billMethodAmountSql('b', 'CASH')} ELSE 0 END), 0) AS cash_sales,
          COUNT(DISTINCT CASE WHEN b.is_voided = 0 THEN DATE(b.created_at) END)                AS active_days,
          MIN(b.created_at)                                      AS first_bill_at,
          MAX(b.created_at)                                      AS last_bill_at

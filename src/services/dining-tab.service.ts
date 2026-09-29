@@ -136,6 +136,8 @@ export class DiningTabService {
       const round = await CheckoutService.nextKotRound(orderId);
       await CheckoutService.insertOrderLines(orderId, lines, round);
       await this.recalcOrder(orderId);
+      // A new round is cooking again, whatever the kitchen marked before.
+      await dbService.execute('UPDATE orders SET kitchen_status = NULL WHERE id = ?', [orderId]);
 
       if (input.customerId) {
         await dbService.execute('UPDATE orders SET customer_id = ? WHERE id = ?', [input.customerId, orderId]);

@@ -597,6 +597,82 @@ export class ProductsService {
     };
   }
 
+  /**
+   * How often a dish has been ordered, per portion: bills it appears on and
+   * portions sold. Voided and deleted bills do not count. Portions are matched
+   * by name because saving a dish re-creates its portions with new ids, so an
+   * old bill's variant_id no longer points at the current row.
+   */
+  static async getSalesSummary(productId: number) {
+    const rows = await dbService.query<any>(
+      `SELECT COALESCE(bi.variant_name, '') AS variant_name,
+              COUNT(DISTINCT b.id) AS orders,
+              COALESCE(SUM(bi.quantity), 0) AS quantity,
+              COALESCE(SUM(bi.subtotal), 0) AS revenue,
+              MAX(b.created_at) AS last_sold_at
+       FROM bill_items bi
+       JOIN bills b ON b.id = bi.bill_id
+       WHERE bi.product_id = ?
+         AND COALESCE(bi.item_type, 'PRODUCT') = 'PRODUCT'
+         AND b.is_voided = 0 AND b.is_deleted = 0
+       GROUP BY COALESCE(bi.variant_name, '')`,
+      [productId]
+    );
+    const total = await dbService.queryOne<any>(
+      `SELECT COUNT(DISTINCT b.id) AS orders, COALESCE(SUM(bi.quantity), 0) AS quantity,
+              COALESCE(SUM(bi.subtotal), 0) AS revenue, MAX(b.created_at) AS last_sold_at
+       FROM bill_items bi
+       JOIN bills b ON b.id = bi.bill_id
+       WHERE bi.product_id = ?
+         AND COALESCE(bi.item_type, 'PRODUCT') = 'PRODUCT'
+         AND b.is_voided = 0 AND b.is_deleted = 0`,
+      [productId]
+    );
+    // Stock this dish's own sales have taken, per stock item: from each line's
+    // usage record, else (older bills) the dish's item at stock_consumption.
+    // Lets the View page show "Used" for this dish only, not for every dish
+    // that shares the same stock.
+    const stockUsed = await dbService.query<any>(
+      `SELECT u.stock_id, COALESCE(SUM(u.qty), 0) AS quantity FROM (
+         SELECT r.stock_id, r.quantity_per_unit * bi.quantity AS qty
+         FROM bill_items bi
+         JOIN bills b ON b.id = bi.bill_id
+         JOIN bill_item_stock_usage r ON r.bill_item_id = bi.id
+         WHERE bi.product_id = ? AND COALESCE(bi.item_type, 'PRODUCT') = 'PRODUCT'
+           AND b.is_voided = 0 AND b.is_deleted = 0
+         UNION ALL
+         SELECT p.stock_id, COALESCE(bi.stock_consumption, 1) * bi.quantity
+         FROM bill_items bi
+         JOIN bills b ON b.id = bi.bill_id
+         JOIN products p ON p.id = bi.product_id
+         WHERE bi.product_id = ? AND COALESCE(bi.item_type, 'PRODUCT') = 'PRODUCT'
+           AND b.is_voided = 0 AND b.is_deleted = 0
+           AND p.stock_id IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM bill_item_stock_usage r2 WHERE r2.bill_item_id = bi.id)
+       ) u
+       GROUP BY u.stock_id`,
+      [productId, productId]
+    );
+
+    const n = (v: any) => Number(v) || 0;
+    return {
+      stock_used: stockUsed.map((r) => ({ stock_id: n(r.stock_id), quantity: n(r.quantity) })),
+      variants: rows.map((r) => ({
+        variant_name: r.variant_name,
+        orders: n(r.orders),
+        quantity: n(r.quantity),
+        revenue: n(r.revenue),
+        last_sold_at: r.last_sold_at || null,
+      })),
+      total: {
+        orders: n(total?.orders),
+        quantity: n(total?.quantity),
+        revenue: n(total?.revenue),
+        last_sold_at: total?.last_sold_at || null,
+      },
+    };
+  }
+
   static async getById(id: number) {
     await this.ensureSchema();
     // The View page reports on the ledger item a dish draws from, so the join

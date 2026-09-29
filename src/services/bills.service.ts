@@ -6,6 +6,7 @@ import { StockService } from './stock.service';
 import { PaymentMethod, OrderType } from '../models';
 import { decorateDocument, decorateDocuments } from '../utils/document-sequence.util';
 import { ParamUtil } from '../utils/param.util';
+import { billPaidWithSql } from '../utils/payment-split.sql';
 
 export class BillsService {
   static async getAll(
@@ -38,8 +39,9 @@ export class BillsService {
     }
 
     if (paymentMethod) {
-      where += ' AND b.payment_method = ?';
-      params.push(paymentMethod);
+      // Split bills ("CASH+UPI") match either of their modes.
+      where += ' AND ' + billPaidWithSql('b');
+      params.push(paymentMethod, paymentMethod);
     }
 
     if (orderType) {

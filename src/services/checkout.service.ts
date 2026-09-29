@@ -28,6 +28,12 @@ export interface CheckoutPayload {
   offlineSyncId?: string;
   paymentMethod: PaymentMethod;
   paymentAmount?: number;
+  /**
+   * A split: up to two parts, e.g. CASH 1000 + UPI 1000. When given they must
+   * add up to the grand total; paymentMethod is then ignored and the bill
+   * reads "CASH+UPI". Cash tendered/change apply to the cash part.
+   */
+  payments?: Array<{ method: string; amount: number; reference?: string }>;
   paymentReference?: string;
   notes?: string;
   items: Array<{
@@ -102,6 +108,12 @@ export class CheckoutService {
         await dbService.execute("ALTER TABLE bills MODIFY COLUMN payment_method VARCHAR(30) NOT NULL");
         await dbService.execute("ALTER TABLE bills MODIFY COLUMN payment_status VARCHAR(30) NOT NULL DEFAULT 'PAID'");
       } catch (_) {}
+      // Was ENUM without ONLINE, so an Online payment could not be recorded.
+      try {
+        await dbService.execute("ALTER TABLE payments MODIFY COLUMN payment_method VARCHAR(30) NOT NULL");
+      } catch (e) {
+        logger.warn('Could not widen payments.payment_method:', e);
+      }
 
       // 2. Add columns to bills
       const addCol = async (table: string, col: string, def: string) => {
@@ -148,6 +160,10 @@ export class CheckoutService {
       // Open dining tabs: which kitchen round a line went out in, and the
       // complimentary flag it has to carry until the bill is made.
       await addCol('order_items', 'kot_round', 'INT NULL');
+      // Kitchen progress on an open tab, kept apart from orders.status (which
+      // means billed/cancelled): READY once the kitchen has served every round
+      // sent so far, cleared again when the next round goes in.
+      await addCol('orders', 'kitchen_status', 'VARCHAR(20) NULL');
       await addCol('order_items', 'is_complimentary', 'BOOLEAN DEFAULT FALSE');
       await addCol('order_items', 'complimentary_reason', 'VARCHAR(255) NULL');
 
@@ -593,15 +609,47 @@ export class CheckoutService {
     const surcharge = Math.max(0, Number(payload.surchargeAmount) || 0);
     const grandTotal = Math.round((taxedAmount + serviceCharge + surcharge) * 100) / 100;
 
-    const paymentAmount = payload.paymentAmount !== undefined ? payload.paymentAmount : grandTotal;
-    if (paymentAmount < grandTotal) {
-      throw AppError.badRequest(`Payment amount (${paymentAmount}) cannot be less than Grand Total (${grandTotal})`);
+    // Payment parts: one mode for the whole bill, or a split across two.
+    const METHODS = ['CASH', 'CARD', 'UPI', 'ONLINE', 'OTHER'];
+    let parts: Array<{ method: string; amount: number; reference: string | null }>;
+    if (Array.isArray(payload.payments) && payload.payments.length > 0) {
+      if (payload.payments.length > 2) {
+        throw AppError.badRequest('A bill can be split across at most 2 payment modes.');
+      }
+      parts = payload.payments.map((p) => ({
+        method: String(p?.method || '').toUpperCase(),
+        amount: Math.round((Number(p?.amount) || 0) * 100) / 100,
+        reference: p?.reference ? String(p.reference) : null,
+      }));
+      for (const p of parts) {
+        if (!METHODS.includes(p.method)) throw AppError.badRequest(`Unknown payment mode "${p.method}".`);
+        if (!(p.amount > 0)) throw AppError.badRequest(`Enter an amount for ${p.method}.`);
+      }
+      if (parts.length === 2 && parts[0].method === parts[1].method) {
+        throw AppError.badRequest('Pick two different payment modes to split a bill.');
+      }
+      const sum = Math.round(parts.reduce((t, p) => t + p.amount, 0) * 100) / 100;
+      if (Math.abs(sum - grandTotal) > 0.01) {
+        throw AppError.badRequest(`The split (${sum}) must add up to the Grand Total (${grandTotal}).`);
+      }
+    } else {
+      const paymentAmount = payload.paymentAmount !== undefined ? payload.paymentAmount : grandTotal;
+      if (paymentAmount < grandTotal) {
+        throw AppError.badRequest(`Payment amount (${paymentAmount}) cannot be less than Grand Total (${grandTotal})`);
+      }
+      parts = [{ method: String(payload.paymentMethod || 'CASH').toUpperCase(), amount: grandTotal, reference: payload.paymentReference || null }];
     }
+    const billMethod = parts.map((p) => p.method).join('+');
 
-    const cashTendered = payload.paymentMethod === 'CASH' && payload.cashTendered
-      ? Number(payload.cashTendered)
-      : paymentAmount;
-    const changeReturned = Math.max(0, cashTendered - grandTotal);
+    // Tendered and change belong to the cash part only.
+    const cashPart = parts.find((p) => p.method === 'CASH')?.amount || 0;
+    const cashTendered = cashPart > 0
+      ? (payload.cashTendered ? Number(payload.cashTendered) : cashPart)
+      : grandTotal;
+    if (cashPart > 0 && cashTendered < cashPart) {
+      throw AppError.badRequest(`Cash tendered (${cashTendered}) is less than the cash part (${cashPart}).`);
+    }
+    const changeReturned = cashPart > 0 ? Math.round(Math.max(0, cashTendered - cashPart) * 100) / 100 : 0;
 
     // 5. Create or reuse Order
     let orderId: number;
@@ -711,7 +759,7 @@ export class CheckoutService {
         payload.couponCode || null,
         couponDiscount,
         grandTotal,
-        payload.paymentMethod,
+        billMethod,
         cashTendered,
         changeReturned,
         payload.offlineSyncId || null,
@@ -766,20 +814,16 @@ export class CheckoutService {
       }
     }
 
-    // 9. Create Payment Record
-    await dbService.execute(
-      `INSERT INTO payments (
-        bill_id, order_id, payment_method, amount, status, reference_number, created_by
-      ) VALUES (?, ?, ?, ?, 'PAID', ?, ?)`,
-      [
-        billId,
-        orderId,
-        payload.paymentMethod,
-        paymentAmount,
-        payload.paymentReference || null,
-        cashierId,
-      ]
-    );
+    // 9. Payment Records: one per part, for the amount actually taken
+    // (not the cash handed over - the change is on the bill).
+    for (const p of parts) {
+      await dbService.execute(
+        `INSERT INTO payments (
+          bill_id, order_id, payment_method, amount, status, reference_number, created_by
+        ) VALUES (?, ?, ?, ?, 'PAID', ?, ?)`,
+        [billId, orderId, p.method, p.amount, p.reference, cashierId]
+      );
+    }
 
     // 10. Update Customer Stats
     if (payload.customerId) {
@@ -819,7 +863,8 @@ export class CheckoutService {
         billNumber,
         orderNumber,
         orderType: ParamUtil.orderType(payload.orderType),
-        paymentMethod: payload.paymentMethod,
+        paymentMethod: billMethod,
+        payments: parts.length > 1 ? parts.map((p) => ({ method: p.method, amount: p.amount })) : undefined,
         grandTotal,
         itemCount: verifiedItems.length,
         offlineSyncId: payload.offlineSyncId || null,

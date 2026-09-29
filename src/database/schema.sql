@@ -428,19 +428,6 @@ CREATE TABLE IF NOT EXISTS order_items (
   INDEX idx_order_items_product (product_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS order_status_history (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  order_id INT NOT NULL,
-  previous_status VARCHAR(50),
-  new_status VARCHAR(50) NOT NULL,
-  changed_by INT,
-  notes TEXT,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
-  FOREIGN KEY (changed_by) REFERENCES users(id),
-  INDEX idx_osh_order_status (order_id, new_status)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
 
 -- ───────────────────────────────────────────────────────────────────────────
 -- SECTION 7 — Billing, Payments & Day Close
@@ -979,7 +966,7 @@ WHERE table_schema = DATABASE()
     'stocks', 'stock_vendor_purchase', 'stock_movements',
     'customers', 'customer_notes',
     'dining_tables', 'table_reservations',
-    'orders', 'order_items', 'order_status_history',
+    'orders', 'order_items',
     'draft_bills', 'draft_bill_items', 'bills', 'bill_items',
     'bill_item_stock_usage',
     'payments', 'pos_day_closings', 'queue',

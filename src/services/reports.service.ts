@@ -1,5 +1,6 @@
 import { dbService } from '../database/db';
 import { LINE_UNIT_STOCK_COST } from '../utils/stock-cost.sql';
+import { billPaidWithSql } from '../utils/payment-split.sql';
 
 export class ReportsService {
   static async getSalesReport(dateFrom?: string, dateTo?: string, paymentMethod?: string, orderType?: string, cashierId?: number) {
@@ -16,8 +17,9 @@ export class ReportsService {
       params.push(dateTo);
     }
     if (paymentMethod) {
-      where += ' AND b.payment_method = ?';
-      params.push(paymentMethod);
+      // Split bills ("CASH+UPI") match either of their modes.
+      where += ' AND ' + billPaidWithSql('b');
+      params.push(paymentMethod, paymentMethod);
     }
     if (orderType) {
       where += ' AND b.order_type = ?';
@@ -93,8 +95,9 @@ export class ReportsService {
     // The toolbar offers these on every sales tab, so the per-dish figures
     // have to narrow the same way the consolidated sales report does.
     if (paymentMethod) {
-      where += ' AND b.payment_method = ?';
-      params.push(paymentMethod);
+      // Split bills ("CASH+UPI") match either of their modes.
+      where += ' AND ' + billPaidWithSql('b');
+      params.push(paymentMethod, paymentMethod);
     }
     if (orderType) {
       where += ' AND b.order_type = ?';
@@ -145,8 +148,9 @@ export class ReportsService {
     }
     // Same toolbar, same narrowing as the per-dish report above.
     if (paymentMethod) {
-      where += ' AND b.payment_method = ?';
-      params.push(paymentMethod);
+      // Split bills ("CASH+UPI") match either of their modes.
+      where += ' AND ' + billPaidWithSql('b');
+      params.push(paymentMethod, paymentMethod);
     }
     if (orderType) {
       where += ' AND b.order_type = ?';

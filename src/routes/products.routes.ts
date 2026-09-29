@@ -26,6 +26,7 @@ router.get('/check-sku', authenticate, ProductsController.checkSku);
 router.get('/:id/addons', authenticate, ProductsController.getProductAddons);
 router.post('/:id/addons', authenticate, requirePermission('product.manage'), ProductsController.setProductAddons);
 router.get('/:id', authenticate, ProductsController.getById);
+router.post('/sales-summary', authenticate, ProductsController.getSalesSummary);
 router.post('/image', authenticate, requirePermission('product.manage'), ProductsController.uploadImage);
 router.post('/', authenticate, requirePermission('product.manage'), validateBody(createProductSchema), ProductsController.create);
 router.put('/:id', authenticate, requirePermission('product.manage'), ProductsController.update);

@@ -307,10 +307,10 @@ export class StaffTrackService {
                 AVG(TIMESTAMPDIFF(SECOND, o3.created_at, h.completed_at)) AS avg_service_seconds
          FROM orders o3
          JOIN (
-           SELECT order_id, MIN(created_at) AS completed_at
-           FROM order_status_history
-           WHERE new_status = 'COMPLETED'
-           GROUP BY order_id
+SELECT o_h.id AS order_id,
+                  COALESCE((SELECT MIN(b_h.created_at) FROM bills b_h WHERE b_h.order_id = o_h.id AND b_h.is_deleted = 0), o_h.updated_at) AS completed_at
+           FROM orders o_h
+           WHERE o_h.status IN ('COMPLETED')
          ) h ON h.order_id = o3.id
          WHERE o3.created_by IS NOT NULL AND o3.is_deleted = 0${sd.sql}
          GROUP BY o3.created_by
@@ -659,10 +659,10 @@ export class StaffTrackService {
        ${baseFrom}
        LEFT JOIN users bu ON b.cashier_id = bu.id
        LEFT JOIN (
-         SELECT order_id, MIN(created_at) AS completed_at
-         FROM order_status_history
-         WHERE new_status = 'COMPLETED'
-         GROUP BY order_id
+SELECT o_h.id AS order_id,
+                COALESCE((SELECT MIN(b_h.created_at) FROM bills b_h WHERE b_h.order_id = o_h.id AND b_h.is_deleted = 0), o_h.updated_at) AS completed_at
+         FROM orders o_h
+         WHERE o_h.status IN ('COMPLETED')
        ) h ON h.order_id = o.id
        ${whereSql}
        ORDER BY o.created_at DESC
@@ -702,8 +702,8 @@ export class StaffTrackService {
   /**
    * Attribution and timeline for one order.
    *
-   * Lifecycle actors come from `order_status_history.changed_by`, which the POS
-   * writes on every transition. Where the POS never records an actor — nothing
+   * Lifecycle actors come from the ORDER_STATUS_CHANGED audit entries, written
+   * on every transition. Where the POS never records an actor — nothing
    * marks an order "served", and there is no edit, refund or void flow — the
    * field is absent rather than guessed at from whoever last opened the order.
    */
@@ -719,7 +719,7 @@ export class StaffTrackService {
            UNION ALL
            SELECT 1 FROM bills b             WHERE b.order_id = ? AND b.is_deleted = 0 AND b.cashier_id = ?
            UNION ALL
-           SELECT 1 FROM order_status_history h WHERE h.order_id = ? AND h.changed_by = ?
+           SELECT 1 FROM audit_logs al       WHERE al.module = 'ORDERS' AND al.record_id = CAST(? AS CHAR) AND al.user_id = ?
            UNION ALL
            SELECT 1 FROM payments p          WHERE p.order_id = ? AND p.created_by = ?
          ) AS involved`,
@@ -750,15 +750,18 @@ export class StaffTrackService {
     }
 
     const history = await dbService.query<any>(
-      `SELECT h.id, h.previous_status, h.new_status, h.notes, h.created_at,
+      `SELECT a.id,
+              JSON_UNQUOTE(JSON_EXTRACT(a.old_values, '$.status')) AS previous_status,
+              JSON_UNQUOTE(JSON_EXTRACT(a.new_values, '$.status')) AS new_status,
+              a.created_at,
               u.id AS actor_id, u.name AS actor_name, u.username AS actor_username,
               r.name AS actor_role
-       FROM order_status_history h
-       LEFT JOIN users u ON h.changed_by = u.id
+       FROM audit_logs a
+       LEFT JOIN users u ON a.user_id = u.id
        LEFT JOIN roles r ON u.role_id = r.id
-       WHERE h.order_id = ?
-       ORDER BY h.created_at ASC, h.id ASC`,
-      [orderId]
+       WHERE a.module = 'ORDERS' AND a.action = 'ORDER_STATUS_CHANGED' AND a.record_id = ?
+       ORDER BY a.created_at ASC, a.id ASC`,
+      [String(orderId)]
     );
 
     const bill = await dbService.queryOne<any>(
@@ -818,16 +821,6 @@ export class StaffTrackService {
       });
     }
 
-    for (const h of history) {
-      timeline.push({
-        at: h.created_at,
-        actor: this.staffRef(h.actor_id, h.actor_name, h.actor_username, h.actor_role),
-        action: `STATUS_${h.previous_status || 'NEW'}_TO_${h.new_status}`,
-        source: 'ORDER_STATUS_HISTORY',
-        detail: h.notes || null,
-      });
-    }
-
     for (const p of payments) {
       timeline.push({
         at: p.created_at,
@@ -838,7 +831,7 @@ export class StaffTrackService {
       });
     }
 
-    // Audit rows carry actions the status history does not, such as BILL_PRINTED.
+    // Every status change, and actions like BILL_PRINTED, come from the audit log.
     const auditRows = await dbService.query<any>(
       `SELECT a.id, a.action, a.module, a.created_at,
               u.id AS actor_id, u.name AS actor_name, u.username AS actor_username
@@ -1077,10 +1070,10 @@ export class StaffTrackService {
        JOIN dining_tables t ON o.dining_table_id = t.id
        LEFT JOIN users u    ON o.created_by = u.id
        LEFT JOIN (
-         SELECT order_id, MIN(created_at) AS completed_at
-         FROM order_status_history
-         WHERE new_status IN ('COMPLETED', 'CANCELLED')
-         GROUP BY order_id
+SELECT o_h.id AS order_id,
+                COALESCE((SELECT MIN(b_h.created_at) FROM bills b_h WHERE b_h.order_id = o_h.id AND b_h.is_deleted = 0), o_h.updated_at) AS completed_at
+         FROM orders o_h
+         WHERE o_h.status IN ('COMPLETED', 'CANCELLED')
        ) h ON h.order_id = o.id
        WHERE ${conditions.join(' AND ')}
        ORDER BY o.created_at DESC
@@ -1098,10 +1091,10 @@ export class StaffTrackService {
        JOIN users u ON o.created_by = u.id
        JOIN roles r ON u.role_id = r.id
        LEFT JOIN (
-         SELECT order_id, MIN(created_at) AS completed_at
-         FROM order_status_history
-         WHERE new_status IN ('COMPLETED', 'CANCELLED')
-         GROUP BY order_id
+SELECT o_h.id AS order_id,
+                COALESCE((SELECT MIN(b_h.created_at) FROM bills b_h WHERE b_h.order_id = o_h.id AND b_h.is_deleted = 0), o_h.updated_at) AS completed_at
+         FROM orders o_h
+         WHERE o_h.status IN ('COMPLETED', 'CANCELLED')
        ) h ON h.order_id = o.id
        WHERE ${conditions.join(' AND ')}
        GROUP BY u.id, u.name, u.username, u.image_url, r.name

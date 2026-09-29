@@ -235,7 +235,7 @@ describe('Staff Track visibility scope', () => {
         `SELECT o.id FROM orders o
          WHERE COALESCE(o.created_by, 0) <> ?
            AND NOT EXISTS (SELECT 1 FROM bills b               WHERE b.order_id = o.id AND b.cashier_id = ?)
-           AND NOT EXISTS (SELECT 1 FROM order_status_history h WHERE h.order_id = o.id AND h.changed_by = ?)
+           AND NOT EXISTS (SELECT 1 FROM audit_logs al         WHERE al.module = 'ORDERS' AND al.record_id = CAST(o.id AS CHAR) AND al.user_id = ?)
            AND NOT EXISTS (SELECT 1 FROM payments p            WHERE p.order_id = o.id AND p.created_by = ?)
          LIMIT 1`,
         [selfUserId, selfUserId, selfUserId, selfUserId]

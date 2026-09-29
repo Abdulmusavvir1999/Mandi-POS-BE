@@ -482,8 +482,8 @@ export class BackOfficeService {
 
           await this.detachOrderReferences(orderId);
 
-          // order_items and order_status_history are left in place — they used
-          // to cascade away with the row and are now part of the kept history.
+          // order_items are left in place — they used to cascade away with the
+          // row and are now part of the kept history.
           await dbService.execute(
             `UPDATE orders
              SET is_deleted = 1,
@@ -1173,7 +1173,8 @@ export class BackOfficeService {
    *
    * The mirror of `deleteInvoices`: that pushed the order to CANCELLED so it
    * would not read as "paid, no invoice", recording the status it came from in
-   * `order_status_history`. The restore reads that entry back and returns the
+   * an ORDER_CANCELLED_BY_INVOICE_DELETE audit entry. The restore reads that
+   * entry back and returns the
    * order to it, rather than guessing at COMPLETED — an order cancelled for
    * its own reasons before the invoice was ever withdrawn must stay cancelled.
    *
@@ -1242,14 +1243,15 @@ export class BackOfficeService {
             // cancelled it. Absent — an order cancelled for its own reasons —
             // means leave it alone.
             const priorEntry = await dbService.queryOne<{ previous_status: string }>(
-              `SELECT previous_status
-               FROM order_status_history
-               WHERE order_id = ?
-                 AND new_status = 'CANCELLED'
-                 AND notes LIKE ?
+              `SELECT JSON_UNQUOTE(JSON_EXTRACT(old_values, '$.status')) AS previous_status
+               FROM audit_logs
+               WHERE module = 'ORDERS'
+                 AND action = 'ORDER_CANCELLED_BY_INVOICE_DELETE'
+                 AND record_id = ?
+                 AND JSON_UNQUOTE(JSON_EXTRACT(new_values, '$.invoice')) = ?
                ORDER BY id DESC
                LIMIT 1`,
-              [bill.order_id, `%${reference}%`]
+              [String(bill.order_id), reference]
             );
 
             if (priorEntry?.previous_status) {
@@ -1257,11 +1259,14 @@ export class BackOfficeService {
                 'UPDATE orders SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
                 [priorEntry.previous_status, bill.order_id]
               );
-              await dbService.execute(
-                `INSERT INTO order_status_history (order_id, previous_status, new_status, changed_by, notes)
-                 VALUES (?, 'CANCELLED', ?, ?, ?)`,
-                [bill.order_id, priorEntry.previous_status, userId, `Invoice ${reference} restored from Back-Office`]
-              );
+              await AuditService.log({
+                userId,
+                action: 'ORDER_STATUS_CHANGED',
+                module: 'ORDERS',
+                recordId: bill.order_id,
+                oldValues: { status: 'CANCELLED' },
+                newValues: { status: priorEntry.previous_status, notes: `Invoice ${reference} restored from Back-Office` },
+              });
               return true;
             }
           }
@@ -1348,16 +1353,15 @@ export class BackOfficeService {
               `UPDATE orders SET status = 'CANCELLED', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
               [bill.order_id]
             );
-            await dbService.execute(
-              `INSERT INTO order_status_history (order_id, previous_status, new_status, changed_by, notes)
-               VALUES (?, ?, 'CANCELLED', ?, ?)`,
-              [
-                bill.order_id,
-                bill.order_status,
-                userId,
-                `Invoice ${reference} deleted from Back-Office`,
-              ]
-            );
+            // What the order was before, so restoring the invoice can put it back.
+            await AuditService.log({
+              userId,
+              action: 'ORDER_CANCELLED_BY_INVOICE_DELETE',
+              module: 'ORDERS',
+              recordId: bill.order_id,
+              oldValues: { status: bill.order_status },
+              newValues: { status: 'CANCELLED', invoice: reference, notes: `Invoice ${reference} deleted from Back-Office` },
+            });
             // The order survives as CANCELLED, so only the table is freed —
             // its queue token and history stay intact as a record of the day.
             await this.releaseTableFor(bill.order_id);

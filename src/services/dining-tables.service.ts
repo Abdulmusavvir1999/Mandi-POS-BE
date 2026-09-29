@@ -118,6 +118,8 @@ export class DiningTablesService {
               c.name as customer_name, 
               c.phone as customer_phone,
               o.total_amount as order_current_total,
+              o.status as order_status,
+              (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id) as order_item_count,
               tr.customer_name as reservation_customer,
               tr.reservation_time as reservation_time,
               tr.guest_count as reservation_guests,
@@ -158,6 +160,8 @@ export class DiningTablesService {
               c.name as customer_name, 
               c.phone as customer_phone,
               o.total_amount as order_current_total,
+              o.status as order_status,
+              (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id) as order_item_count,
               tr.customer_name as reservation_customer,
               tr.reservation_time as reservation_time,
               tr.guest_count as reservation_guests,
@@ -524,6 +528,60 @@ export class DiningTablesService {
       total: Number(summary?.sessions) || 0,
       page: opts.page,
       limit: opts.limit,
+    };
+  }
+
+  /** One past (or open) order on a table: its lines by kitchen round, and its bill if it has one. */
+  static async getHistoryDetail(orderId: number) {
+    await this.ensureSchema();
+    const order = await dbService.queryOne<any>(
+      `SELECT o.*, u.name AS staff_name, c.name AS customer_name, c.phone AS customer_phone,
+              t.table_number, t.section AS table_section
+       FROM orders o
+       LEFT JOIN users u ON u.id = o.created_by
+       LEFT JOIN customers c ON c.id = o.customer_id
+       LEFT JOIN dining_tables t ON t.id = o.dining_table_id
+       WHERE o.id = ? AND o.is_deleted = 0`,
+      [orderId]
+    );
+    if (!order) throw AppError.notFound('Order not found');
+
+    const items = await dbService.query<any>(
+      `SELECT id, product_name, variant_name, unit_price, quantity, subtotal, notes, addons_data,
+              item_type, is_complimentary, complimentary_reason, kot_round, created_at
+       FROM order_items WHERE order_id = ?
+       ORDER BY COALESCE(kot_round, 0) ASC, id ASC`,
+      [orderId]
+    );
+
+    const bill = await dbService.queryOne<any>(
+      `SELECT b.id, b.bill_number, b.subtotal, b.discount_amount, b.coupon_code, b.coupon_discount,
+              b.tax_amount, b.service_charge_amount, b.surcharge_amount, b.total_amount,
+              b.payment_method, b.payment_status, b.cash_tendered, b.change_returned,
+              b.is_voided, b.void_reason, b.created_at, u.name AS cashier_name
+       FROM bills b LEFT JOIN users u ON u.id = b.cashier_id
+       WHERE b.order_id = ? AND b.is_deleted = 0
+       ORDER BY b.id DESC LIMIT 1`,
+      [orderId]
+    );
+
+    const parseAddons = (raw: any) => {
+      try {
+        const a = raw ? JSON.parse(raw) : [];
+        return Array.isArray(a) ? a : [];
+      } catch (_) {
+        return [];
+      }
+    };
+
+    return {
+      order,
+      items: items.map((i) => ({
+        ...i,
+        is_complimentary: Boolean(Number(i.is_complimentary)),
+        selected_addons: parseAddons(i.addons_data),
+      })),
+      bill: bill ? { ...bill, is_voided: Boolean(Number(bill.is_voided)) } : null,
     };
   }
 

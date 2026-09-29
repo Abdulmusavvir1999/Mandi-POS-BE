@@ -228,7 +228,7 @@ export class ReportsSchema {
 
         // Per-user and per-product aggregates. Staff Track builds a roster by
         // joining six derived tables, each of which aggregates the whole of
-        // orders / bills / order_items / order_status_history / audit_logs
+        // orders / bills / order_items / audit_logs
         // before joining to a handful of user rows; the BI and finance reports
         // group bill_items by product. Leading each index with the column being
         // grouped on is what lets those aggregates use an index rather than
@@ -238,7 +238,9 @@ export class ReportsSchema {
         ['idx_orders_creator_live', 'orders', 'created_by, is_deleted, created_at'],
         ['idx_bills_cashier_live', 'bills', 'cashier_id, is_deleted, created_at'],
         ['idx_oi_order_qty', 'order_items', 'order_id, quantity'],
-        ['idx_osh_status_order', 'order_status_history', 'new_status, order_id, created_at'],
+        // An order's lifecycle (kitchen timeline, Staff Track attribution,
+        // invoice restore) is read from audit_logs by module + record_id.
+        ['idx_audit_module_record', 'audit_logs', 'module, record_id, action'],
         ['idx_audit_user_id', 'audit_logs', 'user_id, id'],
         ['idx_bi_product_cover', 'bill_items', 'product_id, bill_id, quantity, subtotal, discount_amount, total_amount'],
       ];

@@ -229,6 +229,15 @@ export class DiningTablesController {
     }
   }
 
+  static async getHistoryDetail(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await DiningTablesService.getHistoryDetail(ParamUtil.id(req.body?.orderId, 'orderId'));
+      ResponseUtil.success(res, result, 'Order details fetched');
+    } catch (err) {
+      next(err);
+    }
+  }
+
   // ─── Open dining tabs ───
   static async getTab(req: Request, res: Response, next: NextFunction) {
     try {

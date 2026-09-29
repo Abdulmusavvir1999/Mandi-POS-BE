@@ -23,6 +23,15 @@ export class ProductsController {
     }
   }
 
+  static async getSalesSummary(req: Request, res: Response, next: NextFunction) {
+    try {
+      const result = await ProductsService.getSalesSummary(ParamUtil.id(req.body?.productId, 'productId'));
+      ResponseUtil.success(res, result, 'Dish sales summary fetched');
+    } catch (err) {
+      next(err);
+    }
+  }
+
   static async getById(req: Request, res: Response, next: NextFunction) {
     try {
       const id = ParamUtil.id(req.params.id, 'id');

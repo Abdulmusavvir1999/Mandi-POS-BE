@@ -3,6 +3,7 @@ import { AppError } from '../errors/AppError';
 import { AuditService } from './audit.service';
 import { SettingsService } from './settings.service';
 import { CheckoutService } from './checkout.service';
+import { billMethodAmountSql } from '../utils/payment-split.sql';
 
 export interface CreateDayClosingPayload {
   openingCash: number;
@@ -39,10 +40,11 @@ export class PosClosingService {
     }>(`
       SELECT COUNT(*) as total_bills,
              COALESCE(SUM(CASE WHEN is_voided = 0 THEN total_amount ELSE 0 END), 0) as gross_sales,
-             COALESCE(SUM(CASE WHEN is_voided = 0 AND payment_method = 'CASH' THEN total_amount ELSE 0 END), 0) as cash_sales,
-             COALESCE(SUM(CASE WHEN is_voided = 0 AND payment_method = 'CARD' THEN total_amount ELSE 0 END), 0) as card_sales,
-             COALESCE(SUM(CASE WHEN is_voided = 0 AND payment_method = 'UPI' THEN total_amount ELSE 0 END), 0) as upi_sales,
-             COALESCE(SUM(CASE WHEN is_voided = 0 AND payment_method = 'ONLINE' THEN total_amount ELSE 0 END), 0) as online_sales,
+             -- Per mode, counting each part of a split bill (see payment-split.sql).
+             COALESCE(SUM(CASE WHEN is_voided = 0 THEN ${billMethodAmountSql('bills', 'CASH')} ELSE 0 END), 0) as cash_sales,
+             COALESCE(SUM(CASE WHEN is_voided = 0 THEN ${billMethodAmountSql('bills', 'CARD')} ELSE 0 END), 0) as card_sales,
+             COALESCE(SUM(CASE WHEN is_voided = 0 THEN ${billMethodAmountSql('bills', 'UPI')} ELSE 0 END), 0) as upi_sales,
+             COALESCE(SUM(CASE WHEN is_voided = 0 THEN ${billMethodAmountSql('bills', 'ONLINE')} ELSE 0 END), 0) as online_sales,
              COALESCE(SUM(CASE WHEN is_voided = 0 THEN (discount_amount + coupon_discount) ELSE 0 END), 0) as total_discounts,
              COALESCE(SUM(CASE WHEN is_voided = 0 THEN tax_amount ELSE 0 END), 0) as total_tax,
              COALESCE(SUM(CASE WHEN is_voided = 0 THEN service_charge_amount ELSE 0 END), 0) as total_service_charges,

@@ -1,6 +1,7 @@
 import { dbService } from '../database/db';
 import { AppError } from '../errors/AppError';
 import { AuditService } from './audit.service';
+import { CheckoutService } from './checkout.service';
 import { SettingsService } from './settings.service';
 import { OrderStatus, OrderType } from '../models';
 import { SequenceUtil } from '../utils/sequence.util';
@@ -156,19 +157,92 @@ export class OrdersService {
       [id]
     );
 
-    const history = await dbService.query(
-      `SELECT h.*, u.name as changed_by_name
-       FROM order_status_history h
-       LEFT JOIN users u ON h.changed_by = u.id
-       WHERE h.order_id = ?
-       ORDER BY h.created_at ASC`,
-      [id]
-    );
+    const history = await this.lifecycle(id);
 
     return decorateDocument({
       ...(order as any),
       items,
       history,
+    });
+  }
+
+  /**
+   * The order's timeline for the kitchen drawer, read from audit_logs (the
+   * order_status_history table was dropped: it only duplicated these
+   * entries). Covers creation, status changes, kitchen rounds, removed
+   * lines, a cancelled tab and the bill that closed it.
+   */
+  private static async lifecycle(orderId: number) {
+    const rows = await dbService.query<any>(
+      `SELECT a.id, a.action, a.old_values, a.new_values, a.created_at, u.name AS changed_by_name
+       FROM audit_logs a
+       LEFT JOIN users u ON u.id = a.user_id
+       WHERE (a.record_id = ? AND (
+                (a.module = 'ORDERS' AND a.action IN ('ORDER_CREATED', 'ORDER_STATUS_CHANGED', 'ORDER_KITCHEN_READY', 'ORDER_CANCELLED_BY_INVOICE_DELETE'))
+             OR (a.module = 'DINING' AND a.action IN ('DINING_KOT_SENT', 'DINING_TAB_LINE_REMOVED', 'DINING_TAB_CANCELLED'))))
+          OR (a.module = 'CHECKOUT' AND a.action = 'ORDER_CHECKOUT_COMPLETED'
+              AND a.record_id IN (SELECT CAST(b.id AS CHAR) FROM bills b WHERE b.order_id = ?))
+       ORDER BY a.created_at ASC, a.id ASC`,
+      [String(orderId), orderId]
+    );
+
+    const parse = (raw: any) => {
+      if (!raw) return {};
+      if (typeof raw === 'object') return raw;
+      try {
+        return JSON.parse(raw) || {};
+      } catch (_) {
+        return {};
+      }
+    };
+
+    return rows.map((r) => {
+      const oldV = parse(r.old_values);
+      const newV = parse(r.new_values);
+      let status = '';
+      let notes = '';
+      switch (r.action) {
+        case 'ORDER_CREATED':
+          status = 'IN_PROGRESS';
+          notes = 'Order created';
+          break;
+        case 'ORDER_STATUS_CHANGED':
+          status = newV.status || '';
+          notes = newV.notes || `Status updated to ${status}`;
+          break;
+        case 'ORDER_CANCELLED_BY_INVOICE_DELETE':
+          status = 'CANCELLED';
+          notes = newV.notes || 'Invoice deleted from Back-Office';
+          break;
+        case 'ORDER_KITCHEN_READY':
+          status = 'SERVED';
+          notes = newV.notes || 'Kitchen: served, bill still open';
+          break;
+        case 'DINING_KOT_SENT':
+          status = `KOT ${newV.round ?? ''}`.trim();
+          notes = `${newV.lines ?? ''} ${Number(newV.lines) === 1 ? 'line' : 'lines'} sent to the kitchen`.trim();
+          break;
+        case 'DINING_TAB_LINE_REMOVED':
+          status = 'ITEM REMOVED';
+          notes = `${oldV.quantity ?? ''}× ${oldV.product ?? 'item'}${newV.reason ? ` · ${newV.reason}` : ''}`.trim();
+          break;
+        case 'DINING_TAB_CANCELLED':
+          status = 'CANCELLED';
+          notes = newV.reason ? `Tab cancelled: ${newV.reason}` : 'Tab cancelled';
+          break;
+        case 'ORDER_CHECKOUT_COMPLETED':
+          status = 'COMPLETED';
+          notes = `Billed ${newV.billNumber || ''} · ${newV.paymentMethod || ''}`.trim();
+          break;
+      }
+      return {
+        id: r.id,
+        previous_status: oldV.status || null,
+        new_status: status,
+        notes,
+        changed_by_name: r.changed_by_name || null,
+        created_at: r.created_at,
+      };
     });
   }
 
@@ -281,13 +355,14 @@ export class OrdersService {
       const taxableAmount = Math.max(0, subtotal - discountAmount);
       const { tax: taxAmount, gross: totalAmount } = splitTax(taxableAmount, taxPolicy);
 
-      // Insert Order
+      // Insert Order. There is no separate "new" stage: an order is Processing
+      // (IN_PROGRESS) from the moment it is placed until it is completed.
       const res = await dbService.execute(
         `INSERT INTO orders (
           order_number, customer_id, dining_table_id, order_type,
           status, subtotal, discount_type, discount_value,
           discount_amount, tax_amount, total_amount, notes, created_by
-        ) VALUES (?, ?, ?, ?, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, 'IN_PROGRESS', ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           orderNumber,
           data.customerId || null,
@@ -333,13 +408,6 @@ export class OrdersService {
         );
       }
 
-      // Record Order History
-      await dbService.execute(
-        `INSERT INTO order_status_history (order_id, previous_status, new_status, changed_by, notes)
-         VALUES (?, NULL, 'PENDING', ?, 'Order created')`,
-        [orderId, userId]
-      );
-
       // Lock Dining table if Dining
       if (data.orderType === 'DINING' && data.diningTableId) {
         await dbService.execute(
@@ -367,7 +435,8 @@ export class OrdersService {
 
     // State Transition Rules (Section 39)
     const validTransitions: Record<OrderStatus, OrderStatus[]> = {
-      PENDING: ['IN_PROGRESS', 'CANCELLED'],
+      // PENDING is no longer produced; an old one may still finish or be cancelled.
+      PENDING: ['IN_PROGRESS', 'COMPLETED', 'CANCELLED'],
       IN_PROGRESS: ['COMPLETED', 'CANCELLED'],
       COMPLETED: [], // terminal state
       CANCELLED: [], // terminal state
@@ -378,18 +447,37 @@ export class OrdersService {
       throw AppError.badRequest(`Invalid status transition from ${currentStatus} to ${newStatus}`);
     }
 
+    // An open dining tab is COMPLETED by its bill, not by the kitchen. When
+    // the kitchen marks it ready, record that and leave the order open -
+    // closing it here let the table be released with the food never billed.
+    if (newStatus === 'COMPLETED' && order.dining_table_id) {
+      const bill = await dbService.queryOne<{ id: number }>(
+        'SELECT id FROM bills WHERE order_id = ? AND is_deleted = 0 LIMIT 1',
+        [id]
+      );
+      if (!bill) {
+        await CheckoutService.ensureSchema();
+        await dbService.execute(
+          `UPDATE orders SET kitchen_status = 'READY', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+          [id]
+        );
+        await AuditService.log({
+          userId,
+          action: 'ORDER_KITCHEN_READY',
+          module: 'ORDERS',
+          recordId: id,
+          newValues: { kitchenStatus: 'READY', notes },
+        });
+        return await this.getById(id);
+      }
+    }
+
     return await dbService.transaction(async () => {
       await dbService.execute(
         `UPDATE orders
          SET status = ?, updated_at = CURRENT_TIMESTAMP
          WHERE id = ?`,
         [newStatus, id]
-      );
-
-      await dbService.execute(
-        `INSERT INTO order_status_history (order_id, previous_status, new_status, changed_by, notes)
-         VALUES (?, ?, ?, ?, ?)`,
-        [id, currentStatus, newStatus, userId, notes || `Status updated to ${newStatus}`]
       );
 
       // If cancelled and was dining, release table

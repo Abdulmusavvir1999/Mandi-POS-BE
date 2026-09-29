@@ -31,6 +31,7 @@ router.post('/tab/cancel', authenticate, requirePermission('pos.billing'), Dinin
 
 // Table history page (filters + paging in the body)
 router.post('/history', authenticate, DiningTablesController.getTableHistoryPage);
+router.post('/history/detail', authenticate, DiningTablesController.getHistoryDetail);
 
 // Table Specific Handlers
 router.get('/:id', authenticate, DiningTablesController.getById);
