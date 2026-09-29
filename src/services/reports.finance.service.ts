@@ -1,6 +1,7 @@
 import { dbService } from '../database/db';
 import { ReportsSchema } from '../database/reports.schema';
 import { BillScope, Granularity, ReportQuery, ReportRange } from '../utils/reports.query';
+import { LINE_UNIT_STOCK_COST } from '../utils/stock-cost.sql';
 
 export interface FinanceReportOptions extends BillScope {
   range: ReportRange;
@@ -779,7 +780,7 @@ export class ReportsFinanceService {
     const previousRange = ReportQuery.previousRange(options.range);
 
     const cogsSql = (clause: string) => `
-      SELECT COALESCE(SUM(bi.quantity * COALESCE(bi.stock_consumption, 1) * COALESCE(si.average_unit_price, 0)), 0) AS cogs
+      SELECT COALESCE(SUM(bi.quantity * ${LINE_UNIT_STOCK_COST}), 0) AS cogs
       FROM bill_items bi
       JOIN bills b ON bi.bill_id = b.id
       JOIN products p ON bi.product_id = p.id
@@ -821,7 +822,7 @@ export class ReportsFinanceService {
         ),
         dbService.query(
           `SELECT ${bucket.label} AS period,
-                  COALESCE(SUM(bi.quantity * COALESCE(bi.stock_consumption, 1) * COALESCE(si.average_unit_price, 0)), 0) AS cogs
+                  COALESCE(SUM(bi.quantity * ${LINE_UNIT_STOCK_COST}), 0) AS cogs
            FROM bill_items bi
            JOIN bills b ON bi.bill_id = b.id
            JOIN products p ON bi.product_id = p.id

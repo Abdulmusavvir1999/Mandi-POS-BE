@@ -2,6 +2,7 @@ import { dbService } from '../database/db';
 import { AppError } from '../errors/AppError';
 import { AuditService } from './audit.service';
 import { logger } from '../config/logger';
+import { SchemaUtil } from '../utils/schema.util';
 
 export interface CreateAddonInput {
   name: string;
@@ -25,9 +26,9 @@ export interface CreateComboDealInput {
   savings_amount?: number;
   is_available?: boolean;
   status?: 'ACTIVE' | 'INACTIVE';
+  /** The add-ons the deal bundles, each with how many of it one combo serves. */
   items: Array<{
-    product_id: number;
-    variant_id?: number | null;
+    addon_id: number;
     quantity: number;
   }>;
 }
@@ -131,14 +132,26 @@ export class AddonsCombosService {
         CREATE TABLE IF NOT EXISTS combo_deal_items (
           id INT AUTO_INCREMENT PRIMARY KEY,
           combo_id INT NOT NULL,
-          product_id INT NOT NULL,
-          variant_id INT NULL,
+          addon_id INT NOT NULL,
           quantity INT NOT NULL DEFAULT 1,
           display_order INT DEFAULT 0,
           INDEX idx_cdi_combo (combo_id),
-          INDEX idx_cdi_product (product_id)
+          INDEX idx_cdi_addon (addon_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
       `);
+
+      // A combo is made of add-ons, not dishes. On a database that still has
+      // the dish-based shape, the dish rows go (they cannot be translated into
+      // add-ons) and the table moves to addon_id.
+      if (await SchemaUtil.columnExists('combo_deal_items', 'product_id')) {
+        await dbService.execute('DELETE FROM combo_deal_items');
+        await SchemaUtil.dropColumn('combo_deal_items', 'variant_id');
+        await SchemaUtil.dropColumn('combo_deal_items', 'product_id');
+        logger.info('combo_deal_items moved from dishes to add-ons; the old dish rows were removed.');
+      }
+      await SchemaUtil.addColumn('combo_deal_items', 'addon_id', 'INT NOT NULL AFTER combo_id');
+      await SchemaUtil.addForeignKey('combo_deal_items', 'combo_id', 'combo_deals', 'fk_cdi_combo', 'CASCADE');
+      await SchemaUtil.addForeignKey('combo_deal_items', 'addon_id', 'product_addons', 'fk_cdi_addon', 'CASCADE');
 
       // 5. product_addons image_url column migration
       const addonImageCol = await dbService.queryOne<{ count: number }>(
@@ -433,6 +446,27 @@ export class AddonsCombosService {
   // COMBO DEALS METHODS
   // ═════════════════════════════════════════════════════════════════════════════
 
+  /** Every combo line must name a live add-on and a whole quantity of at least 1. */
+  private static async assertComboAddons(items: CreateComboDealInput['items'] | undefined): Promise<void> {
+    for (const item of items || []) {
+      const addonId = Number(item?.addon_id);
+      const qty = Number(item?.quantity ?? 1);
+      if (!Number.isInteger(addonId) || addonId <= 0) {
+        throw AppError.badRequest('Each combo item must pick an add-on.');
+      }
+      if (!Number.isInteger(qty) || qty < 1) {
+        throw AppError.badRequest('Each combo item needs a quantity of at least 1.');
+      }
+      const addon = await dbService.queryOne<{ id: number }>(
+        'SELECT id FROM product_addons WHERE id = ? AND is_deleted = 0',
+        [addonId]
+      );
+      if (!addon) {
+        throw AppError.badRequest(`Add-on ${addonId} does not exist or has been deleted.`);
+      }
+    }
+  }
+
   public static async getComboDeals(status?: string) {
     await this.ensureSchema();
     let sql = 'SELECT * FROM combo_deals WHERE 1=1';
@@ -446,11 +480,9 @@ export class AddonsCombosService {
     const combos = await dbService.query(sql, params);
     for (const combo of combos) {
       combo.items = await dbService.query(`
-        SELECT cdi.*, p.name as product_name, p.image_url as product_image, COALESCE(pv.selling_price, (SELECT MIN(pv2.selling_price) FROM product_variants pv2 WHERE pv2.product_id = p.id), 0) as product_price,
-               pv.name as variant_name, pv.selling_price as variant_price
+        SELECT cdi.*, a.name as addon_name, a.image_url as addon_image, a.price as addon_price, a.stock_id as addon_stock_id
         FROM combo_deal_items cdi
-        JOIN products p ON cdi.product_id = p.id
-        LEFT JOIN product_variants pv ON cdi.variant_id = pv.id
+        JOIN product_addons a ON cdi.addon_id = a.id
         WHERE cdi.combo_id = ?
         ORDER BY cdi.display_order ASC
       `, [combo.id]);
@@ -465,11 +497,9 @@ export class AddonsCombosService {
     if (!combo) throw AppError.notFound('Combo deal not found');
 
     combo.items = await dbService.query(`
-      SELECT cdi.*, p.name as product_name, p.image_url as product_image, COALESCE(pv.selling_price, (SELECT MIN(pv2.selling_price) FROM product_variants pv2 WHERE pv2.product_id = p.id), 0) as product_price,
-             pv.name as variant_name, pv.selling_price as variant_price
+      SELECT cdi.*, a.name as addon_name, a.image_url as addon_image, a.price as addon_price, a.stock_id as addon_stock_id
       FROM combo_deal_items cdi
-      JOIN products p ON cdi.product_id = p.id
-      LEFT JOIN product_variants pv ON cdi.variant_id = pv.id
+      JOIN product_addons a ON cdi.addon_id = a.id
       WHERE cdi.combo_id = ?
       ORDER BY cdi.display_order ASC
     `, [id]);
@@ -483,6 +513,8 @@ export class AddonsCombosService {
     const originalPrice = Number(input.original_price) || Number(input.combo_price);
     const comboPrice = Number(input.combo_price) || 0;
     const savings = Math.max(0, originalPrice - comboPrice);
+
+    await this.assertComboAddons(input.items);
 
     // Header and its lines are one deal: a failure between them left a combo
     // on the menu with no items, or only the first few.
@@ -510,9 +542,9 @@ export class AddonsCombosService {
         for (let i = 0; i < input.items.length; i++) {
           const item = input.items[i];
           await dbService.execute(
-            `INSERT INTO combo_deal_items (combo_id, product_id, variant_id, quantity, display_order)
-             VALUES (?, ?, ?, ?, ?)`,
-            [comboId, item.product_id, item.variant_id || null, item.quantity || 1, i + 1]
+            `INSERT INTO combo_deal_items (combo_id, addon_id, quantity, display_order)
+             VALUES (?, ?, ?, ?)`,
+            [comboId, item.addon_id, item.quantity || 1, i + 1]
           );
         }
       }
@@ -543,6 +575,8 @@ export class AddonsCombosService {
     const isAvail = input.is_available !== undefined ? (input.is_available ? 1 : 0) : existing.is_available;
     const status = input.status !== undefined ? input.status : existing.status;
 
+    if (input.items !== undefined) await this.assertComboAddons(input.items);
+
     // The item list is replaced by clearing it first, so an failure between
     // the DELETE and the re-INSERT emptied the combo outright. Grouped so it
     // either swaps to the new list or keeps the old one.
@@ -559,9 +593,9 @@ export class AddonsCombosService {
         for (let i = 0; i < input.items.length; i++) {
           const item = input.items[i];
           await dbService.execute(
-            `INSERT INTO combo_deal_items (combo_id, product_id, variant_id, quantity, display_order)
-             VALUES (?, ?, ?, ?, ?)`,
-            [id, item.product_id, item.variant_id || null, item.quantity || 1, i + 1]
+            `INSERT INTO combo_deal_items (combo_id, addon_id, quantity, display_order)
+             VALUES (?, ?, ?, ?)`,
+            [id, item.addon_id, item.quantity || 1, i + 1]
           );
         }
       }

@@ -40,9 +40,12 @@ export class DraftBillsService {
     }
 
     const items = await dbService.query(
-      `SELECT dbi.*, p.sku, p.image_url, s.current_quantity AS current_stock
+      `SELECT dbi.*, COALESCE(p.sku, cd.combo_code) AS sku, COALESCE(p.image_url, pa.image_url, cd.image_url) AS image_url,
+              s.current_quantity AS current_stock
        FROM draft_bill_items dbi
-       JOIN products p ON dbi.product_id = p.id
+       LEFT JOIN products p ON dbi.product_id = p.id
+       LEFT JOIN product_addons pa ON pa.id = dbi.addon_id
+       LEFT JOIN combo_deals cd ON cd.id = dbi.combo_id
        LEFT JOIN stocks s ON p.stock_id = s.id
        WHERE dbi.draft_bill_id = ?`,
       [id]
@@ -61,7 +64,15 @@ export class DraftBillsService {
     discountType?: 'FIXED' | 'PERCENTAGE';
     discountValue?: number;
     notes?: string;
-    items: Array<{ productId: number; quantity: number; unitPrice?: number; notes?: string }>;
+    items: Array<{
+      productId?: number | null;
+      quantity: number;
+      unitPrice?: number;
+      notes?: string;
+      itemType?: 'PRODUCT' | 'COMBO' | 'ADDON';
+      comboId?: number | null;
+      addonId?: number | null;
+    }>;
   }, userId: number) {
     if (!data.items || data.items.length === 0) {
       throw AppError.badRequest('Draft bill must contain at least one item');
@@ -93,28 +104,61 @@ export class DraftBillsService {
       const draftId = res.lastInsertRowid;
 
       for (const item of data.items) {
-        const product = await dbService.queryOne<{ id: number; name: string }>(
-          'SELECT id, name FROM products WHERE id = ?',
-          [item.productId]
-        );
-        if (!product) {
-          throw AppError.badRequest(`Product ID ${item.productId} does not exist`);
-        }
+        // A held line is a dish, a combo or a stand-alone add-on; each names
+        // its own row and is priced from it unless the till sent a price.
+        const itemType = item.itemType === 'COMBO' || item.itemType === 'ADDON' ? item.itemType : 'PRODUCT';
+        let productId: number | null = null;
+        let name: string;
+        let listPrice = 0;
 
-        let variantPrice = 0;
-        const variant = await dbService.queryOne<{ selling_price: number }>(
-          'SELECT selling_price FROM product_variants WHERE product_id = ? ORDER BY is_default DESC, display_order ASC, id ASC LIMIT 1',
-          [product.id]
-        );
-        if (variant) {
-          variantPrice = Number(variant.selling_price);
+        if (itemType === 'COMBO') {
+          const combo = await dbService.queryOne<{ name: string; combo_price: number }>(
+            'SELECT name, combo_price FROM combo_deals WHERE id = ? AND is_deleted = 0',
+            [item.comboId]
+          );
+          if (!combo) throw AppError.badRequest(`Combo deal ${item.comboId} does not exist`);
+          name = combo.name;
+          listPrice = Number(combo.combo_price) || 0;
+        } else if (itemType === 'ADDON') {
+          const addon = await dbService.queryOne<{ name: string; price: number }>(
+            'SELECT name, price FROM product_addons WHERE id = ? AND is_deleted = 0',
+            [item.addonId]
+          );
+          if (!addon) throw AppError.badRequest(`Add-on ${item.addonId} does not exist`);
+          name = addon.name;
+          listPrice = Number(addon.price) || 0;
+        } else {
+          const product = await dbService.queryOne<{ id: number; name: string }>(
+            'SELECT id, name FROM products WHERE id = ?',
+            [item.productId]
+          );
+          if (!product) {
+            throw AppError.badRequest(`Product ID ${item.productId} does not exist`);
+          }
+          const variant = await dbService.queryOne<{ selling_price: number }>(
+            'SELECT selling_price FROM product_variants WHERE product_id = ? ORDER BY is_default DESC, display_order ASC, id ASC LIMIT 1',
+            [product.id]
+          );
+          productId = product.id;
+          name = product.name;
+          listPrice = variant ? Number(variant.selling_price) : 0;
         }
-        const price = item.unitPrice !== undefined ? item.unitPrice : variantPrice;
+        const price = item.unitPrice !== undefined ? item.unitPrice : listPrice;
 
         await dbService.execute(
-          `INSERT INTO draft_bill_items (draft_bill_id, product_id, product_name, quantity, unit_price, notes)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-          [draftId, product.id, product.name, item.quantity, price, item.notes || null]
+          `INSERT INTO draft_bill_items (draft_bill_id, product_id, product_name, quantity, unit_price, notes, item_type, combo_id, addon_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            draftId,
+            productId,
+            name,
+            item.quantity,
+            price,
+            item.notes || null,
+            itemType,
+            itemType === 'COMBO' ? Number(item.comboId) : null,
+            itemType === 'ADDON' ? Number(item.addonId) : null,
+          ]
         );
       }
 

@@ -561,31 +561,22 @@ export class RefundsService {
     userId: number
   ): Promise<void> {
     for (const line of lines) {
-      if (!line.productId) continue;
       try {
-        // Back to the stock item the sale drew on, in stock units: a variant
-        // with its own item uses that one, at stock_consumption per dish.
-        const source = await dbService.queryOne<{ stock_id: number | null; stock_consumption: number }>(
-          `SELECT COALESCE(v.stock_id, p.stock_id) AS stock_id, COALESCE(bi.stock_consumption, 1) AS stock_consumption
-           FROM bill_items bi
-           JOIN products p ON p.id = bi.product_id
-           LEFT JOIN product_variants v ON v.id = bi.variant_id
-           WHERE bi.id = ?`,
-          [line.billItemId]
-        );
-        if (!source?.stock_id) continue;
-
-        await StockService.adjustStock(
-          {
-            stockId: source.stock_id,
-            adjustmentType: 'return',
-            quantity: line.quantity * Number(source.stock_consumption),
-            reason: `Customer refund ${refundNumber}`,
-            notes: `Returned to stock from refund ${refundNumber}`,
-          },
-          userId,
-          { type: 'REFUND', id: refundNumber }
-        );
+        // Back to every stock item the sale drew on, in stock units: a dish's
+        // (or its variant's) item, an add-on's, or each add-on inside a combo.
+        for (const usage of await StockService.billItemStockPerUnit(line.billItemId)) {
+          await StockService.adjustStock(
+            {
+              stockId: usage.stockId,
+              adjustmentType: 'return',
+              quantity: line.quantity * usage.perUnit,
+              reason: `Customer refund ${refundNumber}`,
+              notes: `Returned to stock from refund ${refundNumber}`,
+            },
+            userId,
+            { type: 'REFUND', id: refundNumber }
+          );
+        }
       } catch (err) {
         logger.warn(`Could not restock ${line.productName} for refund ${refundNumber}:`, err);
       }

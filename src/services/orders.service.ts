@@ -96,9 +96,11 @@ export class OrdersService {
     if (orders.length > 0) {
       const orderIds = orders.map((o: any) => o.id);
       const items = await dbService.query(
-        `SELECT oi.*, p.sku, p.image_url
+        `SELECT oi.*, COALESCE(p.sku, cd.combo_code) AS sku, COALESCE(p.image_url, pa.image_url, cd.image_url) AS image_url
          FROM order_items oi
-         JOIN products p ON oi.product_id = p.id
+         LEFT JOIN products p ON oi.product_id = p.id
+         LEFT JOIN product_addons pa ON pa.id = oi.addon_id
+         LEFT JOIN combo_deals cd ON cd.id = oi.combo_id
          WHERE oi.order_id IN (${orderIds.map(() => '?').join(',')})`,
         orderIds
       );
@@ -145,9 +147,11 @@ export class OrdersService {
     }
 
     const items = await dbService.query(
-      `SELECT oi.*, p.sku, p.image_url
+      `SELECT oi.*, COALESCE(p.sku, cd.combo_code) AS sku, COALESCE(p.image_url, pa.image_url, cd.image_url) AS image_url
        FROM order_items oi
-       JOIN products p ON oi.product_id = p.id
+       LEFT JOIN products p ON oi.product_id = p.id
+       LEFT JOIN product_addons pa ON pa.id = oi.addon_id
+       LEFT JOIN combo_deals cd ON cd.id = oi.combo_id
        WHERE oi.order_id = ?`,
       [id]
     );

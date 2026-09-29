@@ -3,6 +3,10 @@ import { ReportsSchema } from '../database/reports.schema';
 import { BillScope, Granularity, ReportQuery, ReportRange } from '../utils/reports.query';
 import { ReportsSalesService } from './reports.sales.service';
 import { ReportsFinanceService } from './reports.finance.service';
+import { lineUnitStockCost } from '../utils/stock-cost.sql';
+
+// Older bills' cost: the dish's own stock item, one unit per unit sold.
+const DISH_LINK_COST = 'COALESCE((SELECT AVG(si.average_unit_price) FROM stocks si WHERE si.id = p.stock_id), 0)';
 
 export interface BiReportOptions extends BillScope {
   range: ReportRange;
@@ -51,7 +55,7 @@ export class ReportsBiService {
            COALESCE(SUM(bi.quantity), 0)                            AS quantity_sold,
            COUNT(DISTINCT bi.bill_id)                               AS bills_count,
            COALESCE(SUM(bi.total_amount), 0)                        AS revenue,
-           COALESCE(SUM(bi.quantity * COALESCE((SELECT AVG(si.average_unit_price) FROM stocks si WHERE si.id = p.stock_id), 0)), 0) AS cogs,
+           COALESCE(SUM(bi.quantity * ${lineUnitStockCost(DISH_LINK_COST)}), 0) AS cogs,
            COALESCE(SUM(bi.discount_amount), 0)                     AS discount_given,
            MIN(b.created_at)                                        AS first_sold_at,
            MAX(b.created_at)                                        AS last_sold_at

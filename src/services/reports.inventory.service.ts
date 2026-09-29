@@ -1,6 +1,10 @@
 import { dbService } from '../database/db';
 import { ReportsSchema } from '../database/reports.schema';
 import { Granularity, ReportQuery, ReportRange } from '../utils/reports.query';
+import { lineUnitStockCost } from '../utils/stock-cost.sql';
+
+// Older bills' cost: the dish's own stock item, one unit per unit sold.
+const DISH_LINK_COST = 'COALESCE((SELECT AVG(si.average_unit_price) FROM stocks si WHERE si.id = p.stock_id), 0)';
 
 export interface InventoryReportOptions {
   range: ReportRange;
@@ -742,7 +746,7 @@ export class ReportsInventoryService {
       dbService.queryOne(
         `SELECT
            COALESCE(SUM(bi.total_amount), 0)                        AS revenue,
-           COALESCE(SUM(bi.quantity * COALESCE((SELECT AVG(si.average_unit_price) FROM stocks si WHERE si.id = p.stock_id), 0)), 0) AS cogs,
+           COALESCE(SUM(bi.quantity * ${lineUnitStockCost(DISH_LINK_COST)}), 0) AS cogs,
            COALESCE(SUM(bi.quantity), 0)                            AS quantity_sold,
            COUNT(DISTINCT bi.bill_id)                               AS bills_count
          FROM bill_items bi
@@ -757,7 +761,7 @@ export class ReportsInventoryService {
            c.id                                                     AS category_id,
            COALESCE(SUM(bi.quantity), 0)                            AS quantity_sold,
            COALESCE(SUM(bi.total_amount), 0)                        AS revenue,
-           COALESCE(SUM(bi.quantity * COALESCE((SELECT AVG(si.average_unit_price) FROM stocks si WHERE si.id = p.stock_id), 0)), 0) AS cogs
+           COALESCE(SUM(bi.quantity * ${lineUnitStockCost(DISH_LINK_COST)}), 0) AS cogs
          FROM bill_items bi
          JOIN bills b ON bi.bill_id = b.id
          JOIN products p ON bi.product_id = p.id
@@ -776,7 +780,7 @@ export class ReportsInventoryService {
            COALESCE((SELECT MIN(pv.selling_price) FROM product_variants pv WHERE pv.product_id = p.id), 0) AS selling_price,
            COALESCE(SUM(bi.quantity), 0)                            AS quantity_sold,
            COALESCE(SUM(bi.total_amount), 0)                        AS revenue,
-           COALESCE(SUM(bi.quantity * COALESCE((SELECT AVG(si.average_unit_price) FROM stocks si WHERE si.id = p.stock_id), 0)), 0) AS cogs
+           COALESCE(SUM(bi.quantity * ${lineUnitStockCost(DISH_LINK_COST)}), 0) AS cogs
          FROM bill_items bi
          JOIN bills b ON bi.bill_id = b.id
          JOIN products p ON bi.product_id = p.id
@@ -791,7 +795,7 @@ export class ReportsInventoryService {
            ${bucket.label}                                          AS period,
            ${bucket.start}                                          AS period_start,
            COALESCE(SUM(bi.total_amount), 0)                        AS revenue,
-           COALESCE(SUM(bi.quantity * COALESCE((SELECT AVG(si.average_unit_price) FROM stocks si WHERE si.id = p.stock_id), 0)), 0) AS cogs
+           COALESCE(SUM(bi.quantity * ${lineUnitStockCost(DISH_LINK_COST)}), 0) AS cogs
          FROM bill_items bi
          JOIN bills b ON bi.bill_id = b.id
          JOIN products p ON bi.product_id = p.id
@@ -1147,6 +1151,9 @@ export class ReportsInventoryService {
     const billScope = ReportQuery.bills('b', options.range);
     const consumptionExpr = caps.billItemConsumption ? 'COALESCE(bi.stock_consumption, 1)' : '1';
 
+    // Lines sold since bill_item_stock_usage exists count every stock item
+    // they drew (a Multi Stock recipe, each add-on in a combo) from their own
+    // record; older lines resolve through the dish's link as before.
     const rows = await dbService.query(
       `SELECT
          si.id                                    AS stock_id,
@@ -1154,16 +1161,27 @@ export class ReportsInventoryService {
          si.name                                  AS item_name,
          si.unit_type,
          si.average_unit_price,
-         COALESCE(SUM(bi.quantity * ${consumptionExpr}), 0) AS sold_quantity,
-         COALESCE(SUM(bi.quantity * ${consumptionExpr} * si.average_unit_price), 0) AS sold_value
-       FROM bill_items bi
-       JOIN bills b ON bi.bill_id = b.id
-       JOIN products p ON bi.product_id = p.id
-       JOIN stocks si ON p.stock_id = si.id
-       ${billScope.where}
+         COALESCE(SUM(d.drawn), 0)                      AS sold_quantity,
+         COALESCE(SUM(d.drawn * si.average_unit_price), 0) AS sold_value
+       FROM (
+         SELECT r.stock_id, bi.quantity * r.quantity_per_unit AS drawn
+         FROM bill_items bi
+         JOIN bills b ON bi.bill_id = b.id
+         JOIN bill_item_stock_usage r ON r.bill_item_id = bi.id
+         ${billScope.where}
+         UNION ALL
+         SELECT p.stock_id, bi.quantity * ${consumptionExpr}
+         FROM bill_items bi
+         JOIN bills b ON bi.bill_id = b.id
+         JOIN products p ON bi.product_id = p.id
+         ${billScope.where}
+           AND p.stock_id IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM bill_item_stock_usage r2 WHERE r2.bill_item_id = bi.id)
+       ) d
+       JOIN stocks si ON si.id = d.stock_id
        GROUP BY si.id, si.stock_code, si.name, si.unit_type, si.average_unit_price
        ORDER BY sold_value DESC`,
-      billScope.params
+      [...billScope.params, ...billScope.params]
     );
 
     const items = ReportQuery.numbers(rows, ['average_unit_price', 'sold_quantity', 'sold_value']);

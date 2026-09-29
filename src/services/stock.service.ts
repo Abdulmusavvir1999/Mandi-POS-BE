@@ -461,7 +461,14 @@ export class StockService {
     const stockItems = await dbService.query(
       `SELECT si.*,
               (si.current_quantity <= si.min_stock_alert) as is_low_stock,
-              si.current_quantity as current_stock
+              si.current_quantity as current_stock,
+              -- Balance right after the latest stock-in: the "full" mark for
+              -- the stock-level bar, so an untouched purchase reads 100%.
+              (SELECT sm.balance_quantity
+                 FROM stock_movements sm
+                WHERE sm.stock_id = si.id AND sm.movement_type = 'in' AND sm.quantity > 0
+                ORDER BY sm.id DESC
+                LIMIT 1) as last_restock_quantity
        FROM stocks si
        ${where}
        ORDER BY (si.current_quantity <= si.min_stock_alert) DESC, si.name ASC
@@ -1619,23 +1626,78 @@ export class StockService {
   }
 
   /**
-   * The stock a bill's lines drew on, per stock item. Resolved the way
-   * checkout resolves it: a variant with its own stock item draws on that
-   * one, otherwise the dish's, at stock_consumption per unit sold.
+   * What each bill line drew from stock.
+   *
+   * A line sold since bill_item_stock_usage exists carries its own record of
+   * that (quantity_per_unit per stock item, written at checkout), and it is
+   * used as-is: it is the only source that knows a Multi Stock portion's
+   * recipe as it was when sold, and it survives the dish being edited.
+   *
+   * Older lines have no record and are resolved the way checkout resolved
+   * them: a dish draws on its variant's stock item or else its own, at
+   * stock_consumption per unit; a stand-alone add-on draws one of its stock
+   * item per unit; a combo draws each bundled add-on's stock item, at the
+   * add-on's quantity per combo. The filter picks the lines, one ? parameter.
    */
-  static async billStockUsage(billId: number): Promise<{ stockId: number; quantity: number }[]> {
-    const rows = await dbService.query<{ stock_id: number; quantity: number }>(
-      `SELECT COALESCE(v.stock_id, p.stock_id) AS stock_id,
-              SUM(COALESCE(bi.stock_consumption, 1) * bi.quantity) AS quantity
-       FROM bill_items bi
-       JOIN products p ON p.id = bi.product_id
-       LEFT JOIN product_variants v ON v.id = bi.variant_id
-       WHERE bi.bill_id = ? AND COALESCE(v.stock_id, p.stock_id) IS NOT NULL
-       GROUP BY COALESCE(v.stock_id, p.stock_id)`,
-      [billId]
+  private static async lineStockUsage(filter: string, id: number) {
+    const unrecorded = 'NOT EXISTS (SELECT 1 FROM bill_item_stock_usage r WHERE r.bill_item_id = bi.id)';
+    return await dbService.query<{ bill_item_id: number; line_quantity: number; stock_id: number; quantity: number }>(
+      `SELECT u.bill_item_id, u.line_quantity, u.stock_id, u.quantity FROM (
+         SELECT bi.id AS bill_item_id, bi.quantity AS line_quantity,
+                r.stock_id AS stock_id,
+                r.quantity_per_unit * bi.quantity AS quantity
+         FROM bill_items bi
+         JOIN bill_item_stock_usage r ON r.bill_item_id = bi.id
+         WHERE ${filter}
+         UNION ALL
+         SELECT bi.id, bi.quantity,
+                COALESCE(
+                  (SELECT x.stock_id FROM product_variant_stocks x
+                    WHERE x.variant_id = bi.variant_id
+                    ORDER BY x.display_order ASC, x.id ASC LIMIT 1),
+                  p.stock_id
+                ),
+                COALESCE(bi.stock_consumption, 1) * bi.quantity
+         FROM bill_items bi
+         JOIN products p ON p.id = bi.product_id
+         WHERE ${filter} AND COALESCE(bi.item_type, 'PRODUCT') NOT IN ('COMBO', 'ADDON') AND ${unrecorded}
+         UNION ALL
+         SELECT bi.id, bi.quantity, a.stock_id, bi.quantity
+         FROM bill_items bi
+         JOIN product_addons a ON a.id = bi.addon_id
+         WHERE ${filter} AND bi.item_type = 'ADDON' AND ${unrecorded}
+         UNION ALL
+         SELECT bi.id, bi.quantity, a.stock_id, cdi.quantity * bi.quantity
+         FROM bill_items bi
+         JOIN combo_deal_items cdi ON cdi.combo_id = bi.combo_id
+         JOIN product_addons a ON a.id = cdi.addon_id
+         WHERE ${filter} AND bi.item_type = 'COMBO' AND ${unrecorded}
+       ) u
+       WHERE u.stock_id IS NOT NULL AND u.quantity > 0`,
+      [id, id, id, id]
     );
+  }
+
+  /** The stock a whole bill drew on, per stock item: what a void, delete or restore reverses. */
+  static async billStockUsage(billId: number): Promise<{ stockId: number; quantity: number }[]> {
+    const totals = new Map<number, number>();
+    for (const r of await this.lineStockUsage('bi.bill_id = ?', billId)) {
+      totals.set(Number(r.stock_id), (totals.get(Number(r.stock_id)) ?? 0) + (Number(r.quantity) || 0));
+    }
+    return [...totals].map(([stockId, quantity]) => ({ stockId, quantity })).filter((r) => r.quantity > 0);
+  }
+
+  /**
+   * The stock one unit of a bill line drew on, per stock item, so a refund of
+   * part of the line can put back exactly its share.
+   */
+  static async billItemStockPerUnit(billItemId: number): Promise<{ stockId: number; perUnit: number }[]> {
+    const rows = await this.lineStockUsage('bi.id = ?', billItemId);
     return rows
-      .map((r) => ({ stockId: Number(r.stock_id), quantity: Number(r.quantity) || 0 }))
-      .filter((r) => r.quantity > 0);
+      .map((r) => ({
+        stockId: Number(r.stock_id),
+        perUnit: Number(r.line_quantity) > 0 ? (Number(r.quantity) || 0) / Number(r.line_quantity) : 0,
+      }))
+      .filter((r) => r.perUnit > 0);
   }
 }

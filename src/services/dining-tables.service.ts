@@ -4,6 +4,7 @@ import { AppError } from '../errors/AppError';
 import { AuditService } from './audit.service';
 import { TableStatus } from '../models';
 import { logger } from '../config/logger';
+import { ParamUtil } from '../utils/param.util';
 
 export interface CreateReservationInput {
   tableId?: number;
@@ -17,6 +18,16 @@ export interface CreateReservationInput {
 
 export class DiningTablesService {
   private static schemaEnsured = false;
+
+  /**
+   * Current time on the database clock. seated_at / cleaning_started_at are
+   * later diffed against NOW() in SQL, so they must come from the same clock:
+   * new Date().toISOString() is UTC and made every fresh table start at +5h30m.
+   */
+  private static async dbNow(): Promise<string> {
+    const row = await dbService.queryOne<{ now: string }>('SELECT NOW() AS now');
+    return String(row?.now);
+  }
 
   /**
    * Auto-ensures dining_tables columns and table_reservations exist.
@@ -175,12 +186,34 @@ export class DiningTablesService {
     return table;
   }
 
+  /**
+   * Table number and display name are each unique across the floor. The
+   * column collation is case-insensitive, so 'T-07' and 't-07' collide too.
+   * excludeId skips the table being edited.
+   */
+  private static async assertUnique(tableNumber?: string, name?: string, excludeId?: number) {
+    const idClause = excludeId ? ' AND id != ?' : '';
+    const idParam = excludeId ? [excludeId] : [];
+    if (tableNumber) {
+      const hit = await dbService.queryOne<{ name: string }>(
+        'SELECT name FROM dining_tables WHERE TRIM(table_number) = ?' + idClause + ' LIMIT 1',
+        [tableNumber, ...idParam]
+      );
+      if (hit) throw AppError.conflict('Table number "' + tableNumber + '" is already used by ' + hit.name);
+    }
+    if (name) {
+      const hit = await dbService.queryOne<{ table_number: string }>(
+        'SELECT table_number FROM dining_tables WHERE TRIM(name) = ?' + idClause + ' LIMIT 1',
+        [name, ...idParam]
+      );
+      if (hit) throw AppError.conflict('Display name "' + name + '" is already used by table ' + hit.table_number);
+    }
+  }
+
   static async create(data: { tableNumber: string; name: string; section?: string; capacity?: number; displayOrder?: number }, userId: number) {
     await this.ensureSchema();
-    const existing = await dbService.queryOne('SELECT id FROM dining_tables WHERE table_number = ?', [data.tableNumber]);
-    if (existing) {
-      throw AppError.conflict('Table number already exists');
-    }
+    data = { ...data, tableNumber: String(data.tableNumber ?? '').trim(), name: String(data.name ?? '').trim() };
+    await this.assertUnique(data.tableNumber, data.name);
 
     const res = await dbService.execute(
       `INSERT INTO dining_tables (table_number, name, section, capacity, active_guest_count, status, display_order)
@@ -215,12 +248,9 @@ export class DiningTablesService {
     await this.ensureSchema();
     const current = await this.getById(id);
 
-    if (data.tableNumber && data.tableNumber !== current.table_number) {
-      const existing = await dbService.queryOne('SELECT id FROM dining_tables WHERE table_number = ? AND id != ?', [data.tableNumber, id]);
-      if (existing) {
-        throw AppError.conflict('Table number already in use');
-      }
-    }
+    if (data.tableNumber !== undefined) data = { ...data, tableNumber: String(data.tableNumber).trim() || undefined };
+    if (data.name !== undefined) data = { ...data, name: String(data.name).trim() || undefined };
+    await this.assertUnique(data.tableNumber, data.name, id);
 
     await dbService.execute(
       `UPDATE dining_tables
@@ -258,11 +288,23 @@ export class DiningTablesService {
     await this.ensureSchema();
     const current = await this.getById(id);
 
-    // Rule: cannot release to AVAILABLE while active dining order is open
-    if (status === 'AVAILABLE' && current.status === 'OCCUPIED' && current.current_order_id && orderId === undefined) {
-      const order = await dbService.queryOne<{ status: string }>('SELECT status FROM orders WHERE id = ?', [current.current_order_id]);
+    // Rule: a table with an unbilled tab cannot be released or sent to
+    // cleaning - that would drop the order and the guests would never be
+    // billed. (The floor sends orderId null, so this cannot key on undefined.)
+    // An open order with nothing on it is simply closed.
+    if ((status === 'AVAILABLE' || status === 'CLEANING') && current.current_order_id) {
+      const order = await dbService.queryOne<{ id: number; status: string; order_number: string; line_count: number }>(
+        `SELECT o.id, o.status, o.order_number, (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id) AS line_count
+         FROM orders o WHERE o.id = ? AND o.is_deleted = 0`,
+        [current.current_order_id]
+      );
       if (order && order.status !== 'COMPLETED' && order.status !== 'CANCELLED') {
-        throw AppError.badRequest('Cannot release table while linked dining order is still active');
+        if (Number(order.line_count) > 0) {
+          throw AppError.conflict(
+            `Table ${current.table_number} has an unbilled tab (${order.order_number}). Generate the bill or cancel the tab first.`
+          );
+        }
+        await dbService.execute(`UPDATE orders SET status = 'CANCELLED', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [order.id]);
       }
     }
 
@@ -271,10 +313,10 @@ export class DiningTablesService {
     let newGuestCount = guestCount !== undefined ? guestCount : current.active_guest_count;
 
     if (status === 'OCCUPIED') {
-      seatedAt = seatedAt || new Date().toISOString().slice(0, 19).replace('T', ' ');
+      seatedAt = seatedAt || await this.dbNow();
       cleaningStartedAt = null;
     } else if (status === 'CLEANING') {
-      cleaningStartedAt = new Date().toISOString().slice(0, 19).replace('T', ' ');
+      cleaningStartedAt = await this.dbNow();
       seatedAt = null;
       newGuestCount = 0;
       orderId = null;
@@ -320,7 +362,7 @@ export class DiningTablesService {
       throw AppError.conflict('Table is already occupied with another active dining order');
     }
 
-    const seatedAt = new Date().toISOString().slice(0, 19).replace('T', ' ');
+    const seatedAt = await this.dbNow();
 
     await dbService.execute(`
       UPDATE dining_tables
@@ -382,6 +424,109 @@ export class DiningTablesService {
     return history;
   }
 
+  /**
+   * Full history page for one table: filtered, paged rows plus totals over the
+   * whole filtered range (not just the current page). Cancelled orders are
+   * listed but kept out of revenue and turn-time figures.
+   */
+  static async getTableHistoryPage(opts: {
+    tableId: number;
+    from?: string;
+    to?: string;
+    status?: string;
+    search?: string;
+    page: number;
+    limit: number;
+  }) {
+    await this.ensureSchema();
+    const table = await this.getById(opts.tableId);
+
+    let where = 'WHERE o.dining_table_id = ? AND o.is_deleted = 0';
+    const params: any[] = [opts.tableId];
+    if (opts.from) {
+      where += ' AND o.created_at >= ?';
+      params.push(opts.from);
+    }
+    if (opts.to) {
+      where += ' AND o.created_at < DATE_ADD(?, INTERVAL 1 DAY)';
+      params.push(opts.to);
+    }
+    if (opts.status) {
+      where += ' AND o.status = ?';
+      params.push(opts.status);
+    }
+    if (opts.search) {
+      where += ' AND (o.order_number LIKE ? OR c.name LIKE ? OR c.phone LIKE ?)';
+      const term = ParamUtil.like(opts.search);
+      params.push(term, term, term);
+    }
+
+    // One bill per order: the latest live one, so a re-billed order is not doubled.
+    const billJoin = `LEFT JOIN bills b ON b.id = (
+        SELECT MAX(b2.id) FROM bills b2 WHERE b2.order_id = o.id AND b2.is_deleted = 0
+      )`;
+    const endExpr = 'COALESCE(b.created_at, o.updated_at)';
+
+    const summary = await dbService.queryOne<any>(
+      `SELECT COUNT(*) AS sessions,
+              SUM(o.status <> 'CANCELLED') AS completed_sessions,
+              SUM(o.status = 'CANCELLED') AS cancelled_sessions,
+              COALESCE(SUM(CASE WHEN o.status <> 'CANCELLED' THEN o.total_amount END), 0) AS revenue,
+              COALESCE(AVG(CASE WHEN o.status <> 'CANCELLED' THEN o.total_amount END), 0) AS avg_bill,
+              COALESCE(AVG(CASE WHEN o.status <> 'CANCELLED' THEN TIMESTAMPDIFF(MINUTE, o.created_at, ${endExpr}) END), 0) AS avg_minutes,
+              MAX(o.created_at) AS last_session_at
+       FROM orders o
+       ${billJoin}
+       LEFT JOIN customers c ON o.customer_id = c.id
+       ${where}`,
+      params
+    );
+
+    const offset = (opts.page - 1) * opts.limit;
+    const rows = await dbService.query(
+      `SELECT o.id AS order_id,
+              o.order_number,
+              o.order_type,
+              o.status AS order_status,
+              o.total_amount,
+              o.created_at AS order_start_time,
+              ${endExpr} AS order_end_time,
+              TIMESTAMPDIFF(MINUTE, o.created_at, ${endExpr}) AS duration_minutes,
+              b.bill_number,
+              b.payment_method,
+              b.payment_status,
+              u.name AS staff_name,
+              c.id AS customer_id,
+              c.name AS customer_name,
+              c.phone AS customer_phone
+       FROM orders o
+       ${billJoin}
+       LEFT JOIN users u ON o.created_by = u.id
+       LEFT JOIN customers c ON o.customer_id = c.id
+       ${where}
+       ORDER BY o.created_at DESC, o.id DESC
+       LIMIT ${Number(opts.limit)} OFFSET ${Number(offset)}`,
+      params
+    );
+
+    return {
+      table,
+      summary: {
+        sessions: Number(summary?.sessions) || 0,
+        completed_sessions: Number(summary?.completed_sessions) || 0,
+        cancelled_sessions: Number(summary?.cancelled_sessions) || 0,
+        revenue: Number(summary?.revenue) || 0,
+        avg_bill: Number(summary?.avg_bill) || 0,
+        avg_minutes: Math.round(Number(summary?.avg_minutes) || 0),
+        last_session_at: summary?.last_session_at || null,
+      },
+      rows,
+      total: Number(summary?.sessions) || 0,
+      page: opts.page,
+      limit: opts.limit,
+    };
+  }
+
   static async delete(id: number, userId: number) {
     await this.ensureSchema();
     const current = await this.getById(id);
@@ -440,10 +585,14 @@ export class DiningTablesService {
   static async createReservation(data: CreateReservationInput, userId: number) {
     await this.ensureSchema();
 
-    const countRes = await dbService.queryOne<{ count: number }>(
-      'SELECT COUNT(*) as count FROM table_reservations WHERE DATE(created_at) = CURDATE()'
+    // Date-prefixed so the daily counter can restart without colliding with
+    // yesterday's codes (reservation_code is UNIQUE; the old "RSV-101" form
+    // repeated every day and the second day's first booking failed).
+    const countRes = await dbService.queryOne<{ count: number; ymd: string }>(
+      `SELECT COUNT(*) AS count, DATE_FORMAT(CURDATE(), '%y%m%d') AS ymd
+       FROM table_reservations WHERE created_at >= CURDATE()`
     );
-    const nextCode = `RSV-${(countRes?.count || 0) + 101}`;
+    const nextCode = `RSV-${countRes?.ymd}-${String(Number(countRes?.count || 0) + 1).padStart(3, '0')}`;
     const uuid = uuidv4();
 
     // Booking the table and holding it are one action: a failure between them
@@ -500,10 +649,30 @@ export class DiningTablesService {
 
     if (!rsv) throw AppError.notFound('Reservation not found');
 
+    if (rsv.status !== 'CONFIRMED') {
+      throw AppError.badRequest('Only confirmed reservations can be seated');
+    }
+
     const targetTableId = tableId || rsv.table_id;
     if (!targetTableId) throw AppError.badRequest('Please select a table to seat the reservation');
 
+    const target = await this.getById(targetTableId);
+    const heldForThis = target.status === 'RESERVED' && Number(target.reservation_id) === Number(reservationId);
+    if (target.status !== 'AVAILABLE' && !heldForThis) {
+      throw AppError.conflict(`Table ${target.table_number} is ${String(target.status).toLowerCase()}, choose another table`);
+    }
+
     return await dbService.transaction(async () => {
+      // Seating somewhere other than the held table: give the held one back.
+      if (rsv.table_id && Number(rsv.table_id) !== Number(targetTableId)) {
+        await dbService.execute(
+          `UPDATE dining_tables
+           SET status = 'AVAILABLE', reservation_id = NULL, active_guest_count = 0
+           WHERE id = ? AND status = 'RESERVED' AND reservation_id = ?`,
+          [rsv.table_id, reservationId]
+        );
+      }
+
       // 1. Mark reservation SEATED
       await dbService.execute(`
         UPDATE table_reservations 
@@ -512,7 +681,7 @@ export class DiningTablesService {
       `, [targetTableId, reservationId]);
 
       // 2. Mark table OCCUPIED with guest count and live timer
-      const seatedAt = new Date().toISOString().slice(0, 19).replace('T', ' ');
+      const seatedAt = await this.dbNow();
       await dbService.execute(`
         UPDATE dining_tables 
         SET status = 'OCCUPIED', 
@@ -534,6 +703,132 @@ export class DiningTablesService {
 
       return await this.getById(targetTableId);
     });
+  }
+
+  /**
+   * Reservations page: rows in a date range plus counts for the KPI strip.
+   * `from`/`to` are inclusive calendar days; omit both for everything upcoming.
+   */
+  static async listReservations(opts: { from?: string; to?: string; status?: string; search?: string }) {
+    await this.ensureSchema();
+
+    let where = 'WHERE 1=1';
+    const params: any[] = [];
+    if (opts.from) {
+      where += ' AND r.reservation_time >= ?';
+      params.push(opts.from);
+    }
+    if (opts.to) {
+      where += ' AND r.reservation_time < DATE_ADD(?, INTERVAL 1 DAY)';
+      params.push(opts.to);
+    }
+    if (!opts.from && !opts.to) {
+      where += ' AND r.reservation_time >= CURDATE()';
+    }
+    if (opts.search) {
+      where += ' AND (r.customer_name LIKE ? OR r.customer_phone LIKE ? OR r.reservation_code LIKE ?)';
+      const term = ParamUtil.like(opts.search);
+      params.push(term, term, term);
+    }
+
+    // Counts ignore the status filter so the chips can show how many each holds.
+    const counts = await dbService.queryOne<any>(
+      `SELECT COUNT(*) AS total,
+              SUM(r.status = 'CONFIRMED') AS confirmed,
+              SUM(r.status = 'SEATED') AS seated,
+              SUM(r.status = 'CANCELLED') AS cancelled,
+              SUM(r.status = 'NO_SHOW') AS no_show,
+              COALESCE(SUM(CASE WHEN r.status IN ('CONFIRMED', 'SEATED') THEN r.guest_count END), 0) AS covers,
+              SUM(r.status = 'CONFIRMED' AND r.reservation_time < NOW()) AS late
+       FROM table_reservations r
+       ${where}`,
+      params
+    );
+
+    let rowWhere = where;
+    const rowParams = [...params];
+    if (opts.status) {
+      rowWhere += ' AND r.status = ?';
+      rowParams.push(opts.status);
+    }
+
+    const rows = await dbService.query(
+      `SELECT r.*, t.table_number, t.name AS table_name, t.section AS table_section,
+              t.capacity AS table_capacity, t.status AS table_status,
+              TIMESTAMPDIFF(MINUTE, NOW(), r.reservation_time) AS minutes_until
+       FROM table_reservations r
+       LEFT JOIN dining_tables t ON r.table_id = t.id
+       ${rowWhere}
+       ORDER BY r.reservation_time ASC, r.id ASC
+       LIMIT 500`,
+      rowParams
+    );
+
+    const today = await dbService.queryOne<any>(
+      `SELECT COUNT(*) AS bookings,
+              COALESCE(SUM(CASE WHEN status IN ('CONFIRMED', 'SEATED') THEN guest_count END), 0) AS covers,
+              SUM(status = 'CONFIRMED') AS pending,
+              SUM(status = 'SEATED') AS seated
+       FROM table_reservations
+       WHERE reservation_time >= CURDATE() AND reservation_time < CURDATE() + INTERVAL 1 DAY`
+    );
+
+    const n = (v: any) => Number(v) || 0;
+    return {
+      rows,
+      counts: {
+        total: n(counts?.total),
+        confirmed: n(counts?.confirmed),
+        seated: n(counts?.seated),
+        cancelled: n(counts?.cancelled),
+        no_show: n(counts?.no_show),
+        covers: n(counts?.covers),
+        late: n(counts?.late),
+      },
+      today: {
+        bookings: n(today?.bookings),
+        covers: n(today?.covers),
+        pending: n(today?.pending),
+        seated: n(today?.seated),
+      },
+    };
+  }
+
+  /** Guest never arrived: close the booking and free the table it was holding. */
+  static async markReservationNoShow(reservationId: number, userId: number) {
+    await this.ensureSchema();
+    const rsv = await dbService.queryOne<{ id: number; table_id: number; status: string }>(
+      'SELECT * FROM table_reservations WHERE id = ?',
+      [reservationId]
+    );
+    if (!rsv) throw AppError.notFound('Reservation not found');
+    if (rsv.status !== 'CONFIRMED') {
+      throw AppError.badRequest('Only confirmed reservations can be marked as no-show');
+    }
+
+    await dbService.transaction(async () => {
+      await dbService.execute(
+        `UPDATE table_reservations SET status = 'NO_SHOW', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        [reservationId]
+      );
+      if (rsv.table_id) {
+        await dbService.execute(
+          `UPDATE dining_tables
+           SET status = 'AVAILABLE', reservation_id = NULL, active_guest_count = 0
+           WHERE id = ? AND status = 'RESERVED' AND reservation_id = ?`,
+          [rsv.table_id, reservationId]
+        );
+      }
+    });
+
+    await AuditService.log({
+      userId,
+      action: 'RESERVATION_NO_SHOW',
+      module: 'DINING',
+      recordId: reservationId,
+    });
+
+    return { success: true };
   }
 
   static async cancelReservation(reservationId: number, userId: number) {

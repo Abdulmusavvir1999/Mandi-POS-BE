@@ -1,6 +1,7 @@
 import { dbService } from '../database/db';
 import { ReportsSchema } from '../database/reports.schema';
 import { BillScope, Granularity, ReportQuery, ReportRange } from '../utils/reports.query';
+import { LINE_UNIT_STOCK_COST } from '../utils/stock-cost.sql';
 
 export interface SalesReportOptions extends BillScope {
   range: ReportRange;
@@ -20,8 +21,11 @@ export interface SalesReportOptions extends BillScope {
  * bill is the settled record — an order can be cancelled or re-rung and would
  * double-count. Voided bills are excluded by `ReportQuery.bills`.
  *
- * Cost and margin are `quantity x stock_consumption x
- * stocks.average_unit_price`, reached through `products.stock_id`.
+ * Cost and margin are the stock each line drew, priced at
+ * stocks.average_unit_price: from the line's own bill_item_stock_usage record
+ * where it has one (every item of a Multi Stock recipe), else
+ * `quantity x stock_consumption` of the item behind `products.stock_id`.
+ * See utils/stock-cost.sql.ts.
  * `products.cost_price` is gone — pricing moved onto `product_variants` and
  * cost onto the stock ledger — and `bill_items` carries no cost column, so this
  * is the weighted-average cost of the ledger item *today*, not the cost at the
@@ -63,8 +67,8 @@ export class ReportsSalesService {
          COALESCE(SUM(bi.discount_amount), 0)                   AS discount_amount,
          COALESCE(SUM(bi.tax_amount), 0)                        AS tax_amount,
          COALESCE(SUM(bi.total_amount), 0)                      AS net_sales,
-         COALESCE(SUM(bi.quantity * COALESCE(bi.stock_consumption, 1) * COALESCE(si.average_unit_price, 0)), 0) AS total_cost,
-         COALESCE(SUM(bi.total_amount) - SUM(bi.quantity * COALESCE(bi.stock_consumption, 1) * COALESCE(si.average_unit_price, 0)), 0) AS gross_profit,
+         COALESCE(SUM(bi.quantity * ${LINE_UNIT_STOCK_COST}), 0) AS total_cost,
+         COALESCE(SUM(bi.total_amount) - SUM(bi.quantity * ${LINE_UNIT_STOCK_COST}), 0) AS gross_profit,
          COALESCE(AVG(bi.unit_price), 0)                        AS avg_selling_price,
          MAX(b.created_at)                                      AS last_sold_at
        FROM bill_items bi
@@ -129,8 +133,8 @@ export class ReportsSalesService {
          COALESCE(SUM(bi.discount_amount), 0)                   AS discount_amount,
          COALESCE(SUM(bi.tax_amount), 0)                        AS tax_amount,
          COALESCE(SUM(bi.total_amount), 0)                      AS net_sales,
-         COALESCE(SUM(bi.quantity * COALESCE(bi.stock_consumption, 1) * COALESCE(si.average_unit_price, 0)), 0) AS total_cost,
-         COALESCE(SUM(bi.total_amount) - SUM(bi.quantity * COALESCE(bi.stock_consumption, 1) * COALESCE(si.average_unit_price, 0)), 0) AS gross_profit
+         COALESCE(SUM(bi.quantity * ${LINE_UNIT_STOCK_COST}), 0) AS total_cost,
+         COALESCE(SUM(bi.total_amount) - SUM(bi.quantity * ${LINE_UNIT_STOCK_COST}), 0) AS gross_profit
        FROM bill_items bi
        JOIN bills b ON bi.bill_id = b.id
        JOIN products p ON bi.product_id = p.id

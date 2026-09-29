@@ -3,6 +3,7 @@ import { AppError } from '../errors/AppError';
 import { AuditService } from './audit.service';
 import { ProductImageService } from './product-image.service';
 import { ParamUtil } from '../utils/param.util';
+import { logger } from '../config/logger';
 
 export interface ProductVariantInput {
   id?: number;
@@ -19,7 +20,22 @@ export interface ProductVariantInput {
   isDefault?: boolean | number;
   is_default?: boolean | number;
   status?: string;
+  /** MULTI mode only: every stock item one sale of this portion draws on. */
+  stocks?: VariantStockInput[];
 }
+
+export interface VariantStockInput {
+  stockId?: number | null;
+  stock_id?: number | null;
+  /** Stock units one portion draws, in the stock item's own unit. */
+  stockConsumption?: number;
+  stock_consumption?: number;
+  /** Older name for stockConsumption, still accepted. */
+  quantity?: number;
+}
+
+export type VariantStockMode = 'COMMON' | 'EACH' | 'MULTI';
+const STOCK_MODES: VariantStockMode[] = ['COMMON', 'EACH', 'MULTI'];
 
 export class ProductsService {
   private static schemaEnsured = false;
@@ -43,22 +59,150 @@ export class ProductsService {
         } catch (_) {}
       }
 
-      // Ensure stock_consumption in product_variants
+      // Multi Stock: the MULTI mode value, the per-portion recipe table and
+      // the per-sale usage record. Mirrors schema.sql for older databases.
       try {
-        const pvColCheck = await dbService.queryOne<{ count: number }>(`
-          SELECT COUNT(*) as count 
-          FROM INFORMATION_SCHEMA.COLUMNS 
-          WHERE TABLE_SCHEMA = DATABASE() 
-            AND TABLE_NAME = 'product_variants' 
-            AND COLUMN_NAME = 'stock_consumption'
+        const modeCol = await dbService.queryOne<{ COLUMN_TYPE: string }>(`
+          SELECT COLUMN_TYPE
+          FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME = 'products'
+            AND COLUMN_NAME = 'variant_stock_mode'
         `);
-        if (!pvColCheck || pvColCheck.count === 0) {
-          await dbService.execute('ALTER TABLE product_variants ADD COLUMN `stock_consumption` DECIMAL(12,3) NOT NULL DEFAULT 1.000 AFTER `stock_id`');
+        if (modeCol && !String(modeCol.COLUMN_TYPE).includes("'MULTI'")) {
+          await dbService.execute(
+            "ALTER TABLE products MODIFY COLUMN variant_stock_mode ENUM('COMMON', 'EACH', 'MULTI') NOT NULL DEFAULT 'COMMON'"
+          );
         }
       } catch (_) {}
 
+      try {
+        await dbService.execute(`
+          CREATE TABLE IF NOT EXISTS product_variant_stocks (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            variant_id INT NOT NULL,
+            stock_id INT NOT NULL,
+            stock_consumption DECIMAL(12,3) NOT NULL,
+            display_order INT NOT NULL DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uniq_pvs_variant_stock (variant_id, stock_id),
+            INDEX idx_pvs_stock (stock_id),
+            CONSTRAINT fk_pvs_variant FOREIGN KEY (variant_id) REFERENCES product_variants(id) ON DELETE CASCADE,
+            CONSTRAINT fk_pvs_stock FOREIGN KEY (stock_id) REFERENCES stocks(id) ON DELETE RESTRICT
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+      } catch (_) {}
+
+      try {
+        await dbService.execute(`
+          CREATE TABLE IF NOT EXISTS bill_item_stock_usage (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            bill_item_id INT NOT NULL,
+            stock_id INT NOT NULL,
+            quantity_per_unit DECIMAL(12,3) NOT NULL,
+            INDEX idx_bisu_bill_item (bill_item_id),
+            INDEX idx_bisu_stock (stock_id),
+            CONSTRAINT fk_bisu_bill_item FOREIGN KEY (bill_item_id) REFERENCES bill_items(id) ON DELETE CASCADE,
+            CONSTRAINT fk_bisu_stock FOREIGN KEY (stock_id) REFERENCES stocks(id) ON DELETE CASCADE
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+      } catch (_) {}
+
+      await this.moveVariantStockToRecipes();
+
       this.schemaEnsured = true;
     } catch (_) {}
+  }
+
+  /**
+   * One place for a portion's stock: product_variant_stocks.
+   *
+   * Older databases kept a Common/Each portion's item and amount on
+   * product_variants (stock_id, stock_consumption) and only Multi Stock used
+   * product_variant_stocks, whose amount column was called `quantity`. This
+   * moves everything into product_variant_stocks.stock_consumption, in an
+   * order that is safe to interrupt and re-run:
+   *
+   *   1. back up the two columns (product_variants_stock_bak, kept);
+   *   2. rename product_variant_stocks.quantity -> stock_consumption;
+   *   3. copy each Common/Each portion into one row - its own item, else the
+   *      dish's, which is how checkout resolved it - skipping portions that
+   *      already have rows;
+   *   4. drop the two columns, only if step 3 went through.
+   *
+   * A very old database may still call the link `stock_item_id` (the stock
+   * topology rename runs later at startup), so both names are accepted.
+   */
+  private static async moveVariantStockToRecipes(): Promise<void> {
+    const hasColumn = async (table: string, column: string) => {
+      const row = await dbService.queryOne<{ c: number }>(
+        `SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+        [table, column]
+      );
+      return Number(row?.c ?? 0) > 0;
+    };
+
+    try {
+      // 2. Rename the recipe amount column first, so the copy writes the new name.
+      if ((await hasColumn('product_variant_stocks', 'quantity')) && !(await hasColumn('product_variant_stocks', 'stock_consumption'))) {
+        await dbService.execute(
+          'ALTER TABLE product_variant_stocks CHANGE COLUMN `quantity` `stock_consumption` DECIMAL(12,3) NOT NULL'
+        );
+      }
+
+      const variantLink = (await hasColumn('product_variants', 'stock_id'))
+        ? 'stock_id'
+        : (await hasColumn('product_variants', 'stock_item_id')) ? 'stock_item_id' : null;
+      const hasConsumption = await hasColumn('product_variants', 'stock_consumption');
+      if (!variantLink && !hasConsumption) return; // already moved
+
+      const productLink = (await hasColumn('products', 'stock_id')) ? 'stock_id' : 'stock_item_id';
+      const amount = hasConsumption ? 'CASE WHEN v.stock_consumption > 0 THEN v.stock_consumption ELSE 1 END' : '1';
+
+      // 1. Backup, once.
+      if (variantLink) {
+        await dbService.execute(
+          `CREATE TABLE IF NOT EXISTS product_variants_stock_bak AS
+           SELECT v.id, v.product_id, v.name, v.\`${variantLink}\` AS stock_id,
+                  ${hasConsumption ? 'v.stock_consumption' : '1.000'} AS stock_consumption,
+                  CURRENT_TIMESTAMP AS backed_up_at
+           FROM product_variants v`
+        );
+
+        // 3. Copy Common/Each portions (Multi already lives in the table).
+        const copied = await dbService.execute(
+          `INSERT INTO product_variant_stocks (variant_id, stock_id, stock_consumption, display_order)
+           SELECT v.id, COALESCE(v.\`${variantLink}\`, p.\`${productLink}\`), ${amount}, 1
+           FROM product_variants v
+           JOIN products p ON p.id = v.product_id
+           JOIN stocks s ON s.id = COALESCE(v.\`${variantLink}\`, p.\`${productLink}\`)
+           WHERE p.variant_stock_mode <> 'MULTI'
+             AND NOT EXISTS (SELECT 1 FROM product_variant_stocks x WHERE x.variant_id = v.id)`
+        );
+        logger.info(`Moved ${copied.changes} portion stock link(s) into product_variant_stocks`);
+      }
+
+      // 4. Drop the old columns (and any foreign key / index on the link).
+      if (variantLink) {
+        const fks = await dbService.query<{ CONSTRAINT_NAME: string }>(
+          `SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'product_variants'
+             AND COLUMN_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL`,
+          [variantLink]
+        );
+        for (const fk of fks) {
+          await dbService.execute(`ALTER TABLE product_variants DROP FOREIGN KEY \`${fk.CONSTRAINT_NAME}\``);
+        }
+        await dbService.execute(`ALTER TABLE product_variants DROP COLUMN \`${variantLink}\``);
+      }
+      if (hasConsumption) {
+        await dbService.execute('ALTER TABLE product_variants DROP COLUMN `stock_consumption`');
+      }
+    } catch (e) {
+      // Leave whatever is left for the next start; every step checks first.
+      logger.warn('Could not move portion stock into product_variant_stocks:', e);
+    }
   }
 
   /**
@@ -81,14 +225,9 @@ export class ProductsService {
     let rows: any[] = [];
     try {
       rows = await dbService.query<any>(
-        `SELECT v.id, v.product_id, v.name, v.stock_id, v.stock_consumption,
-                v.selling_price, v.display_order, v.is_default, v.status,
-                si.name       AS stock_item_name,
-                si.stock_code AS stock_item_code,
-                si.unit_type  AS stock_item_unit,
-                si.current_quantity AS stock_item_quantity
+        `SELECT v.id, v.product_id, v.name,
+                v.selling_price, v.display_order, v.is_default, v.status
          FROM product_variants v
-         LEFT JOIN stocks si ON si.id = v.stock_id
          WHERE v.product_id IN (${ids.map(() => '?').join(',')})
          ORDER BY v.display_order ASC, v.id ASC`,
         ids
@@ -104,6 +243,8 @@ export class ProductsService {
       byProduct.set(row.product_id, list);
     }
 
+    await this.attachVariantStocks(rows);
+
     for (const p of products) {
       p.variants = byProduct.get(p.id) || [];
       if (p.selling_price === undefined) {
@@ -115,21 +256,85 @@ export class ProductsService {
 
   static async getVariants(productId: number) {
     try {
-      return await dbService.query(
-        `SELECT v.id, v.product_id, v.name, v.stock_id, v.stock_consumption,
-                v.selling_price, v.display_order, v.is_default, v.status,
-                si.name       AS stock_item_name,
-                si.stock_code AS stock_item_code,
-                si.unit_type  AS stock_item_unit,
-                si.current_quantity AS stock_item_quantity
+      const rows = await dbService.query<any>(
+        `SELECT v.id, v.product_id, v.name,
+                v.selling_price, v.display_order, v.is_default, v.status
          FROM product_variants v
-         LEFT JOIN stocks si ON si.id = v.stock_id
          WHERE v.product_id = ?
          ORDER BY v.display_order ASC, v.id ASC`,
         [productId]
       );
+      await this.attachVariantStocks(rows);
+      return rows;
     } catch {
       return [];
+    }
+  }
+
+  /**
+   * Sets `variant.stocks` on every row from product_variant_stocks - the one
+   * place a portion's stock lives in every mode - each line with the stock
+   * item's name, unit, balance and average cost so the form, the View page
+   * and the POS can show and price it without another lookup.
+   *
+   * A Common/Each portion has exactly one line, so its item is also exposed
+   * as `stock_id`, `stock_consumption` and `stock_item_*` on the variant,
+   * the shape those screens have always read. They are derived here, not
+   * stored anywhere else.
+   */
+  private static async attachVariantStocks(variants: any[]) {
+    for (const v of variants) v.stocks = [];
+    if (variants.length === 0) return;
+
+    let rows: any[] = [];
+    try {
+      rows = await dbService.query<any>(
+        `SELECT pvs.variant_id, pvs.stock_id, pvs.stock_consumption, pvs.display_order,
+                s.name AS stock_name, s.stock_code, s.unit_type,
+                s.current_quantity, s.average_unit_price, s.min_stock_alert, s.status AS stock_status,
+                -- Balance after the item's latest stock-in: the "full" mark
+                -- for its stock bar, same rule as the Dishes list and Stock page.
+                (SELECT sm.balance_quantity
+                   FROM stock_movements sm
+                  WHERE sm.stock_id = s.id AND sm.movement_type = 'in' AND sm.quantity > 0
+                  ORDER BY sm.id DESC
+                  LIMIT 1) AS last_restock_quantity
+         FROM product_variant_stocks pvs
+         JOIN stocks s ON s.id = pvs.stock_id
+         WHERE pvs.variant_id IN (${variants.map(() => '?').join(',')})
+         ORDER BY pvs.display_order ASC, pvs.id ASC`,
+        variants.map((v) => v.id)
+      );
+    } catch {
+      return;
+    }
+
+    const byVariant = new Map<number, any[]>();
+    for (const r of rows) {
+      const list = byVariant.get(Number(r.variant_id)) || [];
+      list.push({
+        stock_id: Number(r.stock_id),
+        stock_consumption: Number(r.stock_consumption),
+        stock_name: r.stock_name,
+        stock_code: r.stock_code,
+        unit_type: r.unit_type,
+        current_quantity: Number(r.current_quantity),
+        average_unit_price: Number(r.average_unit_price),
+        min_stock_alert: Number(r.min_stock_alert),
+        last_restock_quantity: r.last_restock_quantity === null ? null : Number(r.last_restock_quantity),
+        stock_status: r.stock_status,
+      });
+      byVariant.set(Number(r.variant_id), list);
+    }
+    for (const v of variants) {
+      v.stocks = byVariant.get(Number(v.id)) || [];
+      const first = v.stocks[0];
+      v.stock_id = first ? first.stock_id : null;
+      v.stock_consumption = first ? first.stock_consumption : 1;
+      v.stock_item_name = first?.stock_name ?? null;
+      v.stock_item_code = first?.stock_code ?? null;
+      v.stock_item_unit = first?.unit_type ?? null;
+      v.stock_item_quantity = first ? first.current_quantity : null;
     }
   }
 
@@ -138,18 +343,38 @@ export class ProductsService {
    * which keeps "removed a row" and "renamed a row" from needing their own
    * endpoints. Rows still referenced by past orders are untouched: bill_items
    * and order_items keep their own copy of the name and consumption.
+   *
+   * Every portion's stock is written to product_variant_stocks, whatever the
+   * mode: COMMON - one row, the dish's shared item (commonStockId) at the
+   * portion's stock_consumption; EACH - one row, the portion's own item;
+   * MULTI - one row per item on its list.
    */
-  private static async replaceVariants(productId: number, variants: ProductVariantInput[] | undefined) {
+  private static async replaceVariants(
+    productId: number,
+    variants: ProductVariantInput[] | undefined,
+    mode: VariantStockMode = 'COMMON',
+    commonStockId: number | null = null
+  ) {
     if (variants === undefined) return;
 
-    await dbService.execute('DELETE FROM product_variants WHERE product_id = ?', [productId]);
-
     const rows = variants.filter((v) => v && String(v.name || '').trim().length > 0);
-    if (rows.length === 0) return;
+    const isMulti = mode === 'MULTI';
 
-    if (rows.length < 2) {
+    // A Multi Stock dish keeps its recipe on the portions, so it needs at
+    // least one; a single "Regular" portion is fine. The other modes keep the
+    // "none, or at least 2" rule - one portion there is just the dish itself.
+    if (isMulti && rows.length === 0) {
+      throw AppError.badRequest('Multi Stock needs at least one portion with the stock items it uses.');
+    }
+    if (!isMulti && rows.length === 1) {
       throw AppError.badRequest('At least 2 variants are required when configuring variants for a product.');
     }
+
+    // Validated before anything is deleted, so a bad recipe leaves the dish as it was.
+    const recipes = isMulti ? await this.validateRecipes(rows) : await this.singleStockRecipes(rows, mode, commonStockId);
+
+    await dbService.execute('DELETE FROM product_variants WHERE product_id = ?', [productId]);
+    if (rows.length === 0) return;
 
     // Validate display order uniqueness
     const displayOrders = rows.map((v, i) =>
@@ -170,27 +395,130 @@ export class ProductsService {
     for (let i = 0; i < rows.length; i++) {
       const v = rows[i];
       const isDefault = i === targetDefaultIndex;
-      const stockUsage = v.stockConsumption !== undefined && v.stockConsumption !== null
-        ? Number(v.stockConsumption)
-        : v.stock_consumption !== undefined && v.stock_consumption !== null
-        ? Number(v.stock_consumption)
-        : 1.0;
 
-      await dbService.execute(
-        `INSERT INTO product_variants (product_id, name, stock_id, stock_consumption, selling_price, display_order, is_default, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      const res = await dbService.execute(
+        `INSERT INTO product_variants (product_id, name, selling_price, display_order, is_default, status)
+         VALUES (?, ?, ?, ?, ?, ?)`,
         [
           productId,
           String(v.name).trim(),
-          v.stockId ? Number(v.stockId) : (v.stock_id ? Number(v.stock_id) : null),
-          stockUsage > 0 ? stockUsage : 1.0,
           Number(v.sellingPrice ?? v.selling_price) || 0,
           displayOrders[i],
           isDefault ? 1 : 0,
           v.status || 'ACTIVE',
         ]
       );
+
+      const variantId = res.lastInsertRowid;
+      for (let j = 0; j < recipes[i].length; j++) {
+        const line = recipes[i][j];
+        await dbService.execute(
+          'INSERT INTO product_variant_stocks (variant_id, stock_id, stock_consumption, display_order) VALUES (?, ?, ?, ?)',
+          [variantId, line.stockId, line.stockConsumption, j + 1]
+        );
+      }
     }
+  }
+
+  /** A portion's per-portion amount from any of the accepted field names, else 1. */
+  private static consumptionOf(input: { stockConsumption?: number; stock_consumption?: number; quantity?: number }): number {
+    const raw = input.stockConsumption ?? input.stock_consumption ?? input.quantity;
+    const n = Number(raw);
+    return raw !== undefined && raw !== null && n > 0 ? Math.round(n * 1000) / 1000 : 1;
+  }
+
+  /**
+   * COMMON / EACH: one row per portion - the dish's shared item or the
+   * portion's own. A portion with no item draws no stock (as before), so it
+   * gets no row; an id that is not a stock item is refused.
+   */
+  private static async singleStockRecipes(rows: ProductVariantInput[], mode: VariantStockMode, commonStockId: number | null) {
+    const recipes = rows.map((v) => {
+      const stockId = mode === 'EACH'
+        ? Number(v.stockId ?? v.stock_id) || 0
+        : Number(commonStockId) || 0;
+      return stockId ? [{ stockId, stockConsumption: this.consumptionOf(v) }] : [];
+    });
+
+    const ids = [...new Set(recipes.flat().map((l) => l.stockId))];
+    if (ids.length > 0) {
+      const found = await dbService.query<{ id: number }>(
+        `SELECT id FROM stocks WHERE id IN (${ids.map(() => '?').join(',')})`,
+        ids
+      );
+      const known = new Set(found.map((s) => Number(s.id)));
+      const missing = ids.find((id) => !known.has(id));
+      if (missing) {
+        throw AppError.badRequest(`Stock item ${missing} no longer exists - pick another one.`);
+      }
+    }
+    return recipes;
+  }
+
+  /**
+   * Checks every portion's Multi Stock list and returns it cleaned up, one
+   * array per portion in the same order. Each portion needs at least one
+   * stock item, each with a quantity above zero, no item twice in the same
+   * portion, and every item an existing, active stock item.
+   */
+  private static async validateRecipes(rows: ProductVariantInput[]) {
+    const recipes: { stockId: number; stockConsumption: number }[][] = [];
+    const allIds = new Set<number>();
+
+    for (const v of rows) {
+      const portion = String(v.name).trim();
+      const lines = (v.stocks || [])
+        .map((s) => ({
+          stockId: Number(s.stockId ?? s.stock_id) || 0,
+          quantity: Number(s.stockConsumption ?? s.stock_consumption ?? s.quantity),
+        }))
+        .filter((s) => s.stockId > 0 || s.quantity > 0);
+
+      if (lines.length === 0) {
+        throw AppError.badRequest(`Portion "${portion}" needs at least one stock item in Multi Stock mode.`);
+      }
+      const seen = new Set<number>();
+      for (const line of lines) {
+        if (!line.stockId) {
+          throw AppError.badRequest(`Portion "${portion}": pick a stock item on every line.`);
+        }
+        if (!(line.quantity > 0)) {
+          throw AppError.badRequest(`Portion "${portion}": every stock item needs a quantity above 0.`);
+        }
+        if (seen.has(line.stockId)) {
+          throw AppError.badRequest(`Portion "${portion}" lists the same stock item twice - combine it into one line.`);
+        }
+        seen.add(line.stockId);
+        allIds.add(line.stockId);
+      }
+      recipes.push(lines.map((l) => ({ stockId: l.stockId, stockConsumption: Math.round(l.quantity * 1000) / 1000 })));
+    }
+
+    const ids = [...allIds];
+    const found = await dbService.query<{ id: number; name: string; status: string }>(
+      `SELECT id, name, status FROM stocks WHERE id IN (${ids.map(() => '?').join(',')})`,
+      ids
+    );
+    const byId = new Map(found.map((s) => [Number(s.id), s]));
+    for (const id of ids) {
+      const stock = byId.get(id);
+      if (!stock) {
+        throw AppError.badRequest(`Stock item ${id} no longer exists - pick another one.`);
+      }
+      if (stock.status !== 'active') {
+        throw AppError.badRequest(`Stock item "${stock.name}" is inactive - activate it or pick another one.`);
+      }
+    }
+    return recipes;
+  }
+
+  private static parseStockMode(mode: unknown): VariantStockMode | undefined {
+    if (mode === undefined || mode === null || mode === '') return undefined;
+    const upper = String(mode).toUpperCase() as VariantStockMode;
+    if (!STOCK_MODES.includes(upper)) {
+      throw AppError.badRequest('Stock mode must be Common Stock, Each Stock or Multi Stock.');
+    }
+    return upper;
   }
 
   static async getAll(
@@ -237,7 +565,14 @@ export class ProductsService {
       `SELECT p.*, c.name as category_name,
               si.current_quantity AS current_stock,
               si.min_stock_alert  AS min_stock_alert,
-              si.current_quantity AS linked_stock_quantity, si.unit_type AS linked_unit_type
+              si.current_quantity AS linked_stock_quantity, si.unit_type AS linked_unit_type,
+              -- Balance after the ledger item's latest stock-in: the "full"
+              -- mark for the list's stock bar (same rule as the Stock page).
+              (SELECT sm.balance_quantity
+                 FROM stock_movements sm
+                WHERE sm.stock_id = si.id AND sm.movement_type = 'in' AND sm.quantity > 0
+                ORDER BY sm.id DESC
+                LIMIT 1) AS last_restock_quantity
        FROM products p
        JOIN categories c ON p.category_id = c.id
        LEFT JOIN stocks si ON p.stock_id = si.id
@@ -307,13 +642,13 @@ export class ProductsService {
     description?: string;
     imageUrl?: string;
     taxRate?: number;
-    lowStockThreshold?: number;
     status?: string;
     stockId?: number | null;
-    variantStockMode?: 'COMMON' | 'EACH';
+    variantStockMode?: VariantStockMode;
     variants?: ProductVariantInput[];
   }, userId: number) {
     await this.ensureSchema();
+    const mode = this.parseStockMode(data.variantStockMode);
     const existingSku = await dbService.queryOne('SELECT id FROM products WHERE sku = ?', [data.sku]);
     if (existingSku) {
       throw AppError.conflict('Product SKU already exists');
@@ -323,9 +658,8 @@ export class ProductsService {
       const res = await dbService.execute(
         `INSERT INTO products (
           category_id, name, sku, description, image_url,
-          tax_rate, stock_quantity,
-          low_stock_threshold, is_available, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+          tax_rate, stock_quantity, is_available, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)`,
         [
           data.categoryId,
           data.name,
@@ -334,7 +668,6 @@ export class ProductsService {
           data.imageUrl || null,
           data.taxRate !== undefined ? data.taxRate : 5.0,
           0,
-          data.lowStockThreshold || 10,
           data.status || 'ACTIVE',
         ]
       );
@@ -343,13 +676,18 @@ export class ProductsService {
       // A dish only points at a stock item (products.stock_id); it never
       // creates or changes one. Stock items are made and filled in the Stock
       // Ledger, and a dish with none picked simply draws no stock when sold.
-      const assignedStockItemId = data.stockId ? Number(data.stockId) : null;
+      // A Multi Stock dish draws only through its portions' recipes, so its own
+      // single link stays empty - otherwise that item could be counted too.
+      const assignedStockItemId = mode !== 'MULTI' && data.stockId ? Number(data.stockId) : null;
       await dbService.execute(
         'UPDATE products SET stock_id = ?, variant_stock_mode = COALESCE(?, variant_stock_mode) WHERE id = ?',
-        [assignedStockItemId, data.variantStockMode || null, productId]
+        [assignedStockItemId, mode || null, productId]
       );
 
-      await this.replaceVariants(productId, data.variants);
+      if (mode === 'MULTI' && data.variants === undefined) {
+        throw AppError.badRequest('Multi Stock needs at least one portion with the stock items it uses.');
+      }
+      await this.replaceVariants(productId, data.variants, mode || 'COMMON', assignedStockItemId);
 
       await AuditService.log({
         userId,
@@ -370,15 +708,22 @@ export class ProductsService {
     description?: string;
     imageUrl?: string;
     taxRate?: number;
-    lowStockThreshold?: number;
     isAvailable?: boolean;
     status?: string;
     stockId?: number | null;
-    variantStockMode?: 'COMMON' | 'EACH';
+    variantStockMode?: VariantStockMode;
     variants?: ProductVariantInput[];
   }, userId: number) {
     await this.ensureSchema();
     const current = await this.getById(id);
+    const requestedMode = this.parseStockMode(data.variantStockMode);
+    const mode: VariantStockMode = requestedMode || (current.variant_stock_mode as VariantStockMode) || 'COMMON';
+
+    // Switching into Multi Stock without sending the portions would leave the
+    // dish drawing no stock at all.
+    if (mode === 'MULTI' && current.variant_stock_mode !== 'MULTI' && data.variants === undefined) {
+      throw AppError.badRequest('Multi Stock needs at least one portion with the stock items it uses.');
+    }
 
     if (data.sku && data.sku !== current.sku) {
       const existingSku = await dbService.queryOne('SELECT id FROM products WHERE sku = ? AND id != ?', [data.sku, id]);
@@ -401,7 +746,6 @@ export class ProductsService {
              description = COALESCE(?, description),
              image_url = COALESCE(?, image_url),
              tax_rate = COALESCE(?, tax_rate),
-             low_stock_threshold = COALESCE(?, low_stock_threshold),
              is_available = COALESCE(?, is_available),
              status = COALESCE(?, status),
              updated_at = CURRENT_TIMESTAMP
@@ -413,29 +757,56 @@ export class ProductsService {
           data.description,
           data.imageUrl,
           data.taxRate,
-          data.lowStockThreshold,
           data.isAvailable !== undefined ? (data.isAvailable ? 1 : 0) : null,
           data.status,
           id,
         ]
       );
 
-      if (data.stockId !== undefined || data.variantStockMode !== undefined) {
+      if (data.stockId !== undefined || requestedMode !== undefined) {
+        // Multi Stock always clears the dish's own link (see create).
+        const clearLink = mode === 'MULTI';
         await dbService.execute(
           `UPDATE products
            SET stock_id = CASE WHEN ? THEN ? ELSE stock_id END,
                variant_stock_mode = COALESCE(?, variant_stock_mode)
            WHERE id = ?`,
           [
-            data.stockId !== undefined ? 1 : 0,
-            data.stockId ? Number(data.stockId) : null,
-            data.variantStockMode || null,
+            data.stockId !== undefined || clearLink ? 1 : 0,
+            !clearLink && data.stockId ? Number(data.stockId) : null,
+            requestedMode || null,
             id,
           ]
         );
       }
 
-      await this.replaceVariants(id, data.variants);
+      // The dish's shared item after this edit - what Common portions draw.
+      const commonStockId = mode === 'MULTI'
+        ? null
+        : data.stockId !== undefined ? (Number(data.stockId) || null) : (current.stock_id ?? null);
+
+      if (data.variants === undefined && mode === 'COMMON' && data.stockId !== undefined) {
+        // Shared item changed without the portions being re-sent: move every
+        // portion's single row onto it (or drop them when it was cleared).
+        if (commonStockId) {
+          await dbService.execute(
+            `UPDATE product_variant_stocks x
+             JOIN product_variants v ON v.id = x.variant_id
+             SET x.stock_id = ?
+             WHERE v.product_id = ?`,
+            [commonStockId, id]
+          );
+        } else {
+          await dbService.execute(
+            `DELETE x FROM product_variant_stocks x
+             JOIN product_variants v ON v.id = x.variant_id
+             WHERE v.product_id = ?`,
+            [id]
+          );
+        }
+      }
+
+      await this.replaceVariants(id, data.variants, mode, commonStockId);
 
       await AuditService.log({
         userId,

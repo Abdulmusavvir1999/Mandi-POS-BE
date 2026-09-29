@@ -183,7 +183,6 @@ describe(' Shop POS API Suite', () => {
           costPrice: 500,
           sellingPrice: 850,
           initialStock: 25,
-          lowStockThreshold: 5,
         });
       expect(res.status).toBe(201);
       expect(res.body.data.name).toBe('Test Gourmet  Platter');

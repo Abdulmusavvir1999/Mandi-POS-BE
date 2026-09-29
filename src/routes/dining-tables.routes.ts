@@ -16,6 +16,22 @@ router.post('/reservations', authenticate, requirePermission('dining.manage'), D
 router.put('/reservations/:id/seat', authenticate, requirePermission('dining.manage'), DiningTablesController.seatReservation);
 router.delete('/reservations/:id', authenticate, requirePermission('dining.manage'), DiningTablesController.cancelReservation);
 
+// Reservations page (params in the body)
+router.post('/reservations/list', authenticate, DiningTablesController.listReservations);
+router.post('/reservations/create', authenticate, requirePermission('dining.manage'), DiningTablesController.createReservation);
+router.post('/reservations/seat', authenticate, requirePermission('dining.manage'), DiningTablesController.seatReservationPost);
+router.post('/reservations/cancel', authenticate, requirePermission('dining.manage'), DiningTablesController.cancelReservationPost);
+router.post('/reservations/no-show', authenticate, requirePermission('dining.manage'), DiningTablesController.noShowReservation);
+
+// Open dining tabs: order in rounds, bill once (params in the body)
+router.post('/tab/get', authenticate, DiningTablesController.getTab);
+router.post('/tab/send', authenticate, requirePermission('pos.billing'), DiningTablesController.sendTabToKitchen);
+router.post('/tab/remove-line', authenticate, requirePermission('pos.billing'), DiningTablesController.removeTabLine);
+router.post('/tab/cancel', authenticate, requirePermission('pos.billing'), DiningTablesController.cancelTab);
+
+// Table history page (filters + paging in the body)
+router.post('/history', authenticate, DiningTablesController.getTableHistoryPage);
+
 // Table Specific Handlers
 router.get('/:id', authenticate, DiningTablesController.getById);
 router.get('/:id/history', authenticate, DiningTablesController.getTableHistory);

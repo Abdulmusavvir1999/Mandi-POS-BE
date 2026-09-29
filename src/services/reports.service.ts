@@ -1,4 +1,5 @@
 import { dbService } from '../database/db';
+import { LINE_UNIT_STOCK_COST } from '../utils/stock-cost.sql';
 
 export class ReportsService {
   static async getSalesReport(dateFrom?: string, dateTo?: string, paymentMethod?: string, orderType?: string, cashierId?: number) {
@@ -108,8 +109,8 @@ export class ReportsService {
          c.name as category_name,
          SUM(bi.quantity) as quantity_sold,
          SUM(bi.total_amount) as revenue_generated,
-         COALESCE(SUM(bi.quantity * COALESCE(bi.stock_consumption, 1) * COALESCE(si.average_unit_price, 0)), 0) as total_cost,
-         COALESCE(SUM(bi.total_amount) - SUM(bi.quantity * COALESCE(bi.stock_consumption, 1) * COALESCE(si.average_unit_price, 0)), 0) as estimated_gross_profit
+         COALESCE(SUM(bi.quantity * ${LINE_UNIT_STOCK_COST}), 0) as total_cost,
+         COALESCE(SUM(bi.total_amount) - SUM(bi.quantity * ${LINE_UNIT_STOCK_COST}), 0) as estimated_gross_profit
        FROM bill_items bi
        JOIN bills b ON bi.bill_id = b.id
        JOIN products p ON bi.product_id = p.id

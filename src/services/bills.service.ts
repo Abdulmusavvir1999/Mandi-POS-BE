@@ -143,9 +143,11 @@ export class BillsService {
     }
 
     const items = await dbService.query(
-      `SELECT bi.*, p.sku, p.image_url
+      `SELECT bi.*, COALESCE(p.sku, cd.combo_code) AS sku, COALESCE(p.image_url, pa.image_url, cd.image_url) AS image_url
        FROM bill_items bi
-       JOIN products p ON bi.product_id = p.id
+       LEFT JOIN products p ON bi.product_id = p.id
+       LEFT JOIN product_addons pa ON pa.id = bi.addon_id
+       LEFT JOIN combo_deals cd ON cd.id = bi.combo_id
        WHERE bi.bill_id = ?
        ORDER BY bi.id ASC`,
       [id]
@@ -368,6 +370,9 @@ export class BillsService {
         quantity: it.quantity,
         unitPrice: it.unit_price,
         notes: it.notes,
+        itemType: it.item_type || 'PRODUCT',
+        comboId: it.combo_id,
+        addonId: it.addon_id,
         isComplimentary: Boolean(it.is_complimentary),
         complimentaryReason: it.complimentary_reason,
       })),
@@ -395,6 +400,9 @@ export class BillsService {
         quantity: it.quantity,
         unitPrice: it.unit_price,
         notes: it.notes,
+        itemType: it.item_type || 'PRODUCT',
+        comboId: it.combo_id,
+        addonId: it.addon_id,
         isComplimentary: false,
       })),
     };

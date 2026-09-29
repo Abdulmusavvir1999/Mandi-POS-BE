@@ -98,7 +98,8 @@ CREATE TABLE IF NOT EXISTS categories (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- variant_stock_mode decides whether every portion draws down one shared stock
--- item (COMMON) or each variant keeps its own (EACH).
+-- item (COMMON), each variant keeps its own (EACH), or each variant draws on a
+-- list of several stock items (MULTI, see product_variant_stocks).
 CREATE TABLE IF NOT EXISTS products (
   id INT AUTO_INCREMENT PRIMARY KEY,
   category_id INT NOT NULL,
@@ -108,9 +109,8 @@ CREATE TABLE IF NOT EXISTS products (
   image_url VARCHAR(255),
   tax_rate DECIMAL(5,2) DEFAULT 5.00,
   stock_quantity INT DEFAULT 0,
-  low_stock_threshold INT DEFAULT 10,
   stock_id INT NULL,
-  variant_stock_mode ENUM('COMMON', 'EACH') NOT NULL DEFAULT 'COMMON',
+  variant_stock_mode ENUM('COMMON', 'EACH', 'MULTI') NOT NULL DEFAULT 'COMMON',
   is_available TINYINT(1) DEFAULT 1,
   status ENUM('ACTIVE', 'INACTIVE') DEFAULT 'ACTIVE',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -118,14 +118,12 @@ CREATE TABLE IF NOT EXISTS products (
   FOREIGN KEY (category_id) REFERENCES categories(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Portion sizes (Full / Half / Quarter). Each carries its own price and the
--- amount of the linked stock item one sale of it consumes.
+-- Portion sizes (Full / Half / Quarter). Each carries its own price; the stock
+-- it takes lives in product_variant_stocks.
 CREATE TABLE IF NOT EXISTS product_variants (
   id INT AUTO_INCREMENT PRIMARY KEY,
   product_id INT NOT NULL,
   name VARCHAR(80) NOT NULL,
-  stock_id INT NULL,
-  stock_consumption DECIMAL(12,3) NOT NULL DEFAULT 1.000,
   selling_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
   display_order INT DEFAULT 0,
   is_default TINYINT(1) NOT NULL DEFAULT 0,
@@ -134,6 +132,25 @@ CREATE TABLE IF NOT EXISTS product_variants (
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uniq_variant_name_per_product (product_id, name),
   FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- The one place a portion's stock lives, in every mode: one row per stock
+-- item per portion, stock_consumption in that item's own unit per portion
+-- sold. Common Stock - one row, the dish's shared item (products.stock_id);
+-- Each Stock - one row, the portion's own item; Multi Stock - one row per
+-- item, e.g. Full = Mutton 2 + Chicken 4 + Rice 1. A dish sold with no
+-- portions draws products.stock_id, 1 per sale.
+CREATE TABLE IF NOT EXISTS product_variant_stocks (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  variant_id INT NOT NULL,
+  stock_id INT NOT NULL,
+  stock_consumption DECIMAL(12,3) NOT NULL,
+  display_order INT NOT NULL DEFAULT 0,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_pvs_variant_stock (variant_id, stock_id),
+  INDEX idx_pvs_stock (stock_id),
+  CONSTRAINT fk_pvs_variant FOREIGN KEY (variant_id) REFERENCES product_variants(id) ON DELETE CASCADE,
+  CONSTRAINT fk_pvs_stock FOREIGN KEY (stock_id) REFERENCES stocks(id) ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -382,7 +399,9 @@ CREATE TABLE IF NOT EXISTS orders (
 CREATE TABLE IF NOT EXISTS order_items (
   id INT AUTO_INCREMENT PRIMARY KEY,
   order_id INT NOT NULL,
-  product_id INT NOT NULL,
+  -- Empty on combo and add-on lines, which are not dishes: item_type says
+  -- which it is, and combo_id / addon_id name the row sold.
+  product_id INT NULL,
   product_name VARCHAR(150) NOT NULL,
   variant_id INT NULL,
   variant_name VARCHAR(80) NULL,
@@ -398,6 +417,7 @@ CREATE TABLE IF NOT EXISTS order_items (
   addons_data TEXT NULL,
   item_type VARCHAR(30) DEFAULT 'PRODUCT',
   combo_id INT NULL,
+  addon_id INT NULL,
   -- Legacy. Meal Deals were withdrawn and nothing writes this any more, but
   -- sales settled while they existed still carry the id they were sold under.
   deal_id INT NULL,
@@ -446,11 +466,16 @@ CREATE TABLE IF NOT EXISTS draft_bills (
 CREATE TABLE IF NOT EXISTS draft_bill_items (
   id INT AUTO_INCREMENT PRIMARY KEY,
   draft_bill_id INT NOT NULL,
-  product_id INT NOT NULL,
+  -- Empty on combo and add-on lines, which are not dishes: item_type says
+  -- which it is, and combo_id / addon_id name the row sold.
+  product_id INT NULL,
   product_name VARCHAR(150) NOT NULL,
   quantity INT NOT NULL,
   unit_price DECIMAL(10,2) NOT NULL,
   notes TEXT,
+  item_type VARCHAR(30) NOT NULL DEFAULT 'PRODUCT',
+  combo_id INT NULL,
+  addon_id INT NULL,
   FOREIGN KEY (draft_bill_id) REFERENCES draft_bills(id) ON DELETE CASCADE,
   FOREIGN KEY (product_id) REFERENCES products(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -521,7 +546,9 @@ CREATE TABLE IF NOT EXISTS bills (
 CREATE TABLE IF NOT EXISTS bill_items (
   id INT AUTO_INCREMENT PRIMARY KEY,
   bill_id INT NOT NULL,
-  product_id INT NOT NULL,
+  -- Empty on combo and add-on lines, which are not dishes: item_type says
+  -- which it is, and combo_id / addon_id name the row sold.
+  product_id INT NULL,
   product_name VARCHAR(150) NOT NULL,
   variant_id INT NULL,
   variant_name VARCHAR(80) NULL,
@@ -536,6 +563,7 @@ CREATE TABLE IF NOT EXISTS bill_items (
   addons_data TEXT NULL,
   item_type VARCHAR(30) DEFAULT 'PRODUCT',
   combo_id INT NULL,
+  addon_id INT NULL,
   -- Legacy. Meal Deals were withdrawn and nothing writes this any more, but
   -- sales settled while they existed still carry the id they were sold under.
   deal_id INT NULL,
@@ -549,6 +577,23 @@ CREATE TABLE IF NOT EXISTS bill_items (
   -- total_amount beside bill_id lets the bills x bill_items aggregation be
   -- answered from the index alone, without reading the rows.
   INDEX idx_bi_bill_cover (bill_id, product_id, quantity, total_amount)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- What one unit of a bill line took from stock, per stock item, written at
+-- checkout. Voids, deletes, restores and refunds give back exactly this, and
+-- the cost reports price it, so editing a dish's recipe (or re-saving its
+-- portions, which renumbers them) never changes what an old sale returns.
+-- Bills from before this table have no rows and fall back to resolving the
+-- dish's current stock link (StockService.lineStockUsage).
+CREATE TABLE IF NOT EXISTS bill_item_stock_usage (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  bill_item_id INT NOT NULL,
+  stock_id INT NOT NULL,
+  quantity_per_unit DECIMAL(12,3) NOT NULL,
+  INDEX idx_bisu_bill_item (bill_item_id),
+  INDEX idx_bisu_stock (stock_id),
+  CONSTRAINT fk_bisu_bill_item FOREIGN KEY (bill_item_id) REFERENCES bill_items(id) ON DELETE CASCADE,
+  CONSTRAINT fk_bisu_stock FOREIGN KEY (stock_id) REFERENCES stocks(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS payments (
@@ -681,18 +726,19 @@ CREATE TABLE IF NOT EXISTS combo_deals (
   INDEX idx_combo_deal_is_deleted (is_deleted)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- A combo is a bundle of add-ons, not dishes: each line is one add-on and how
+-- many of it one combo serves. Selling a combo draws that many from the stock
+-- item behind each add-on (product_addons.stock_id), if it has one.
 CREATE TABLE IF NOT EXISTS combo_deal_items (
   id INT AUTO_INCREMENT PRIMARY KEY,
   combo_id INT NOT NULL,
-  product_id INT NOT NULL,
-  variant_id INT NULL,
+  addon_id INT NOT NULL,
   quantity INT NOT NULL DEFAULT 1,
   display_order INT DEFAULT 0,
   INDEX idx_cdi_combo (combo_id),
-  INDEX idx_cdi_product (product_id),
-  FOREIGN KEY (combo_id) REFERENCES combo_deals(id) ON DELETE CASCADE,
-  FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
-  FOREIGN KEY (variant_id) REFERENCES product_variants(id) ON DELETE SET NULL
+  INDEX idx_cdi_addon (addon_id),
+  CONSTRAINT fk_cdi_combo FOREIGN KEY (combo_id) REFERENCES combo_deals(id) ON DELETE CASCADE,
+  CONSTRAINT fk_cdi_addon FOREIGN KEY (addon_id) REFERENCES product_addons(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ───────────────────────────────────────────────────────────────────────────
@@ -929,12 +975,13 @@ FROM information_schema.tables
 WHERE table_schema = DATABASE()
   AND table_name IN (
     'roles', 'permissions', 'role_permissions', 'users',
-    'categories', 'products', 'product_variants',
+    'categories', 'products', 'product_variants', 'product_variant_stocks',
     'stocks', 'stock_vendor_purchase', 'stock_movements',
     'customers', 'customer_notes',
     'dining_tables', 'table_reservations',
     'orders', 'order_items', 'order_status_history',
     'draft_bills', 'draft_bill_items', 'bills', 'bill_items',
+    'bill_item_stock_usage',
     'payments', 'pos_day_closings', 'queue',
     'product_addons', 'product_addon_mappings',
     'combo_deals', 'combo_deal_items',

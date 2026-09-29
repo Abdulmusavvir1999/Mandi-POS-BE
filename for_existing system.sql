@@ -213,12 +213,135 @@ ALTER TABLE product_addon_mappings MODIFY COLUMN free_limit INT NULL DEFAULT NUL
 
 
 -- ───────────────────────────────────────────────────────────────────────────
--- 8 — product_variants: stock_consumption
+-- 8 — Portion stock lives in product_variant_stocks only
 -- ───────────────────────────────────────────────────────────────────────────
 --
--- Each variant / portion specifies how many units of stock one portion sale consumes.
+-- A portion's stock item and per-portion amount used to sit on
+-- product_variants (stock_id, stock_consumption) for Common / Each Stock,
+-- and in product_variant_stocks (then with a `quantity` column) for Multi
+-- Stock. Now every mode uses product_variant_stocks.stock_consumption:
+-- Common = one row with the dish's shared item, Each = one row with the
+-- portion's own item, Multi = one row per item. The backend does the same
+-- move on startup (ProductsService.moveVariantStockToRecipes); this is the
+-- manual equivalent. Run it once: step 3 reads the columns step 4 drops.
 
-ALTER TABLE product_variants ADD COLUMN IF NOT EXISTS stock_consumption DECIMAL(12,3) NOT NULL DEFAULT 1.000 AFTER stock_id;
+-- 1. The table, with the new column name
+CREATE TABLE IF NOT EXISTS product_variant_stocks (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  variant_id INT NOT NULL,
+  stock_id INT NOT NULL,
+  stock_consumption DECIMAL(12,3) NOT NULL,
+  display_order INT NOT NULL DEFAULT 0,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uniq_pvs_variant_stock (variant_id, stock_id),
+  INDEX idx_pvs_stock (stock_id),
+  CONSTRAINT fk_pvs_variant FOREIGN KEY (variant_id) REFERENCES product_variants(id) ON DELETE CASCADE,
+  CONSTRAINT fk_pvs_stock FOREIGN KEY (stock_id) REFERENCES stocks(id) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+ALTER TABLE product_variant_stocks CHANGE COLUMN IF EXISTS quantity stock_consumption DECIMAL(12,3) NOT NULL;
+
+-- 2. Backup of the two columns before they go
+CREATE TABLE IF NOT EXISTS product_variants_stock_bak AS
+SELECT id, product_id, name, stock_id, stock_consumption, CURRENT_TIMESTAMP AS backed_up_at
+FROM product_variants;
+
+-- 3. One row per Common / Each portion: its own item, else the dish's
+INSERT INTO product_variant_stocks (variant_id, stock_id, stock_consumption, display_order)
+SELECT v.id,
+       COALESCE(v.stock_id, p.stock_id),
+       CASE WHEN v.stock_consumption > 0 THEN v.stock_consumption ELSE 1 END,
+       1
+FROM product_variants v
+JOIN products p ON p.id = v.product_id
+JOIN stocks s ON s.id = COALESCE(v.stock_id, p.stock_id)
+WHERE p.variant_stock_mode <> 'MULTI'
+  AND NOT EXISTS (SELECT 1 FROM product_variant_stocks x WHERE x.variant_id = v.id);
+
+-- 4. Drop the old columns (drop any foreign key on stock_id first if one exists)
+ALTER TABLE product_variants DROP COLUMN IF EXISTS stock_id;
+ALTER TABLE product_variants DROP COLUMN IF EXISTS stock_consumption;
+
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- 9 — Combo deals are made of add-ons; combos and add-ons can be sold
+-- ───────────────────────────────────────────────────────────────────────────
+--
+-- combo_deal_items named a dish (product_id / variant_id). A combo is now a
+-- bundle of add-ons, so each line names an add-on (addon_id). The old dish
+-- lines cannot be turned into add-ons and are deleted; the combos themselves
+-- stay, and their contents are re-picked from the add-ons.
+--
+-- A combo or a stand-alone add-on sold at the till is a bill line with no
+-- dish, so order_items, bill_items and draft_bill_items take an empty
+-- product_id and an addon_id; drafts also record item_type and combo_id.
+--
+-- The API makes the same changes on its first start, so running this after
+-- that is a no-op.
+
+SET @cdi_has_product := (
+  SELECT COUNT(*) FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'combo_deal_items' AND COLUMN_NAME = 'product_id'
+);
+SET @cdi_sql := IF(@cdi_has_product > 0, 'DELETE FROM combo_deal_items', 'DO 0');
+PREPARE cdi_stmt FROM @cdi_sql;
+EXECUTE cdi_stmt;
+DEALLOCATE PREPARE cdi_stmt;
+
+-- The two dish foreign keys were created unnamed, so their names are looked up.
+SET @cdi_fk := (
+  SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'combo_deal_items'
+    AND COLUMN_NAME = 'product_id' AND REFERENCED_TABLE_NAME IS NOT NULL
+  LIMIT 1
+);
+SET @cdi_sql := IF(@cdi_fk IS NULL, 'DO 0', CONCAT('ALTER TABLE combo_deal_items DROP FOREIGN KEY `', @cdi_fk, '`'));
+PREPARE cdi_stmt FROM @cdi_sql;
+EXECUTE cdi_stmt;
+DEALLOCATE PREPARE cdi_stmt;
+
+SET @cdi_fk := (
+  SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'combo_deal_items'
+    AND COLUMN_NAME = 'variant_id' AND REFERENCED_TABLE_NAME IS NOT NULL
+  LIMIT 1
+);
+SET @cdi_sql := IF(@cdi_fk IS NULL, 'DO 0', CONCAT('ALTER TABLE combo_deal_items DROP FOREIGN KEY `', @cdi_fk, '`'));
+PREPARE cdi_stmt FROM @cdi_sql;
+EXECUTE cdi_stmt;
+DEALLOCATE PREPARE cdi_stmt;
+
+ALTER TABLE combo_deal_items DROP COLUMN IF EXISTS variant_id;
+ALTER TABLE combo_deal_items DROP COLUMN IF EXISTS product_id;
+ALTER TABLE combo_deal_items ADD COLUMN IF NOT EXISTS addon_id INT NOT NULL AFTER combo_id;
+ALTER TABLE combo_deal_items ADD INDEX IF NOT EXISTS idx_cdi_addon (addon_id);
+ALTER TABLE combo_deal_items
+  ADD CONSTRAINT fk_cdi_addon
+  FOREIGN KEY IF NOT EXISTS (addon_id) REFERENCES product_addons(id)
+  ON DELETE CASCADE;
+
+ALTER TABLE order_items MODIFY COLUMN product_id INT NULL;
+ALTER TABLE order_items ADD COLUMN IF NOT EXISTS addon_id INT NULL AFTER combo_id;
+
+ALTER TABLE bill_items MODIFY COLUMN product_id INT NULL;
+ALTER TABLE bill_items ADD COLUMN IF NOT EXISTS addon_id INT NULL AFTER combo_id;
+
+ALTER TABLE draft_bill_items MODIFY COLUMN product_id INT NULL;
+ALTER TABLE draft_bill_items ADD COLUMN IF NOT EXISTS item_type VARCHAR(30) NOT NULL DEFAULT 'PRODUCT';
+ALTER TABLE draft_bill_items ADD COLUMN IF NOT EXISTS combo_id INT NULL;
+ALTER TABLE draft_bill_items ADD COLUMN IF NOT EXISTS addon_id INT NULL;
+
+
+-- ───────────────────────────────────────────────────────────────────────────
+-- 10 — Drop products.low_stock_threshold
+-- ───────────────────────────────────────────────────────────────────────────
+--
+-- A dish's low-stock level is its stock item's stocks.min_stock_alert, set in
+-- the Stock Ledger. products.low_stock_threshold was a second copy that the
+-- product form wrote and nothing else kept in step. Its values are not copied
+-- over: they would overwrite alert levels already set on the stock items.
+
+ALTER TABLE products DROP COLUMN IF EXISTS low_stock_threshold;
 
 
 -- ───────────────────────────────────────────────────────────────────────────
