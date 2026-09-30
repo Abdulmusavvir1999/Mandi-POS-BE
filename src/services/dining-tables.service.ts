@@ -5,8 +5,27 @@ import { AuditService } from './audit.service';
 import { TableStatus } from '../models';
 import { logger } from '../config/logger';
 import { ParamUtil } from '../utils/param.util';
+import { CheckoutService } from './checkout.service';
+
+export type BookingType = 'TABLE' | 'PICKUP';
+
+export interface ReservationItemInput {
+  productId: number;
+  variantId?: number | null;
+  quantity: number;
+  notes?: string;
+}
 
 export interface CreateReservationInput {
+  /** TABLE - guests come to dine; PICKUP - the customer books a time and collects. */
+  bookingType?: BookingType;
+  /** Hours after reservation_time the booking stays open; then it expires. Default 24. */
+  validHours?: number;
+  /**
+   * Dishes booked ahead - optional. Only saved here: stock is taken when the
+   * customer arrives and the order is paid at the POS, like any other sale.
+   */
+  items?: ReservationItemInput[];
   tableId?: number;
   customerName: string;
   customerPhone: string;
@@ -78,7 +97,9 @@ export class DiningTablesService {
           reservation_time DATETIME NOT NULL,
           preferred_section VARCHAR(50) NULL,
           special_requests TEXT NULL,
-          status ENUM('CONFIRMED', 'SEATED', 'CANCELLED', 'NO_SHOW') NOT NULL DEFAULT 'CONFIRMED',
+          booking_type ENUM('TABLE', 'PICKUP') NOT NULL DEFAULT 'TABLE',
+          valid_hours INT NOT NULL DEFAULT 24,
+          status ENUM('CONFIRMED', 'SEATED', 'PICKED_UP', 'EXPIRED', 'CANCELLED', 'NO_SHOW') NOT NULL DEFAULT 'CONFIRMED',
           created_by INT NULL,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -88,6 +109,46 @@ export class DiningTablesService {
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
       `);
 
+      // 3. Pickup bookings: a booking type, and PICKED_UP as a pickup's
+      //    "arrived" status (a table booking's is SEATED). For older databases.
+      await dbService.execute(
+        "ALTER TABLE table_reservations ADD COLUMN IF NOT EXISTS booking_type ENUM('TABLE', 'PICKUP') NOT NULL DEFAULT 'TABLE' AFTER reservation_code"
+      );
+      const statusCol = await dbService.queryOne<{ COLUMN_TYPE: string }>(
+        `SELECT COLUMN_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'table_reservations' AND COLUMN_NAME = 'status'`
+      );
+      if (statusCol && !(String(statusCol.COLUMN_TYPE).includes("'PICKED_UP'") && String(statusCol.COLUMN_TYPE).includes("'EXPIRED'"))) {
+        await dbService.execute(
+          "ALTER TABLE table_reservations MODIFY COLUMN status ENUM('CONFIRMED', 'SEATED', 'PICKED_UP', 'EXPIRED', 'CANCELLED', 'NO_SHOW') NOT NULL DEFAULT 'CONFIRMED'"
+        );
+      }
+
+      // 5. Dishes booked ahead (optional). Name, portion and price are copied
+      //    at booking time so the list reads the same if the menu changes.
+      await dbService.execute(`
+        CREATE TABLE IF NOT EXISTS reservation_items (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          reservation_id INT NOT NULL,
+          product_id INT NOT NULL,
+          variant_id INT NULL,
+          product_name VARCHAR(150) NOT NULL,
+          variant_name VARCHAR(80) NULL,
+          quantity INT NOT NULL,
+          unit_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+          notes VARCHAR(255) NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          INDEX idx_ri_reservation (reservation_id),
+          CONSTRAINT fk_ri_reservation FOREIGN KEY (reservation_id) REFERENCES table_reservations(id) ON DELETE CASCADE,
+          CONSTRAINT fk_ri_product FOREIGN KEY (product_id) REFERENCES products(id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      `);
+
+      // 4. How long a booking stays open after its time before it expires.
+      await dbService.execute(
+        'ALTER TABLE table_reservations ADD COLUMN IF NOT EXISTS valid_hours INT NOT NULL DEFAULT 24 AFTER reservation_time'
+      );
+
       this.schemaEnsured = true;
       logger.info('Dining and Table Management schema verified successfully.');
     } catch (err) {
@@ -95,8 +156,120 @@ export class DiningTablesService {
     }
   }
 
+  /**
+   * Checks the dishes on a booking and copies what the list shows (name,
+   * portion, price). Only active, available dishes; a portion must belong to
+   * its dish, and a dish with portions defaults to its default portion.
+   * Nothing is reserved - stock is checked and taken at the POS on arrival.
+   */
+  private static async resolveReservationItems(input: ReservationItemInput[]) {
+    const lines = (Array.isArray(input) ? input : []).filter((i) => i && Number(i.productId) > 0);
+    if (lines.length > 50) throw AppError.badRequest('A booking can hold at most 50 dish lines');
+    const out: {
+      productId: number; variantId: number | null; productName: string; variantName: string | null;
+      quantity: number; unitPrice: number; notes: string | null;
+    }[] = [];
+    for (const line of lines) {
+      const quantity = Math.floor(Number(line.quantity) || 0);
+      if (quantity < 1 || quantity > 999) throw AppError.badRequest('Each dish needs a quantity between 1 and 999');
+      const product = await dbService.queryOne<any>('SELECT id, name, status, is_available FROM products WHERE id = ?', [Number(line.productId)]);
+      if (!product) throw AppError.badRequest(`Dish ${line.productId} no longer exists`);
+      if (product.status !== 'ACTIVE' || !product.is_available) {
+        throw AppError.badRequest(`"${product.name}" is not available right now`);
+      }
+      let variant: any = null;
+      if (line.variantId) {
+        variant = await dbService.queryOne<any>(
+          'SELECT id, name, selling_price FROM product_variants WHERE id = ? AND product_id = ?',
+          [Number(line.variantId), product.id]
+        );
+        if (!variant) throw AppError.badRequest(`That portion is not on "${product.name}"`);
+      } else {
+        variant = await dbService.queryOne<any>(
+          'SELECT id, name, selling_price FROM product_variants WHERE product_id = ? ORDER BY is_default DESC, display_order ASC, id ASC LIMIT 1',
+          [product.id]
+        );
+      }
+      out.push({
+        productId: Number(product.id),
+        variantId: variant ? Number(variant.id) : null,
+        productName: product.name,
+        variantName: variant ? variant.name : null,
+        quantity,
+        unitPrice: variant ? Number(variant.selling_price) || 0 : 0,
+        notes: line.notes ? String(line.notes).slice(0, 255) : null,
+      });
+    }
+    return out;
+  }
+
+  /** Sets `items` and `items_total` on each reservation row, in one query. */
+  private static async attachReservationItems(rows: any[]) {
+    for (const r of rows) { r.items = []; r.items_total = 0; }
+    if (rows.length === 0) return;
+    const ids = rows.map((r) => r.id);
+    const items = await dbService.query<any>(
+      `SELECT reservation_id, product_id, variant_id, product_name, variant_name, quantity, unit_price, notes
+       FROM reservation_items WHERE reservation_id IN (${ids.map(() => '?').join(',')}) ORDER BY id ASC`,
+      ids
+    );
+    const byId = new Map<number, any>(rows.map((r) => [Number(r.id), r]));
+    for (const it of items) {
+      const row = byId.get(Number(it.reservation_id));
+      if (!row) continue;
+      row.items.push({
+        product_id: Number(it.product_id),
+        variant_id: it.variant_id === null ? null : Number(it.variant_id),
+        product_name: it.product_name,
+        variant_name: it.variant_name,
+        quantity: Number(it.quantity),
+        unit_price: Number(it.unit_price),
+        notes: it.notes,
+      });
+      row.items_total += Number(it.quantity) * Number(it.unit_price);
+    }
+  }
+
+  /**
+   * A CONFIRMED booking whose time plus its valid_hours (default 24) has
+   * passed becomes EXPIRED, and any table it was holding is released.
+   *
+   * Run at the start of every read and action that could see such a booking
+   * (the floor, the Reservations page, seat / pickup / convert / no-show), so
+   * nothing depends on a background timer and an expired booking can never be
+   * seated. Cheap when nothing is due: one indexed SELECT.
+   */
+  private static async expireOverdueReservations(): Promise<void> {
+    try {
+      const due = await dbService.query<{ id: number }>(
+        `SELECT id FROM table_reservations
+         WHERE status = 'CONFIRMED'
+           AND DATE_ADD(reservation_time, INTERVAL COALESCE(valid_hours, 24) HOUR) <= NOW()`
+      );
+      if (due.length === 0) return;
+      const ids = due.map((r) => Number(r.id));
+      const marks = ids.map(() => '?').join(',');
+      await dbService.transaction(async () => {
+        await dbService.execute(
+          `UPDATE table_reservations SET status = 'EXPIRED', updated_at = CURRENT_TIMESTAMP
+           WHERE id IN (${marks}) AND status = 'CONFIRMED'`,
+          ids
+        );
+        await dbService.execute(
+          `UPDATE dining_tables SET status = 'AVAILABLE', reservation_id = NULL, active_guest_count = 0
+           WHERE status = 'RESERVED' AND reservation_id IN (${marks})`,
+          ids
+        );
+      });
+      logger.info(`Expired ${ids.length} reservation(s) past their valid hours`);
+    } catch (err) {
+      logger.warn('Could not expire overdue reservations:', err);
+    }
+  }
+
   static async getAll(section?: string, status?: string) {
     await this.ensureSchema();
+    await this.expireOverdueReservations();
 
     let where = 'WHERE 1=1';
     const params: any[] = [];
@@ -123,6 +296,10 @@ export class DiningTablesService {
               tr.customer_name as reservation_customer,
               tr.reservation_time as reservation_time,
               tr.guest_count as reservation_guests,
+              sb.id as seated_booking_id,
+              sb.reservation_code as seated_booking_code,
+              sb.customer_name as seated_booking_customer,
+              sb.customer_phone as seated_booking_phone,
               CASE 
                 WHEN t.status = 'OCCUPIED' AND COALESCE(t.seated_at, o.created_at) IS NOT NULL 
                 THEN TIMESTAMPDIFF(MINUTE, COALESCE(t.seated_at, o.created_at), NOW())
@@ -137,6 +314,14 @@ export class DiningTablesService {
        LEFT JOIN orders o ON t.current_order_id = o.id AND o.is_deleted = 0
        LEFT JOIN customers c ON o.customer_id = c.id
        LEFT JOIN table_reservations tr ON t.id = tr.table_id AND tr.status = 'CONFIRMED' AND DATE(tr.reservation_time) = CURDATE()
+       -- Booked or walk-in: a booking seated on this table since the current
+       -- party sat down (seating it and the table timer start together).
+       LEFT JOIN table_reservations sb ON t.status = 'OCCUPIED' AND sb.id = (
+         SELECT r2.id FROM table_reservations r2
+         WHERE r2.table_id = t.id AND r2.status = 'SEATED'
+           AND r2.updated_at >= COALESCE(t.seated_at, o.created_at) - INTERVAL 2 MINUTE
+         ORDER BY r2.updated_at DESC LIMIT 1
+       )
        ${where}
        ORDER BY t.display_order ASC, t.table_number ASC`,
       params
@@ -165,6 +350,10 @@ export class DiningTablesService {
               tr.customer_name as reservation_customer,
               tr.reservation_time as reservation_time,
               tr.guest_count as reservation_guests,
+              sb.id as seated_booking_id,
+              sb.reservation_code as seated_booking_code,
+              sb.customer_name as seated_booking_customer,
+              sb.customer_phone as seated_booking_phone,
               CASE 
                 WHEN t.status = 'OCCUPIED' AND COALESCE(t.seated_at, o.created_at) IS NOT NULL 
                 THEN TIMESTAMPDIFF(MINUTE, COALESCE(t.seated_at, o.created_at), NOW())
@@ -179,6 +368,14 @@ export class DiningTablesService {
        LEFT JOIN orders o ON t.current_order_id = o.id AND o.is_deleted = 0
        LEFT JOIN customers c ON o.customer_id = c.id
        LEFT JOIN table_reservations tr ON t.id = tr.table_id AND tr.status = 'CONFIRMED' AND DATE(tr.reservation_time) = CURDATE()
+       -- Booked or walk-in: a booking seated on this table since the current
+       -- party sat down (seating it and the table timer start together).
+       LEFT JOIN table_reservations sb ON t.status = 'OCCUPIED' AND sb.id = (
+         SELECT r2.id FROM table_reservations r2
+         WHERE r2.table_id = t.id AND r2.status = 'SEATED'
+           AND r2.updated_at >= COALESCE(t.seated_at, o.created_at) - INTERVAL 2 MINUTE
+         ORDER BY r2.updated_at DESC LIMIT 1
+       )
        WHERE t.id = ?`,
       [id]
     );
@@ -612,6 +809,7 @@ export class DiningTablesService {
    */
   static async getReservations(options: { date?: string; status?: string } = {}) {
     await this.ensureSchema();
+    await this.expireOverdueReservations();
 
     let where = 'WHERE 1=1';
     const params: any[] = [];
@@ -656,34 +854,67 @@ export class DiningTablesService {
     // Booking the table and holding it are one action: a failure between them
     // left a confirmed reservation against a table still showing AVAILABLE,
     // which the floor would then seat to someone else.
+    const items = await this.resolveReservationItems(data.items || []);
+    if (items.length) {
+      // Same rule as the till: every dish line added up per stock item. Nothing
+      // is held - this only stops a booking the kitchen could not make now.
+      const check = await CheckoutService.stockCheck(
+        items.map((i) => ({ productId: i.productId, variantId: i.variantId, quantity: i.quantity }))
+      );
+      const over = check.lines.find((l) => !l.ok);
+      if (over) {
+        const it = items[over.index];
+        const label = it.productName + (it.variantName ? ' (' + it.variantName + ')' : '');
+        throw AppError.badRequest(
+          over.max && over.max > 0
+            ? `Only ${over.max} of ${label} can be made from current stock`
+            : `${label} is out of stock`
+        );
+      }
+    }
+
+    // A pickup holds a time slot only: no table, and no party to seat.
+    const isPickup = data.bookingType === 'PICKUP';
+    const tableId = isPickup ? null : data.tableId || null;
+
     return await dbService.transaction(async () => {
       const res = await dbService.execute(`
         INSERT INTO table_reservations (
-          uuid, reservation_code, table_id, customer_name, customer_phone,
-          guest_count, reservation_time, preferred_section, special_requests, status, created_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'CONFIRMED', ?)
+          uuid, reservation_code, booking_type, table_id, customer_name, customer_phone,
+          guest_count, reservation_time, valid_hours, preferred_section, special_requests, status, created_by
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'CONFIRMED', ?)
       `, [
         uuid,
         nextCode,
-        data.tableId || null,
+        isPickup ? 'PICKUP' : 'TABLE',
+        tableId,
         data.customerName.trim(),
         data.customerPhone.trim(),
-        data.guestCount || 2,
+        isPickup ? 1 : data.guestCount || 2,
         data.reservationTime,
-        data.preferredSection || null,
+        data.validHours && data.validHours > 0 ? Math.floor(data.validHours) : 24,
+        isPickup ? null : data.preferredSection || null,
         data.specialRequests || null,
         userId,
       ]);
 
       const rsvId = res.lastInsertRowid;
 
+      for (const it of items) {
+        await dbService.execute(
+          `INSERT INTO reservation_items (reservation_id, product_id, variant_id, product_name, variant_name, quantity, unit_price, notes)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [rsvId, it.productId, it.variantId, it.productName, it.variantName, it.quantity, it.unitPrice, it.notes]
+        );
+      }
+
       // If table assigned, mark table as RESERVED
-      if (data.tableId) {
+      if (tableId) {
         await dbService.execute(`
           UPDATE dining_tables
           SET status = 'RESERVED', reservation_id = ?, active_guest_count = ?
           WHERE id = ? AND status = 'AVAILABLE'
-        `, [rsvId, data.guestCount || 2, data.tableId]);
+        `, [rsvId, data.guestCount || 2, tableId]);
       }
 
       await AuditService.log({
@@ -691,7 +922,7 @@ export class DiningTablesService {
         action: 'TABLE_RESERVATION_CREATED',
         module: 'DINING',
         recordId: rsvId,
-        newValues: { code: nextCode, customer: data.customerName, tableId: data.tableId },
+        newValues: { code: nextCode, type: isPickup ? 'PICKUP' : 'TABLE', customer: data.customerName, tableId, dishes: items.length },
       });
 
       return await dbService.queryOne('SELECT * FROM table_reservations WHERE id = ?', [rsvId]);
@@ -700,6 +931,7 @@ export class DiningTablesService {
 
   static async seatReservation(reservationId: number, tableId: number, userId: number) {
     await this.ensureSchema();
+    await this.expireOverdueReservations();
     const rsv = await dbService.queryOne<{ id: number; guest_count: number; table_id: number; status: string }>(
       'SELECT * FROM table_reservations WHERE id = ?',
       [reservationId]
@@ -709,6 +941,9 @@ export class DiningTablesService {
 
     if (rsv.status !== 'CONFIRMED') {
       throw AppError.badRequest('Only confirmed reservations can be seated');
+    }
+    if ((rsv as any).booking_type === 'PICKUP') {
+      throw AppError.badRequest('This is a pickup booking - mark it as picked up instead of seating it');
     }
 
     const targetTableId = tableId || rsv.table_id;
@@ -769,6 +1004,7 @@ export class DiningTablesService {
    */
   static async listReservations(opts: { from?: string; to?: string; status?: string; search?: string }) {
     await this.ensureSchema();
+    await this.expireOverdueReservations();
 
     let where = 'WHERE 1=1';
     const params: any[] = [];
@@ -794,9 +1030,12 @@ export class DiningTablesService {
       `SELECT COUNT(*) AS total,
               SUM(r.status = 'CONFIRMED') AS confirmed,
               SUM(r.status = 'SEATED') AS seated,
+              SUM(r.status = 'PICKED_UP') AS picked_up,
+              SUM(r.status = 'EXPIRED') AS expired,
+              SUM(r.booking_type = 'PICKUP') AS pickups,
               SUM(r.status = 'CANCELLED') AS cancelled,
               SUM(r.status = 'NO_SHOW') AS no_show,
-              COALESCE(SUM(CASE WHEN r.status IN ('CONFIRMED', 'SEATED') THEN r.guest_count END), 0) AS covers,
+              COALESCE(SUM(CASE WHEN r.booking_type = 'TABLE' AND r.status IN ('CONFIRMED', 'SEATED') THEN r.guest_count END), 0) AS covers,
               SUM(r.status = 'CONFIRMED' AND r.reservation_time < NOW()) AS late
        FROM table_reservations r
        ${where}`,
@@ -813,7 +1052,11 @@ export class DiningTablesService {
     const rows = await dbService.query(
       `SELECT r.*, t.table_number, t.name AS table_name, t.section AS table_section,
               t.capacity AS table_capacity, t.status AS table_status,
-              TIMESTAMPDIFF(MINUTE, NOW(), r.reservation_time) AS minutes_until
+              TIMESTAMPDIFF(MINUTE, NOW(), r.reservation_time) AS minutes_until,
+              DATE_ADD(r.reservation_time, INTERVAL COALESCE(r.valid_hours, 24) HOUR) AS expires_at,
+              -- Measured by the database clock, so the screen's countdown does
+              -- not depend on the device clock being right.
+              TIMESTAMPDIFF(SECOND, NOW(), DATE_ADD(r.reservation_time, INTERVAL COALESCE(r.valid_hours, 24) HOUR)) AS seconds_to_expiry
        FROM table_reservations r
        LEFT JOIN dining_tables t ON r.table_id = t.id
        ${rowWhere}
@@ -822,9 +1065,11 @@ export class DiningTablesService {
       rowParams
     );
 
+    await this.attachReservationItems(rows as any[]);
+
     const today = await dbService.queryOne<any>(
       `SELECT COUNT(*) AS bookings,
-              COALESCE(SUM(CASE WHEN status IN ('CONFIRMED', 'SEATED') THEN guest_count END), 0) AS covers,
+              COALESCE(SUM(CASE WHEN booking_type = 'TABLE' AND status IN ('CONFIRMED', 'SEATED') THEN guest_count END), 0) AS covers,
               SUM(status = 'CONFIRMED') AS pending,
               SUM(status = 'SEATED') AS seated
        FROM table_reservations
@@ -838,6 +1083,9 @@ export class DiningTablesService {
         total: n(counts?.total),
         confirmed: n(counts?.confirmed),
         seated: n(counts?.seated),
+        picked_up: n(counts?.picked_up),
+        expired: n(counts?.expired),
+        pickups: n(counts?.pickups),
         cancelled: n(counts?.cancelled),
         no_show: n(counts?.no_show),
         covers: n(counts?.covers),
@@ -852,9 +1100,179 @@ export class DiningTablesService {
     };
   }
 
+  /**
+   * The customer booked a pickup but now wants to dine in: turn the booking
+   * into a table booking, keeping its code, customer and time. It stays
+   * CONFIRMED - seat it as usual - and, when a table is chosen, that table is
+   * held for it exactly as a new table booking would hold it.
+   */
+  static async convertPickupToTable(
+    reservationId: number,
+    data: { guestCount: number; tableId?: number | null },
+    userId: number
+  ) {
+    await this.ensureSchema();
+    await this.expireOverdueReservations();
+    const rsv = await dbService.queryOne<{ id: number; status: string; booking_type: string; reservation_code: string }>(
+      'SELECT id, status, booking_type, reservation_code FROM table_reservations WHERE id = ?',
+      [reservationId]
+    );
+    if (!rsv) throw AppError.notFound('Reservation not found');
+    if (rsv.booking_type !== 'PICKUP') {
+      throw AppError.badRequest('This booking is already a table booking');
+    }
+    if (rsv.status !== 'CONFIRMED') {
+      throw AppError.badRequest('Only confirmed pickup bookings can be changed to dine-in');
+    }
+    const guestCount = Math.floor(Number(data.guestCount) || 0);
+    if (guestCount < 1 || guestCount > 500) throw AppError.badRequest('Invalid party size');
+
+    const tableId = data.tableId || null;
+    if (tableId) {
+      const table = await this.getById(tableId);
+      if (table.status !== 'AVAILABLE') {
+        throw AppError.conflict(`Table ${table.table_number} is ${String(table.status).toLowerCase()}, choose another table`);
+      }
+    }
+
+    await dbService.transaction(async () => {
+      await dbService.execute(
+        `UPDATE table_reservations
+         SET booking_type = 'TABLE', guest_count = ?, table_id = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [guestCount, tableId, reservationId]
+      );
+      if (tableId) {
+        await dbService.execute(
+          `UPDATE dining_tables
+           SET status = 'RESERVED', reservation_id = ?, active_guest_count = ?
+           WHERE id = ? AND status = 'AVAILABLE'`,
+          [reservationId, guestCount, tableId]
+        );
+      }
+    });
+
+    await AuditService.log({
+      userId,
+      action: 'RESERVATION_PICKUP_TO_TABLE',
+      module: 'DINING',
+      recordId: reservationId,
+      newValues: { code: rsv.reservation_code, guestCount, tableId },
+    });
+
+    // Same shape as a Reservations page row, so the screen can keep using it.
+    return await dbService.queryOne(
+      `SELECT r.*, t.table_number, t.name AS table_name, t.section AS table_section,
+              t.capacity AS table_capacity, t.status AS table_status,
+              TIMESTAMPDIFF(MINUTE, NOW(), r.reservation_time) AS minutes_until
+       FROM table_reservations r
+       LEFT JOIN dining_tables t ON r.table_id = t.id
+       WHERE r.id = ?`,
+      [reservationId]
+    );
+  }
+
+  /**
+   * The other way round: a table booking the customer now wants to collect.
+   * It becomes a PICKUP with the same code, customer, time, dishes and
+   * validity; any table it was holding is released, and it no longer seats
+   * anyone.
+   */
+  static async convertTableToPickup(reservationId: number, userId: number) {
+    await this.ensureSchema();
+    await this.expireOverdueReservations();
+    const rsv = await dbService.queryOne<{ id: number; status: string; booking_type: string; table_id: number | null; reservation_code: string }>(
+      'SELECT id, status, booking_type, table_id, reservation_code FROM table_reservations WHERE id = ?',
+      [reservationId]
+    );
+    if (!rsv) throw AppError.notFound('Reservation not found');
+    if (rsv.booking_type === 'PICKUP') throw AppError.badRequest('This booking is already a pickup');
+    if (rsv.status !== 'CONFIRMED') {
+      throw AppError.badRequest('Only confirmed table bookings can be changed to pickup');
+    }
+
+    await dbService.transaction(async () => {
+      await dbService.execute(
+        `UPDATE table_reservations
+         SET booking_type = 'PICKUP', table_id = NULL, guest_count = 1, preferred_section = NULL, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [reservationId]
+      );
+      if (rsv.table_id) {
+        await dbService.execute(
+          `UPDATE dining_tables SET status = 'AVAILABLE', reservation_id = NULL, active_guest_count = 0
+           WHERE id = ? AND status = 'RESERVED' AND reservation_id = ?`,
+          [rsv.table_id, reservationId]
+        );
+      }
+    });
+
+    await AuditService.log({
+      userId,
+      action: 'RESERVATION_TABLE_TO_PICKUP',
+      module: 'DINING',
+      recordId: reservationId,
+      newValues: { code: rsv.reservation_code, releasedTableId: rsv.table_id },
+    });
+
+    return { success: true };
+  }
+
+  /**
+   * The POS served a booking: a dining round for it went to the kitchen (or
+   * it was billed). Closes it by how it was served - see
+   * CheckoutService.fulfilBooking - and audits it.
+   */
+  static async fulfilReservation(reservationId: number, servedAs: 'DINING' | 'TAKEAWAY', tableId: number | null, userId: number) {
+    await this.ensureSchema();
+    if (servedAs === 'DINING' && !tableId) throw AppError.badRequest('Pick a table to seat this booking');
+    const status = await dbService.transaction(() => CheckoutService.fulfilBooking(reservationId, servedAs, tableId));
+    if (!status) throw AppError.badRequest('This booking is no longer confirmed');
+    await AuditService.log({
+      userId,
+      action: 'RESERVATION_FULFILLED',
+      module: 'DINING',
+      recordId: reservationId,
+      newValues: { servedAs, tableId, status },
+    });
+    return { status };
+  }
+
+  /** A pickup booking collected: close it. No table is involved. */
+  static async markReservationPickedUp(reservationId: number, userId: number) {
+    await this.ensureSchema();
+    await this.expireOverdueReservations();
+    const rsv = await dbService.queryOne<{ id: number; status: string; booking_type: string }>(
+      'SELECT id, status, booking_type FROM table_reservations WHERE id = ?',
+      [reservationId]
+    );
+    if (!rsv) throw AppError.notFound('Reservation not found');
+    if (rsv.booking_type !== 'PICKUP') {
+      throw AppError.badRequest('Only pickup bookings can be marked as picked up');
+    }
+    if (rsv.status !== 'CONFIRMED') {
+      throw AppError.badRequest('Only confirmed bookings can be marked as picked up');
+    }
+
+    await dbService.execute(
+      `UPDATE table_reservations SET status = 'PICKED_UP', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      [reservationId]
+    );
+
+    await AuditService.log({
+      userId,
+      action: 'RESERVATION_PICKED_UP',
+      module: 'DINING',
+      recordId: reservationId,
+    });
+
+    return { success: true };
+  }
+
   /** Guest never arrived: close the booking and free the table it was holding. */
   static async markReservationNoShow(reservationId: number, userId: number) {
     await this.ensureSchema();
+    await this.expireOverdueReservations();
     const rsv = await dbService.queryOne<{ id: number; table_id: number; status: string }>(
       'SELECT * FROM table_reservations WHERE id = ?',
       [reservationId]
@@ -887,6 +1305,56 @@ export class DiningTablesService {
     });
 
     return { success: true };
+  }
+
+  /**
+   * Cancel several bookings at once. Only CONFIRMED ones are cancelled - a
+   * seated, picked-up, no-show or already-cancelled booking is skipped and
+   * reported, never changed. All of it is one transaction, so a failure part
+   * way leaves every booking as it was. Each table held for a cancelled
+   * booking is released.
+   */
+  static async cancelReservations(reservationIds: number[], userId: number) {
+    await this.ensureSchema();
+    const ids = [...new Set(reservationIds.map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+    if (ids.length === 0) throw AppError.badRequest('Select at least one booking to cancel');
+    if (ids.length > 500) throw AppError.badRequest('Cancel at most 500 bookings at a time');
+
+    const rows = await dbService.query<{ id: number; status: string; table_id: number | null; reservation_code: string }>(
+      `SELECT id, status, table_id, reservation_code FROM table_reservations WHERE id IN (${ids.map(() => '?').join(',')})`,
+      ids
+    );
+    const cancellable = rows.filter((r) => r.status === 'CONFIRMED');
+    const skipped = rows.filter((r) => r.status !== 'CONFIRMED').map((r) => r.reservation_code);
+    const missing = ids.length - rows.length;
+
+    if (cancellable.length > 0) {
+      await dbService.transaction(async () => {
+        for (const r of cancellable) {
+          await dbService.execute(
+            `UPDATE table_reservations SET status = 'CANCELLED', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'CONFIRMED'`,
+            [r.id]
+          );
+          if (r.table_id) {
+            await dbService.execute(
+              `UPDATE dining_tables
+               SET status = 'AVAILABLE', reservation_id = NULL, active_guest_count = 0
+               WHERE id = ? AND status = 'RESERVED' AND reservation_id = ?`,
+              [r.table_id, r.id]
+            );
+          }
+          await AuditService.log({
+            userId,
+            action: 'RESERVATION_CANCELLED',
+            module: 'DINING',
+            recordId: r.id,
+            newValues: { bulk: true },
+          });
+        }
+      });
+    }
+
+    return { cancelled: cancellable.length, skipped, missing };
   }
 
   static async cancelReservation(reservationId: number, userId: number) {

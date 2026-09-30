@@ -12,6 +12,16 @@ export class CheckoutController {
     }
   }
 
+  static async stockCheck(req: Request, res: Response, next: NextFunction) {
+    try {
+      const b = req.body || {};
+      const result = await CheckoutService.stockCheck(Array.isArray(b.items) ? b.items : [], b.existingOrderId ? Number(b.existingOrderId) : null);
+      res.json({ success: true, data: result });
+    } catch (err) {
+      next(err);
+    }
+  }
+
   static async syncOffline(req: Request, res: Response, next: NextFunction) {
     try {
       const { orders } = req.body || {};

@@ -346,7 +346,13 @@ CREATE TABLE IF NOT EXISTS table_reservations (
   reservation_time DATETIME NOT NULL,
   preferred_section VARCHAR(50) NULL,
   special_requests TEXT NULL,
-  status ENUM('CONFIRMED', 'SEATED', 'CANCELLED', 'NO_SHOW') NOT NULL DEFAULT 'CONFIRMED',
+  -- TABLE: guests come to dine (table, party size, SEATED on arrival).
+  -- PICKUP: the customer books a time and collects (no table; PICKED_UP).
+  booking_type ENUM('TABLE', 'PICKUP') NOT NULL DEFAULT 'TABLE',
+  -- A CONFIRMED booking still open this many hours after reservation_time
+  -- becomes EXPIRED and releases any held table (DiningTablesService).
+  valid_hours INT NOT NULL DEFAULT 24,
+  status ENUM('CONFIRMED', 'SEATED', 'PICKED_UP', 'EXPIRED', 'CANCELLED', 'NO_SHOW') NOT NULL DEFAULT 'CONFIRMED',
   created_by INT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -366,6 +372,26 @@ CREATE TABLE IF NOT EXISTS table_reservations (
 -- table rewrite - it already has once, when walk-in, pickup and counter
 -- were folded into TAKEAWAY. See section 15 of "for_existing system.sql"
 -- for the migration that folds them in an already-deployed database.
+-- Dishes booked ahead with a reservation (optional). Name, portion and price
+-- are copied at booking time. Only saved: stock is taken when the customer
+-- arrives and the order is paid at the POS (Takeaway for a pickup, Dining on
+-- the table for a table booking), exactly like any other sale.
+CREATE TABLE IF NOT EXISTS reservation_items (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  reservation_id INT NOT NULL,
+  product_id INT NOT NULL,
+  variant_id INT NULL,
+  product_name VARCHAR(150) NOT NULL,
+  variant_name VARCHAR(80) NULL,
+  quantity INT NOT NULL,
+  unit_price DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+  notes VARCHAR(255) NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_ri_reservation (reservation_id),
+  CONSTRAINT fk_ri_reservation FOREIGN KEY (reservation_id) REFERENCES table_reservations(id) ON DELETE CASCADE,
+  CONSTRAINT fk_ri_product FOREIGN KEY (product_id) REFERENCES products(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS orders (
   id INT AUTO_INCREMENT PRIMARY KEY,
   -- What a withdrawn document gave up: its id and the number it held,
@@ -479,6 +505,9 @@ CREATE TABLE IF NOT EXISTS bills (
   bill_number VARCHAR(50) NULL UNIQUE,
   order_id INT NOT NULL UNIQUE,
   customer_id INT NULL,
+  -- Name / phone typed at payment without saving a customer (this bill only).
+  guest_name VARCHAR(100) NULL,
+  guest_phone VARCHAR(30) NULL,
   dining_table_id INT NULL,
   cashier_id INT NOT NULL,
   order_type VARCHAR(30) NOT NULL,

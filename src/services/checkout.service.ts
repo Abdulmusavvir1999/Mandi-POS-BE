@@ -4,6 +4,8 @@ import { SettingsService } from './settings.service';
 import { AuditService } from './audit.service';
 import { StockService } from './stock.service';
 import { ProductsService } from './products.service';
+import { CustomersService } from './customers.service';
+import { PhoneUtil } from '../utils/phone.util';
 import { OrderType, PaymentMethod } from '../models';
 import { SequenceUtil } from '../utils/sequence.util';
 import { DocumentSequence, ORDER_DOCUMENT, BILL_DOCUMENT } from '../utils/document-sequence.util';
@@ -36,6 +38,19 @@ export interface CheckoutPayload {
   payments?: Array<{ method: string; amount: number; reference?: string }>;
   paymentReference?: string;
   notes?: string;
+  /**
+   * The booking this sale fulfils, when the POS was opened from a pickup
+   * booking's "Collect & bill". Paying marks that pickup PICKED_UP.
+   */
+  reservationId?: number | null;
+  /**
+   * Customer typed at payment (no customer attached). With saveCustomer the
+   * pair becomes a customer record - the existing one when the phone is
+   * already known; without it, it is kept on this bill only.
+   */
+  customerName?: string | null;
+  customerPhone?: string | null;
+  saveCustomer?: boolean;
   items: Array<{
     /** The dish. Ignored on COMBO and ADDON lines, which name their own item. */
     productId?: number | null;
@@ -100,6 +115,14 @@ export class CheckoutService {
       //    checkout writes the usage record on every sale, and the reports,
       //    voids and refunds - which all chain through here - read both.
       await ProductsService.ensureSchema();
+      // Customer typed at payment: customers must be ready before the
+      // checkout transaction (its DDL would commit it), and a bill keeps an
+      // unsaved customer's name and phone as guest_name / guest_phone.
+      await CustomersService.ensureSchema();
+      try {
+        await dbService.execute('ALTER TABLE bills ADD COLUMN IF NOT EXISTS guest_name VARCHAR(100) NULL');
+        await dbService.execute('ALTER TABLE bills ADD COLUMN IF NOT EXISTS guest_phone VARCHAR(30) NULL');
+      } catch (_) {}
 
       // 1. Expand columns
       try {
@@ -319,6 +342,12 @@ export class CheckoutService {
         tabLines = await this.loadTabLines(tabOrder.id);
       }
 
+      // Customer typed at payment: save / reuse by phone, or keep for this bill.
+      const typed = await this.resolveTypedCustomer(payload, cashierId);
+      payload = { ...payload, customerId: payload.customerId || typed.customerId || undefined };
+      (payload as any).__guest = typed.guest;
+      (payload as any).__customerLink = typed.link;
+
       // Clients can never lock a price: strip anything that looks like one.
       const newItems = (payload.items || []).map((i) => {
         const { lockedUnitPrice: _drop, ...rest } = i as any;
@@ -334,7 +363,9 @@ export class CheckoutService {
       // 2. Stock check for what has not been served yet.
       await this.assertStock(verifiedItems.filter((l) => !l.locked));
 
-      return await this.finishCheckout(payload, cashierId, taxPolicy, verifiedItems, subtotal, tabOrder);
+      const summary: any = await this.finishCheckout(payload, cashierId, taxPolicy, verifiedItems, subtotal, tabOrder);
+      // How the typed customer was handled: EXISTING / CREATED / GUEST (or null).
+      return { ...summary, customer_link: (payload as any).__customerLink ?? null };
     });
   }
 
@@ -534,6 +565,11 @@ export class CheckoutService {
    * Stock check, per stock item across the given lines: two lines that
    * draw on the same item (a dish and a combo holding it) must fit in its
    * balance together, not each on its own.
+   *
+   * The rows are read FOR UPDATE, in stock-id order: inside a transaction
+   * (checkout, sending a tab round) that holds them until it commits, so a
+   * second till cannot pass the same check on the same last units in
+   * between. The fixed order keeps two such transactions from deadlocking.
    */
   static async assertStock(lines: VerifiedLine[]): Promise<void> {
     const required = new Map<number, number>();
@@ -542,9 +578,9 @@ export class CheckoutService {
         required.set(u.stockId, (required.get(u.stockId) ?? 0) + u.quantity);
       }
     }
-    for (const [stockId, needed] of required) {
+    for (const [stockId, needed] of [...required].sort((a, b) => a[0] - b[0])) {
       const stock = await dbService.queryOne<{ name: string; unit_type: string; current_quantity: number }>(
-        'SELECT name, unit_type, current_quantity FROM stocks WHERE id = ?',
+        'SELECT name, unit_type, current_quantity FROM stocks WHERE id = ? FOR UPDATE',
         [stockId]
       );
       const available = Number(stock?.current_quantity ?? 0);
@@ -555,6 +591,149 @@ export class CheckoutService {
         );
       }
     }
+  }
+
+
+  /**
+   * The customer typed in the payment dialog, when none is attached:
+   *  - saveCustomer: needs a name and a valid phone; the phone is looked up
+   *    first (spaces and dashes ignored) and an existing customer is used as
+   *    is - never a duplicate; otherwise a new customer is created.
+   *  - not saved: nothing is created; the name / phone go on this bill only.
+   * Runs inside the checkout transaction, so a failed payment saves nobody.
+   */
+  static async resolveTypedCustomer(payload: CheckoutPayload, cashierId: number): Promise<{
+    customerId: number | null;
+    guest: { name: string | null; phone: string | null } | null;
+    link: 'EXISTING' | 'CREATED' | 'GUEST' | null;
+  }> {
+    if (payload.customerId) return { customerId: null, guest: null, link: null };
+    const name = String(payload.customerName ?? '').trim().slice(0, 100);
+    const phoneRaw = String(payload.customerPhone ?? '').trim();
+    if (!name && !phoneRaw) return { customerId: null, guest: null, link: null };
+
+    const phone = phoneRaw ? PhoneUtil.normalise(phoneRaw) : '';
+    const digits = phone.replace('+', '');
+    if (phoneRaw && (digits.length < 7 || digits.length > 15)) {
+      throw AppError.badRequest('Enter a valid phone number (7 to 15 digits)');
+    }
+
+    if (!payload.saveCustomer) {
+      return { customerId: null, guest: { name: name || null, phone: phone || null }, link: 'GUEST' };
+    }
+    if (!name || !phone) throw AppError.badRequest('Customer name and phone are both needed to save the customer');
+
+    const findByPhone = () => CustomersService.findByPhone(phone);
+    const existing = await findByPhone();
+    if (existing) return { customerId: Number(existing.id), guest: null, link: 'EXISTING' };
+
+    try {
+      const created: any = await CustomersService.create({ name, phone }, cashierId);
+      return { customerId: Number(created?.id), guest: null, link: 'CREATED' };
+    } catch (err: any) {
+      // Another till saved the same phone a moment ago: use that record.
+      const again = await findByPhone();
+      if (again) return { customerId: Number(again.id), guest: null, link: 'EXISTING' };
+      throw err;
+    }
+  }
+
+  /**
+   * Live stock check for a cart or a booking's dishes - the same rule
+   * checkout applies, without selling anything. For every line it returns the
+   * most it can be raised to, given current stock and every other line
+   * drawing on the same stock items (other portions, dishes, combos). With an
+   * open dining tab, the rounds already sent count as well: nothing on a tab
+   * has left stock yet.
+   *
+   * A line whose stock is unlimited (draws nothing) gets max: null.
+   */
+  static async stockCheck(items: CheckoutPayload['items'], existingOrderId?: number | null) {
+    const clean = (items || []).filter((i) => Number(i?.quantity) > 0);
+    const { lines } = await this.verifyLines(clean);
+    const sent = existingOrderId ? (await this.verifyLines(await this.loadTabLines(existingOrderId))).lines : [];
+
+    const required = new Map<number, number>();
+    for (const l of [...sent, ...lines]) {
+      for (const u of l.stockUsages) required.set(u.stockId, (required.get(u.stockId) ?? 0) + u.quantity);
+    }
+
+    const ids = [...required.keys()];
+    const rows = ids.length
+      ? await dbService.query<{ id: number; name: string; unit_type: string; current_quantity: number }>(
+          `SELECT id, name, unit_type, current_quantity FROM stocks WHERE id IN (${ids.map(() => '?').join(',')})`,
+          ids
+        )
+      : [];
+    const balance = new Map(rows.map((r) => [Number(r.id), Number(r.current_quantity) || 0]));
+
+    const lineResults = lines.map((l, index) => {
+      if (!l.stockUsages.length) return { index, quantity: l.quantity, max: null as number | null, ok: true };
+      let max = Infinity;
+      for (const u of l.stockUsages) {
+        const perUnit = l.quantity > 0 ? u.quantity / l.quantity : 0;
+        if (!(perUnit > 0)) continue;
+        // What is left for this line once every other line has its share.
+        const others = (required.get(u.stockId) ?? 0) - u.quantity;
+        const free = (balance.get(u.stockId) ?? 0) - others;
+        max = Math.min(max, Math.floor((free + 1e-9) / perUnit));
+      }
+      const cap = Number.isFinite(max) ? Math.max(0, max) : null;
+      return { index, quantity: l.quantity, max: cap, ok: cap === null || l.quantity <= cap };
+    });
+
+    return {
+      ok: lineResults.every((r) => r.ok),
+      lines: lineResults,
+      stocks: rows.map((r) => ({
+        stock_id: Number(r.id),
+        name: r.name,
+        unit_type: r.unit_type,
+        available: Number(r.current_quantity) || 0,
+        required: required.get(Number(r.id)) ?? 0,
+      })),
+    };
+  }
+
+  /**
+   * Close a CONFIRMED booking by how it was actually served, whatever it was
+   * booked as. Dining on a table: it becomes a TABLE booking on that table,
+   * SEATED. Anything else: a PICKUP, PICKED_UP. A table it was holding
+   * elsewhere is released; the table it is served on belongs to the dining
+   * tab and is left alone. Returns the new status, or null when there was
+   * nothing to do (not confirmed any more).
+   */
+  static async fulfilBooking(reservationId: number, servedAs: 'DINING' | 'TAKEAWAY', tableId: number | null) {
+    const rsv = await dbService.queryOne<{ id: number; status: string; table_id: number | null }>(
+      'SELECT id, status, table_id FROM table_reservations WHERE id = ? FOR UPDATE',
+      [reservationId]
+    );
+    if (!rsv || rsv.status !== 'CONFIRMED') return null;
+
+    const dining = servedAs === 'DINING' && !!tableId;
+    if (rsv.table_id && Number(rsv.table_id) !== Number(dining ? tableId : 0)) {
+      await dbService.execute(
+        `UPDATE dining_tables SET status = 'AVAILABLE', reservation_id = NULL, active_guest_count = 0
+         WHERE id = ? AND status = 'RESERVED' AND reservation_id = ?`,
+        [rsv.table_id, reservationId]
+      );
+    }
+    if (dining) {
+      await dbService.execute(
+        `UPDATE table_reservations
+         SET booking_type = 'TABLE', status = 'SEATED', table_id = ?, guest_count = GREATEST(guest_count, 1), updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [tableId, reservationId]
+      );
+      return 'SEATED';
+    }
+    await dbService.execute(
+      `UPDATE table_reservations
+       SET booking_type = 'PICKUP', status = 'PICKED_UP', table_id = NULL, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [reservationId]
+    );
+    return 'PICKED_UP';
   }
 
   /** Everything after the lines are verified: totals, order, bill, stock, payment. */
@@ -740,8 +919,9 @@ export class CheckoutService {
         order_type, subtotal, discount_type, discount_value,
         discount_amount, tax_amount, service_charge_amount, surcharge_amount,
         coupon_code, coupon_discount, total_amount, payment_status,
-        payment_method, cash_tendered, change_returned, offline_sync_id, notes, printed_count
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PAID', ?, ?, ?, ?, ?, 0)`,
+        payment_method, cash_tendered, change_returned, offline_sync_id, notes, printed_count,
+        guest_name, guest_phone
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PAID', ?, ?, ?, ?, ?, 0, ?, ?)`,
       [
         billNumber,
         orderId,
@@ -764,6 +944,8 @@ export class CheckoutService {
         changeReturned,
         payload.offlineSyncId || null,
         payload.notes || null,
+        (payload as any).__guest?.name ?? null,
+        (payload as any).__guest?.phone ?? null,
       ]
     );
 
@@ -850,6 +1032,16 @@ export class CheckoutService {
              updated_at = CURRENT_TIMESTAMP
          WHERE id = ?`,
         [payload.diningTableId]
+      );
+    }
+
+    // 11b. A booking loaded into this sale is fulfilled by how it was served -
+    //      same transaction as the sale, so it is never marked without it.
+    if (payload.reservationId) {
+      await CheckoutService.fulfilBooking(
+        Number(payload.reservationId),
+        ParamUtil.orderType(payload.orderType) === 'DINING' ? 'DINING' : 'TAKEAWAY',
+        payload.diningTableId ? Number(payload.diningTableId) : null
       );
     }
 
@@ -954,7 +1146,7 @@ export class CheckoutService {
 
   static async getBillSummary(billId: number) {
     const bill = await dbService.queryOne(
-      `SELECT b.*, o.order_number, c.name as customer_name, c.phone as customer_phone,
+      `SELECT b.*, o.order_number, COALESCE(c.name, b.guest_name) as customer_name, COALESCE(c.phone, b.guest_phone) as customer_phone,
               t.table_number, t.name as table_name,
               u.name as cashier_name
        FROM bills b

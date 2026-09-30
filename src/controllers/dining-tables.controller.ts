@@ -167,11 +167,26 @@ export class DiningTablesController {
       // datetime-local gives "2026-09-29T19:30"; store as local "2026-09-29 19:30:00".
       const m = rawTime.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})(:\d{2})?/);
       if (!m) throw AppError.badRequest('Invalid reservation time');
+      const bookingType = String(b.bookingType ?? b.booking_type ?? 'TABLE').toUpperCase() === 'PICKUP' ? 'PICKUP' : 'TABLE';
       const guestCount = Number(b.guestCount ?? b.guest_count) || 2;
-      if (guestCount < 1 || guestCount > 500) throw AppError.badRequest('Invalid party size');
+      const validHours = Number(b.validHours ?? b.valid_hours) || 24;
+      if (!Number.isInteger(validHours) || validHours < 1 || validHours > 720) {
+        throw AppError.badRequest('Booking validity must be between 1 and 720 hours');
+      }
+      if (bookingType === 'TABLE' && (guestCount < 1 || guestCount > 500)) throw AppError.badRequest('Invalid party size');
 
       const reservation = await DiningTablesService.createReservation(
         {
+          bookingType,
+          validHours,
+          items: Array.isArray(b.items)
+            ? b.items.map((i: any) => ({
+                productId: Number(i?.productId ?? i?.product_id),
+                variantId: i?.variantId ?? i?.variant_id ?? null,
+                quantity: Number(i?.quantity),
+                notes: i?.notes ? String(i.notes) : undefined,
+              }))
+            : [],
           customerName,
           customerPhone,
           reservationTime: `${m[1]} ${m[2]}${m[3] || ':00'}`,
@@ -214,6 +229,16 @@ export class DiningTablesController {
       const tableId = ParamUtil.optionalId(req.body?.tableId, 'tableId');
       const table = await DiningTablesService.seatReservation(id, tableId as number, req.user!.id);
       ResponseUtil.success(res, table, 'Reservation party seated successfully');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async cancelReservationsBulk(req: Request, res: Response, next: NextFunction) {
+    try {
+      const ids = Array.isArray(req.body?.reservationIds) ? req.body.reservationIds : [];
+      const result = await DiningTablesService.cancelReservations(ids, req.user!.id);
+      ResponseUtil.success(res, result, `${result.cancelled} booking(s) cancelled`);
     } catch (err) {
       next(err);
     }
@@ -286,6 +311,56 @@ export class DiningTablesController {
         req.user!.id
       );
       ResponseUtil.success(res, result, 'Tab cancelled');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async convertPickupToTable(req: Request, res: Response, next: NextFunction) {
+    try {
+      const b = req.body || {};
+      const id = ParamUtil.id(b.reservationId, 'reservationId');
+      const result = await DiningTablesService.convertPickupToTable(
+        id,
+        {
+          guestCount: Number(b.guestCount ?? b.guest_count),
+          tableId: ParamUtil.optionalId(b.tableId ?? b.table_id, 'tableId'),
+        },
+        req.user!.id
+      );
+      ResponseUtil.success(res, result, 'Pickup changed to a dine-in table booking');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async convertTableToPickup(req: Request, res: Response, next: NextFunction) {
+    try {
+      const id = ParamUtil.id(req.body?.reservationId, 'reservationId');
+      const result = await DiningTablesService.convertTableToPickup(id, req.user!.id);
+      ResponseUtil.success(res, result, 'Table booking changed to pickup');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async fulfilReservation(req: Request, res: Response, next: NextFunction) {
+    try {
+      const b = req.body || {};
+      const id = ParamUtil.id(b.reservationId, 'reservationId');
+      const servedAs = String(b.servedAs || '').toUpperCase() === 'DINING' ? 'DINING' : 'TAKEAWAY';
+      const result = await DiningTablesService.fulfilReservation(id, servedAs, ParamUtil.optionalId(b.tableId, 'tableId') ?? null, req.user!.id);
+      ResponseUtil.success(res, result, servedAs === 'DINING' ? 'Booking seated' : 'Booking picked up');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  static async pickedUpReservation(req: Request, res: Response, next: NextFunction) {
+    try {
+      const id = ParamUtil.id(req.body?.reservationId, 'reservationId');
+      const result = await DiningTablesService.markReservationPickedUp(id, req.user!.id);
+      ResponseUtil.success(res, result, 'Pickup booking marked as picked up');
     } catch (err) {
       next(err);
     }

@@ -93,7 +93,7 @@ export class BillsService {
     // touches only `bills` (served by idx_bills_deleted_created), then the
     // joins run for the fifty rows that survive: same rows, same order, ~14ms.
     const bills = await dbService.query(
-      `SELECT b.*, o.order_number, o.display_seq as order_display_seq, c.name as customer_name, c.phone as customer_phone,
+      `SELECT b.*, o.order_number, o.display_seq as order_display_seq, COALESCE(c.name, b.guest_name) as customer_name, COALESCE(c.phone, b.guest_phone) as customer_phone,
               t.table_number, t.name as table_name,
               u.name as cashier_name
        FROM (
@@ -128,7 +128,7 @@ export class BillsService {
 
   static async getById(id: number) {
     const bill = await dbService.queryOne(
-      `SELECT b.*, o.order_number, o.display_seq as order_display_seq, c.name as customer_name, c.phone as customer_phone, c.address as customer_address,
+      `SELECT b.*, o.order_number, o.display_seq as order_display_seq, COALESCE(c.name, b.guest_name) as customer_name, COALESCE(c.phone, b.guest_phone) as customer_phone, c.address as customer_address,
               t.table_number, t.name as table_name,
               u.name as cashier_name
        FROM bills b

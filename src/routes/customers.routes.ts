@@ -12,6 +12,9 @@ router.get('/summary', authenticate, CustomersController.getSummary);
 // Customers list and creation
 router.get('/', authenticate, CustomersController.getAll);
 router.post('/image', authenticate, requirePermission('customer.manage'), CustomersController.uploadImage);
+// Payment dialog: phone first - is it already a customer? (before /:id routes)
+router.post('/lookup-phone', authenticate, CustomersController.lookupPhone);
+router.post('/suggest-phone', authenticate, CustomersController.suggestPhone);
 router.post('/', authenticate, requirePermission('customer.manage'), validateBody(createCustomerSchema), CustomersController.create);
 
 // Customer details, analytics, and history

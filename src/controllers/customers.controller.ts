@@ -3,6 +3,7 @@ import { CustomersService } from '../services/customers.service';
 import { ResponseUtil } from '../utils/response.util';
 import { ParamUtil } from '../utils/param.util';
 import { CustomerImageService } from '../services/customer-image.service';
+import { PhoneUtil } from '../utils/phone.util';
 
 export class CustomersController {
   /** Stores a customer photo and returns its URL; uploaded before the row exists. */
@@ -11,6 +12,31 @@ export class CustomersController {
       const { dataUrl } = req.body || {};
       const data = CustomerImageService.save(dataUrl);
       ResponseUtil.success(res, data, 'Customer photo uploaded successfully');
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  /** Payment dialog: is this phone already a customer? { found, customer } */
+  static async lookupPhone(req: Request, res: Response, next: NextFunction) {
+    try {
+      const phone = String(req.body?.phone ?? '');
+      if (!PhoneUtil.isValid(phone)) {
+        res.json({ success: true, data: { found: false, valid: false, customer: null } });
+        return;
+      }
+      const customer = await CustomersService.findByPhone(phone);
+      res.json({ success: true, data: { found: !!customer, valid: true, customer } });
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  /** Phone suggestions while typing: { customers } */
+  static async suggestPhone(req: Request, res: Response, next: NextFunction) {
+    try {
+      const customers = await CustomersService.suggestByPhone(String(req.body?.phone ?? ''));
+      res.json({ success: true, data: { customers } });
     } catch (err) {
       next(err);
     }

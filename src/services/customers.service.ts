@@ -4,6 +4,7 @@ import { AuditService } from './audit.service';
 import { CustomerImageService } from './customer-image.service';
 import { logger } from '../config/logger';
 import { ParamUtil } from '../utils/param.util';
+import { PhoneUtil } from '../utils/phone.util';
 
 export class CustomersService {
   private static schemaEnsured = false;
@@ -212,6 +213,38 @@ export class CustomersService {
     };
   }
 
+  /**
+   * The customer with this phone, punctuation ignored - the phone is the
+   * customer's unique key. Null when nobody has it.
+   */
+  static async findByPhone(phone: string): Promise<{ id: number; name: string; phone: string } | null> {
+    await this.ensureSchema();
+    const n = PhoneUtil.normalise(phone);
+    if (!n) return null;
+    return await dbService.queryOne<{ id: number; name: string; phone: string }>(
+      `SELECT id, name, phone FROM customers WHERE ${PhoneUtil.sqlColumn('phone')} = ? ORDER BY id ASC LIMIT 1`,
+      [n]
+    );
+  }
+
+  /**
+   * Customers whose phone contains these digits (punctuation ignored), for
+   * the phone suggestions - numbers starting with them first. At most 6.
+   */
+  static async suggestByPhone(partial: string): Promise<{ id: number; name: string; phone: string }[]> {
+    await this.ensureSchema();
+    const digits = PhoneUtil.normalise(partial).replace('+', '');
+    if (digits.length < 3) return [];
+    const col = PhoneUtil.sqlColumn('phone');
+    return await dbService.query<{ id: number; name: string; phone: string }>(
+      `SELECT id, name, phone FROM customers
+       WHERE status = 'ACTIVE' AND ${col} LIKE ?
+       ORDER BY (${col} LIKE ?) DESC, last_visit_at DESC, name ASC
+       LIMIT 6`,
+      ['%' + digits + '%', digits + '%']
+    );
+  }
+
   static async getByPhone(phone: string) {
     await this.ensureSchema();
     return await dbService.queryOne('SELECT * FROM customers WHERE phone = ?', [phone]);
@@ -226,7 +259,8 @@ export class CustomersService {
     customer_code?: string;
   }, userId: number) {
     await this.ensureSchema();
-    const existing = await dbService.queryOne('SELECT id FROM customers WHERE phone = ?', [data.phone]);
+    // Same number in another format (spaces, dashes) is the same customer.
+    const existing = (await dbService.queryOne('SELECT id FROM customers WHERE phone = ?', [data.phone])) || (await this.findByPhone(data.phone));
     if (existing) {
       throw AppError.conflict('Customer with this phone number already exists');
     }

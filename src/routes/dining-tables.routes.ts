@@ -21,7 +21,13 @@ router.post('/reservations/list', authenticate, DiningTablesController.listReser
 router.post('/reservations/create', authenticate, requirePermission('dining.manage'), DiningTablesController.createReservation);
 router.post('/reservations/seat', authenticate, requirePermission('dining.manage'), DiningTablesController.seatReservationPost);
 router.post('/reservations/cancel', authenticate, requirePermission('dining.manage'), DiningTablesController.cancelReservationPost);
+router.post('/reservations/cancel-bulk', authenticate, requirePermission('dining.manage'), DiningTablesController.cancelReservationsBulk);
 router.post('/reservations/no-show', authenticate, requirePermission('dining.manage'), DiningTablesController.noShowReservation);
+router.post('/reservations/picked-up', authenticate, requirePermission('dining.manage'), DiningTablesController.pickedUpReservation);
+router.post('/reservations/convert-to-table', authenticate, requirePermission('dining.manage'), DiningTablesController.convertPickupToTable);
+router.post('/reservations/convert-to-pickup', authenticate, requirePermission('dining.manage'), DiningTablesController.convertTableToPickup);
+// The POS served a booking: DINING on a table -> seated; otherwise picked up.
+router.post('/reservations/fulfil', authenticate, DiningTablesController.fulfilReservation);
 
 // Open dining tabs: order in rounds, bill once (params in the body)
 router.post('/tab/get', authenticate, DiningTablesController.getTab);
